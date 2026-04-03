@@ -336,8 +336,8 @@ function WordPopup({word,context,decks,cardStates,onClose,onAddToFlashcard,track
       try {
         const raw=await callClaude(
           `Arabic language expert. Learner clicked word: "${word}" in: "${context}"
-Return ONLY valid JSON no markdown:
-{"word":"${word}","root":"3-letter Arabic root like ك-ت-ب or empty","rootMeaning":"short root meaning or empty","meaning":"English meaning","partOfSpeech":"noun/verb/adjective/etc","note":"one short helpful tip or empty"}`,
+Return ONLY valid JSON no markdown. Include full tashkeel on all Arabic text:
+{"word":"${word}","root":"3-letter Arabic root with tashkeel like كَتَبَ or empty","rootMeaning":"short root meaning or empty","meaning":"English meaning","partOfSpeech":"noun/verb/adjective/etc","note":"one short helpful tip or empty"}`,
           500,"wordLookup",trackUsage
         );
         setData(JSON.parse(raw.replace(/```json|```/g,"").trim()));
@@ -1039,6 +1039,7 @@ function StudyScreen({cards,currentIndex,onSwipe,onExit,trackUsage,decks,cardSta
         `Arabic teacher creating flashcard learning aid.
 Word: "${card.english}" · Arabic form "${arabicForm}" (${formLabel})
 Generate: 1) Short natural Arabic sentence (6-10w) using EXACTLY: ${arabicForm}  2) English translation  3) Vivid DALL-E scene (2-3 sentences, real everyday Arabic life, no Arabic text in scene)${avoidClause}
+Full tashkeel (diacritics) on every Arabic word in the sentence.
 Return ONLY valid JSON: {"sentence":"...","translation":"...","imagePrompt":"..."}`,
         800,"sentence",trackUsage
       );
@@ -1333,7 +1334,7 @@ Arabic vocabulary: ${selectedCards.map(c=>c.arabicBase).join("، ")}
 
 Create a natural Arabic reading passage (~${lenMap[settings.length]||"110-140"} words, ${settings.difficulty} level) that:
 - Uses the selected vocabulary as naturally as possible
-- Has full diacritics (tashkeel) on most words
+- Has full tashkeel (diacritics) on every Arabic word
 - Is grammatically correct and coherent
 
 Return ONLY valid JSON: {"arabic":"...","translation":"...","vocabUsed":["arabic","words","from","selection","that","appear"]}`,
