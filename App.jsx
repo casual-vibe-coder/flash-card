@@ -1,4 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from "react";
+import { auth, googleProvider, db } from "./firebase.js";
+import { signInWithPopup, signOut, onAuthStateChanged } from "firebase/auth";
+import { doc, getDoc, setDoc } from "firebase/firestore";
 import {
   Settings, ArrowLeft, ChevronRight, X, Volume2, RotateCcw, BookOpen,
   RefreshCw, Check, Sparkles, Plus, Edit3, Trash2, Layers, Save, Eye,
@@ -527,9 +530,33 @@ function HomeScreen({decks,cardStates,onOpenDeck,onSettings,onCreateDeck,onReadi
 }
 
 // ─────────────────────────────────────────────────────────────
+// LOGIN
+// ─────────────────────────────────────────────────────────────
+function LoginScreen({onLogin,loading}) {
+  return (
+    <div className="screen" style={{display:"flex",alignItems:"center",justifyContent:"center",minHeight:"100vh",padding:28,textAlign:"center"}}>
+      <div className="pop-appear" style={{width:"100%",maxWidth:360}}>
+        <div style={{fontSize:48,marginBottom:16}}>🗂️</div>
+        <div style={{fontFamily:"Lora,serif",fontSize:26,fontWeight:600,marginBottom:8}}>Arabic Flashcards</div>
+        <div style={{fontSize:14,color:"var(--text2)",marginBottom:36,lineHeight:1.6}}>Sign in to save your decks, cards, and progress across all your devices.</div>
+        <button
+          className="btn btn-primary"
+          onClick={onLogin}
+          disabled={loading}
+          style={{width:"100%",padding:"14px",borderRadius:"var(--r)",fontSize:15,display:"flex",alignItems:"center",justifyContent:"center",gap:10}}>
+          {loading
+            ? <><RefreshCw size={16} className="spin"/>Signing in…</>
+            : <><svg width="18" height="18" viewBox="0 0 48 48"><path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.02 17.74 9.5 24 9.5z"/><path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/><path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/><path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.18 1.48-4.97 2.31-8.16 2.31-6.26 0-11.57-3.52-13.47-8.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/><path fill="none" d="M0 0h48v48H0z"/></svg>Continue with Google</>}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────
 // SETTINGS
 // ─────────────────────────────────────────────────────────────
-function SettingsScreen({settings,setSettings,onBack,usage}) {
+function SettingsScreen({settings,setSettings,onBack,usage,user,onSignOut}) {
   const [local,setLocal]=useState(settings);
   const [saved,setSaved]=useState(false);
   const set=(k,v)=>setLocal(p=>({...p,[k]:v}));
@@ -545,8 +572,14 @@ function SettingsScreen({settings,setSettings,onBack,usage}) {
         <div style={{background:"var(--surface)",border:"1.5px solid var(--border)",borderRadius:"var(--r)",padding:"15px 17px"}}>
           <div className="sec">Account</div>
           <div style={{display:"flex",alignItems:"center",gap:10}}>
-            <div style={{width:38,height:38,borderRadius:"50%",background:"var(--accent-bg)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:18}}>👤</div>
-            <div><div style={{fontWeight:600,fontSize:14}}>fardeen@mortarmetrics.com</div><div style={{fontSize:12,color:"var(--know)"}}>● Connected via Google</div></div>
+            {user?.photoURL
+              ? <img src={user.photoURL} referrerPolicy="no-referrer" style={{width:38,height:38,borderRadius:"50%",objectFit:"cover"}}/>
+              : <div style={{width:38,height:38,borderRadius:"50%",background:"var(--accent-bg)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:18}}>👤</div>}
+            <div style={{flex:1}}>
+              <div style={{fontWeight:600,fontSize:14}}>{user?.displayName||user?.email||"Signed in"}</div>
+              <div style={{fontSize:12,color:"var(--know)"}}>● Connected via Google</div>
+            </div>
+            <button className="btn btn-ghost" onClick={onSignOut} style={{fontSize:12,color:"var(--text3)",padding:"6px 10px",borderRadius:"var(--rxs)"}}>Sign out</button>
           </div>
         </div>
 
@@ -1626,12 +1659,53 @@ export default function App() {
   const [cardStates,setCardStates]=useState(SEED_CARDS);
   const [activeDeck,setActiveDeck]=useState(null);
   const [activeCard,setActiveCard]=useState(null);
-  const [settings,setSettings]=useState(()=>{
-    try {
-      const saved=localStorage.getItem("arabic_fc_settings");
-      return saved ? {...{orKey:"",oaKey:"",model:"openai/gpt-4o-mini"},...JSON.parse(saved)} : {orKey:"",oaKey:"",model:"openai/gpt-4o-mini"};
-    } catch { return {orKey:"",oaKey:"",model:"openai/gpt-4o-mini"}; }
-  });
+  const [settings,setSettings]=useState({orKey:"",oaKey:"",model:"openai/gpt-4o-mini"});
+  const [user,setUser]=useState(undefined); // undefined = loading, null = signed out
+  const [dataLoaded,setDataLoaded]=useState(false);
+  const [authLoading,setAuthLoading]=useState(false);
+
+  // Firebase auth state listener
+  useEffect(()=>{
+    const unsub=onAuthStateChanged(auth,async u=>{
+      setUser(u);
+      if(u){
+        const snap=await getDoc(doc(db,"users",u.uid));
+        if(snap.exists()){
+          const d=snap.data();
+          if(d.decks) setDecks(d.decks);
+          if(d.cardStates) setCardStates(d.cardStates);
+          if(d.settings) setSettings(s=>({...s,...d.settings}));
+        }
+        setDataLoaded(true);
+      } else {
+        setDataLoaded(false);
+        setDecks(SEED_DECKS);
+        setCardStates(SEED_CARDS);
+      }
+    });
+    return unsub;
+  },[]);
+
+  // Auto-save to Firestore whenever data changes
+  useEffect(()=>{
+    if(!user||!dataLoaded) return;
+    const t=setTimeout(()=>{
+      setDoc(doc(db,"users",user.uid),{decks,cardStates,settings},{merge:true});
+    },1500);
+    return ()=>clearTimeout(t);
+  },[decks,cardStates,settings,user,dataLoaded]);
+
+  const handleSignIn=async()=>{
+    setAuthLoading(true);
+    try { await signInWithPopup(auth,googleProvider); }
+    catch(e){ console.error(e); }
+    finally { setAuthLoading(false); }
+  };
+
+  const handleSignOut=async()=>{
+    await signOut(auth);
+    setScreen("home");
+  };
 
   // Keep module-level refs in sync — picked up automatically by callClaude / generateDalleImage
   useEffect(()=>{ _activeModel = settings.model; _oaKey = settings.oaKey||""; },[settings.model,settings.oaKey]);
@@ -1694,7 +1768,7 @@ export default function App() {
 
   const screens={
     home:<HomeScreen {...commonProps} onOpenDeck={openDeck} onSettings={()=>go("settings")} onCreateDeck={()=>go("createDeck")} onReading={()=>go("reading")} onListening={()=>go("listening")}/>,
-    settings:<SettingsScreen settings={settings} setSettings={setSettings} onBack={()=>go("home")} usage={usage}/>,
+    settings:<SettingsScreen settings={settings} setSettings={setSettings} onBack={()=>go("home")} usage={usage} user={user} onSignOut={handleSignOut}/>,
     createDeck:<CreateDeckScreen onBack={()=>go("home")} onCreate={createDeck}/>,
     addCards:activeDeck&&<AddCardsScreen deck={activeDeck} onBack={()=>go("deck")} onSave={saveCards} trackUsage={trackUsage}/>,
     deck:activeDeck&&<DeckScreen deck={activeDeck} cards={cardStates[activeDeck.id]||[]} onStartStudy={startStudy} onBack={()=>go("home")} onAddCards={()=>go("addCards")} onEditCard={c=>{setActiveCard(c);go("editCard");}} onDeleteCard={deleteCard} onRenameDeck={renameDeck} onDeleteDeck={deleteDeck}/>,
@@ -1704,6 +1778,20 @@ export default function App() {
     reading:<ReadingScreen {...commonProps} onBack={()=>go("home")} onAddToFlashcard={addToFlashcard}/>,
     listening:<ListeningScreen {...commonProps} onBack={()=>go("home")} onAddToFlashcard={addToFlashcard}/>,
   };
+
+  // Show loading spinner while Firebase checks auth state
+  if(user===undefined) return (
+    <><style>{CSS}</style>
+    <div className="app" style={{display:"flex",alignItems:"center",justifyContent:"center",minHeight:"100vh"}}>
+      <RefreshCw size={24} className="spin" style={{color:"var(--accent)"}}/>
+    </div></>
+  );
+
+  // Show login screen if not signed in
+  if(!user) return (
+    <><style>{CSS}</style>
+    <div className="app"><LoginScreen onLogin={handleSignIn} loading={authLoading}/></div></>
+  );
 
   return (<><style>{CSS}</style><div className="app">{screens[screen]}</div></>);
 }
