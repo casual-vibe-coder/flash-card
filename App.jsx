@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { auth, googleProvider, db } from "./firebase.js";
-import { signInWithPopup, signOut, onAuthStateChanged } from "firebase/auth";
+import { signInWithPopup, signInWithRedirect, getRedirectResult, signOut, onAuthStateChanged } from "firebase/auth";
 import { doc, getDoc, setDoc } from "firebase/firestore";
 import {
   Settings, ArrowLeft, ChevronRight, X, Volume2, RotateCcw, BookOpen,
@@ -532,13 +532,14 @@ function HomeScreen({decks,cardStates,onOpenDeck,onSettings,onCreateDeck,onReadi
 // ─────────────────────────────────────────────────────────────
 // LOGIN
 // ─────────────────────────────────────────────────────────────
-function LoginScreen({onLogin,loading}) {
+function LoginScreen({onLogin,loading,error}) {
   return (
     <div className="screen" style={{display:"flex",alignItems:"center",justifyContent:"center",minHeight:"100vh",padding:28,textAlign:"center"}}>
       <div className="pop-appear" style={{width:"100%",maxWidth:360}}>
         <div style={{fontSize:48,marginBottom:16}}>🗂️</div>
         <div style={{fontFamily:"Lora,serif",fontSize:26,fontWeight:600,marginBottom:8}}>Arabic Flashcards</div>
         <div style={{fontSize:14,color:"var(--text2)",marginBottom:36,lineHeight:1.6}}>Sign in to save your decks, cards, and progress across all your devices.</div>
+        {error&&<div style={{background:"var(--weak-bg)",border:"1px solid var(--weak-border)",borderRadius:"var(--rxs)",padding:"10px 13px",fontSize:13,color:"var(--weak)",marginBottom:16}}>{error}</div>}
         <button
           className="btn btn-primary"
           onClick={onLogin}
@@ -1663,19 +1664,24 @@ export default function App() {
   const [user,setUser]=useState(undefined); // undefined = loading, null = signed out
   const [dataLoaded,setDataLoaded]=useState(false);
   const [authLoading,setAuthLoading]=useState(false);
+  const [authError,setAuthError]=useState("");
 
   // Firebase auth state listener
   useEffect(()=>{
+    // Check for redirect result first (mobile/popup-blocked fallback)
+    getRedirectResult(auth).catch(()=>{});
     const unsub=onAuthStateChanged(auth,async u=>{
       setUser(u);
       if(u){
-        const snap=await getDoc(doc(db,"users",u.uid));
-        if(snap.exists()){
-          const d=snap.data();
-          if(d.decks) setDecks(d.decks);
-          if(d.cardStates) setCardStates(d.cardStates);
-          if(d.settings) setSettings(s=>({...s,...d.settings}));
-        }
+        try {
+          const snap=await getDoc(doc(db,"users",u.uid));
+          if(snap.exists()){
+            const d=snap.data();
+            if(d.decks) setDecks(d.decks);
+            if(d.cardStates) setCardStates(d.cardStates);
+            if(d.settings) setSettings(s=>({...s,...d.settings}));
+          }
+        } catch(e){ console.error("Firestore load error:",e); }
         setDataLoaded(true);
       } else {
         setDataLoaded(false);
@@ -1690,16 +1696,23 @@ export default function App() {
   useEffect(()=>{
     if(!user||!dataLoaded) return;
     const t=setTimeout(()=>{
-      setDoc(doc(db,"users",user.uid),{decks,cardStates,settings},{merge:true});
+      setDoc(doc(db,"users",user.uid),{decks,cardStates,settings},{merge:true}).catch(e=>console.error("Save error:",e));
     },1500);
     return ()=>clearTimeout(t);
   },[decks,cardStates,settings,user,dataLoaded]);
 
   const handleSignIn=async()=>{
-    setAuthLoading(true);
-    try { await signInWithPopup(auth,googleProvider); }
-    catch(e){ console.error(e); }
-    finally { setAuthLoading(false); }
+    setAuthLoading(true);setAuthError("");
+    try {
+      await signInWithPopup(auth,googleProvider);
+    } catch(e){
+      // If popup blocked or fails, try redirect
+      if(e.code==="auth/popup-blocked"||e.code==="auth/popup-closed-by-user"||e.code==="auth/cancelled-popup-request"){
+        try { await signInWithRedirect(auth,googleProvider); return; } catch(e2){ setAuthError(e2.message); }
+      } else {
+        setAuthError(e.message||"Sign-in failed. Please try again.");
+      }
+    } finally { setAuthLoading(false); }
   };
 
   const handleSignOut=async()=>{
@@ -1790,7 +1803,7 @@ export default function App() {
   // Show login screen if not signed in
   if(!user) return (
     <><style>{CSS}</style>
-    <div className="app"><LoginScreen onLogin={handleSignIn} loading={authLoading}/></div></>
+    <div className="app"><LoginScreen onLogin={handleSignIn} loading={authLoading} error={authError}/></div></>
   );
 
   return (<><style>{CSS}</style><div className="app">{screens[screen]}</div></>);
