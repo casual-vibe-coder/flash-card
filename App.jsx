@@ -178,6 +178,7 @@ textarea.input{resize:vertical;min-height:110px;line-height:1.7}
 // Module-level model ref — updated by root App when settings change.
 // Avoids threading model as a prop through every screen component.
 let _activeModel = "openai/gpt-4o-mini";
+let _oaKey = ""; // OpenAI key for DALL-E — synced from settings
 
 async function callClaude(prompt, maxTokens=1500, tag="other", trackFn=null) {
   const res = await fetch("/api/claude", {
@@ -201,6 +202,17 @@ async function callClaude(prompt, maxTokens=1500, tag="other", trackFn=null) {
   return outputText;
 }
 
+// Robust JSON extractor — handles LLM responses that wrap JSON in markdown or extra text
+function extractJSON(raw) {
+  const clean = raw.replace(/```json|```/g,"").trim();
+  try { return JSON.parse(clean); } catch {}
+  const obj = clean.match(/\{[\s\S]*\}/);
+  if (obj) { try { return JSON.parse(obj[0]); } catch {} }
+  const arr = clean.match(/\[[\s\S]*\]/);
+  if (arr) { try { return JSON.parse(arr[0]); } catch {} }
+  throw new Error("JSON extraction failed");
+}
+
 // DALL-E image generation — goes through /api/image proxy
 // Returns image URL or null (app shows scene description as fallback)
 async function generateDalleImage(prompt) {
@@ -211,10 +223,12 @@ async function generateDalleImage(prompt) {
       body:JSON.stringify({
         model:"dall-e-3",
         prompt:`${prompt} Style: warm natural photography, soft daylight, everyday life in an Arabic-speaking country, photorealistic. No text or Arabic letters visible in the image.`,
-        n:1, size:"1024x1024", quality:"standard"
+        n:1, size:"1024x1024", quality:"standard",
+        ..._oaKey ? {apiKey:_oaKey} : {},
       }),
     });
     const data = await res.json();
+    if (data.noKey) return null;
     return data.data?.[0]?.url || null;
   } catch { return null; }
 }
@@ -550,21 +564,31 @@ function SettingsScreen({settings,setSettings,onBack,usage}) {
         <div style={{background:"var(--info-bg)",border:"1.5px solid var(--info-border)",borderRadius:"var(--r)",padding:"14px 16px"}}>
           <div style={{display:"flex",alignItems:"center",gap:7,marginBottom:10}}><Info size={14} color="var(--info)"/><div className="sec" style={{margin:0,color:"var(--info)"}}>API Keys</div></div>
           <div style={{fontSize:13,color:"var(--text2)",lineHeight:1.7,marginBottom:10}}>
-            Keys are stored as Vercel environment variables — never in the browser. To update, go to <strong>Vercel → Project → Settings → Environment Variables</strong>.
+            The OpenRouter key is set as a Vercel environment variable. Enter your OpenAI key below to enable DALL-E image generation.
           </div>
           <div style={{display:"flex",flexDirection:"column",gap:8}}>
-            {[
-              {icon:"🔑",l:"OPENROUTER_API_KEY",n:"All LLM generation — openrouter.ai/keys"},
-              {icon:"🖼",l:"OPENAI_API_KEY",n:"DALL-E 3 images — platform.openai.com/api-keys"},
-            ].map(r=>(
-              <div key={r.l} style={{display:"flex",gap:9,alignItems:"flex-start"}}>
-                <span style={{fontSize:14,flexShrink:0}}>{r.icon}</span>
-                <div>
-                  <div style={{fontSize:12.5,fontWeight:700,color:"var(--text)",fontFamily:"monospace",letterSpacing:".02em"}}>{r.l}</div>
-                  <div style={{fontSize:11.5,color:"var(--text3)"}}>{r.n}</div>
-                </div>
+            <div style={{display:"flex",gap:9,alignItems:"flex-start"}}>
+              <span style={{fontSize:14,flexShrink:0}}>🔑</span>
+              <div style={{flex:1}}>
+                <div style={{fontSize:12.5,fontWeight:700,color:"var(--text)",fontFamily:"monospace",letterSpacing:".02em",marginBottom:3}}>OPENROUTER_API_KEY</div>
+                <div style={{fontSize:11.5,color:"var(--text3)"}}>Vercel env var — openrouter.ai/keys</div>
               </div>
-            ))}
+            </div>
+            <div style={{display:"flex",gap:9,alignItems:"flex-start"}}>
+              <span style={{fontSize:14,flexShrink:0}}>🖼</span>
+              <div style={{flex:1}}>
+                <div style={{fontSize:12.5,fontWeight:700,color:"var(--text)",fontFamily:"monospace",letterSpacing:".02em",marginBottom:4}}>OPENAI_API_KEY · DALL-E Images</div>
+                <input
+                  className="input"
+                  type="password"
+                  placeholder="sk-… (from platform.openai.com/api-keys)"
+                  value={local.oaKey||""}
+                  onChange={e=>set("oaKey",e.target.value)}
+                  style={{fontSize:12,padding:"7px 10px",fontFamily:"monospace"}}
+                />
+                <div style={{fontSize:11,color:"var(--text3)",marginTop:3}}>Stored locally in your browser only. Required for DALL-E image generation.</div>
+              </div>
+            </div>
           </div>
         </div>
 
@@ -1016,7 +1040,7 @@ Generate: 1) Short natural Arabic sentence (6-10w) using EXACTLY: ${arabicForm} 
 Return ONLY valid JSON: {"sentence":"...","translation":"...","imagePrompt":"..."}`,
         800,"sentence",trackUsage
       );
-      const parsed=JSON.parse(raw.replace(/```json|```/g,"").trim());
+      const parsed=extractJSON(raw);
       setGen({...parsed,imageUrl:null});
       setGenLoading(false);
       // Generate real DALL-E image in background
@@ -1025,7 +1049,7 @@ Return ONLY valid JSON: {"sentence":"...","translation":"...","imagePrompt":"...
       setGen(prev=>prev?{...prev,imageUrl:url}:prev);
       setImgLoading(false);
     } catch {
-      setGen({sentence:card.arabicBase,translation:card.english,imagePrompt:`A warm everyday scene representing "${card.english}" in Arabic-speaking daily life, natural lighting.`,imageUrl:null});
+      setGen({sentence:arabicForm,translation:card.english,imagePrompt:`A warm everyday scene representing "${card.english}" in Arabic-speaking daily life, natural lighting.`,imageUrl:null});
       setGenLoading(false);setImgLoading(false);
     }
   };
@@ -1587,8 +1611,8 @@ export default function App() {
     } catch { return {orKey:"",oaKey:"",model:"openai/gpt-4o-mini"}; }
   });
 
-  // Keep module-level model ref in sync — all callClaude calls pick it up automatically
-  useEffect(()=>{ _activeModel = settings.model; },[settings.model]);
+  // Keep module-level refs in sync — picked up automatically by callClaude / generateDalleImage
+  useEffect(()=>{ _activeModel = settings.model; _oaKey = settings.oaKey||""; },[settings.model,settings.oaKey]);
   const [sessionCards,setSessionCards]=useState([]);
   const [currentIdx,setCurrentIdx]=useState(0);
   const [usage,setUsage]=useState(initUsage);
