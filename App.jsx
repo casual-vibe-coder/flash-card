@@ -1028,16 +1028,17 @@ function StudyScreen({cards,currentIndex,onSwipe,onExit,trackUsage,decks,cardSta
     setPlaying(false);
   },[currentIndex]);
 
-  const generate=async()=>{
+  const generate=async(prevSentence=null)=>{
     if(!selForm) return;
     const arabicForm=card.forms[selForm];
     const formLabel=FORM_LABELS[selForm]||selForm;
     setGenLoading(true);setGen(null);
     try {
+      const avoidClause=prevSentence?`\nDo NOT reuse or closely resemble this previous sentence: "${prevSentence}"`:"";
       const raw=await callClaude(
         `Arabic teacher creating flashcard learning aid.
 Word: "${card.english}" · Arabic form "${arabicForm}" (${formLabel})
-Generate: 1) Short natural Arabic sentence (6-10w) using EXACTLY: ${arabicForm}  2) English translation  3) Vivid DALL-E scene (2-3 sentences, real everyday Arabic life, no Arabic text in scene)
+Generate: 1) Short natural Arabic sentence (6-10w) using EXACTLY: ${arabicForm}  2) English translation  3) Vivid DALL-E scene (2-3 sentences, real everyday Arabic life, no Arabic text in scene)${avoidClause}
 Return ONLY valid JSON: {"sentence":"...","translation":"...","imagePrompt":"..."}`,
         800,"sentence",trackUsage
       );
@@ -1136,7 +1137,7 @@ Return ONLY valid JSON: {"sentence":"...","translation":"...","imagePrompt":"...
                   style={{background:playing?"var(--accent)":"transparent",color:playing?"white":"var(--accent)",border:"1.5px solid var(--accent)",borderRadius:"var(--rs)",padding:"11px",width:"100%",fontSize:13.5,fontWeight:600}}>
                   <Volume2 size={15}/> {playing?"Playing… (tap to stop)":"▶ Play Arabic Audio"}
                 </button>
-                <button className="btn" onClick={generate} style={{background:"transparent",color:"var(--text3)",fontSize:12,padding:"4px",width:"100%"}}><RefreshCw size={11}/>Fresh example</button>
+                <button className="btn" onClick={()=>generate(gen?.sentence)} style={{background:"transparent",color:"var(--text3)",fontSize:12,padding:"4px",width:"100%"}}><RefreshCw size={11}/>Fresh example</button>
               </div>
             )}
           </div>
