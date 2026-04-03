@@ -1011,13 +1011,14 @@ Include full tashkeel on all Arabic.`,
 // ─────────────────────────────────────────────────────────────
 // STUDY SCREEN
 // ─────────────────────────────────────────────────────────────
-function StudyScreen({cards,currentIndex,onSwipe,onExit,trackUsage}) {
+function StudyScreen({cards,currentIndex,onSwipe,onExit,trackUsage,decks,cardStates,onAddToFlashcard}) {
   const [flipped,setFlipped]=useState(false);
   const [selForm,setSelForm]=useState(null);
   const [gen,setGen]=useState(null);
   const [genLoading,setGenLoading]=useState(false);
   const [imgLoading,setImgLoading]=useState(false);
   const [playing,setPlaying]=useState(false);
+  const [wordPopup,setWordPopup]=useState(null);
   const card=cards[currentIndex];
   const availForms=Object.entries(card.forms).filter(([,v])=>v);
 
@@ -1127,7 +1128,8 @@ Return ONLY valid JSON: {"sentence":"...","translation":"...","imagePrompt":"...
                 )}
                 <div style={{background:"var(--accent-bg)",border:"1px solid var(--accent-border)",borderRadius:"var(--rs)",padding:"12px 14px"}}>
                   <div style={{fontSize:10,fontWeight:700,color:"var(--accent)",letterSpacing:".1em",textTransform:"uppercase",marginBottom:7}}>✦ Example Sentence</div>
-                  <div className="ar" style={{fontSize:22,color:"var(--text)",lineHeight:1.75,marginBottom:6}}>{gen.sentence}</div>
+                  <ClickableArabic text={gen.sentence} highlightWords={[card.forms[selForm]||card.arabicBase]} onWordClick={(word,ctx)=>setWordPopup({word,context:ctx})} fontSize={22}/>
+                  <div style={{fontSize:11,color:"var(--text3)",marginTop:4,marginBottom:6}}>💡 Tap any word to look it up</div>
                   <div style={{fontSize:13,color:"var(--text2)",fontStyle:"italic"}}>{gen.translation}</div>
                 </div>
                 <button className="btn" onClick={playAudio}
@@ -1147,6 +1149,7 @@ Return ONLY valid JSON: {"sentence":"...","translation":"...","imagePrompt":"...
         )}
         {!flipped&&<div style={{textAlign:"center",color:"var(--text3)",fontSize:12.5,marginTop:"auto"}}>Tap the card to reveal Arabic</div>}
       </div>
+      {wordPopup&&<WordPopup word={wordPopup.word} context={wordPopup.context} decks={decks||[]} cardStates={cardStates||{}} onClose={()=>setWordPopup(null)} onAddToFlashcard={onAddToFlashcard} trackUsage={trackUsage}/>}
     </div>
   );
 }
@@ -1677,7 +1680,7 @@ export default function App() {
     addCards:activeDeck&&<AddCardsScreen deck={activeDeck} onBack={()=>go("deck")} onSave={saveCards} trackUsage={trackUsage}/>,
     deck:activeDeck&&<DeckScreen deck={activeDeck} cards={cardStates[activeDeck.id]||[]} onStartStudy={startStudy} onBack={()=>go("home")} onAddCards={()=>go("addCards")} onEditCard={c=>{setActiveCard(c);go("editCard");}} onDeleteCard={deleteCard} onRenameDeck={renameDeck} onDeleteDeck={deleteDeck}/>,
     editCard:activeCard&&activeDeck&&<EditCardScreen card={activeCard} onBack={()=>go("deck")} onSave={saveEditedCard} trackUsage={trackUsage}/>,
-    study:activeDeck&&sessionCards.length>0&&<StudyScreen cards={sessionCards} currentIndex={currentIdx} onSwipe={handleSwipe} onExit={()=>go("deck")} trackUsage={trackUsage}/>,
+    study:activeDeck&&sessionCards.length>0&&<StudyScreen cards={sessionCards} currentIndex={currentIdx} onSwipe={handleSwipe} onExit={()=>go("deck")} trackUsage={trackUsage} decks={decks} cardStates={cardStates} onAddToFlashcard={addToFlashcard}/>,
     complete:<CompleteScreen known={sessionRes.current.known} weak={sessionRes.current.weak} onBack={()=>go("deck")}/>,
     reading:<ReadingScreen {...commonProps} onBack={()=>go("home")} onAddToFlashcard={addToFlashcard}/>,
     listening:<ListeningScreen {...commonProps} onBack={()=>go("home")} onAddToFlashcard={addToFlashcard}/>,
