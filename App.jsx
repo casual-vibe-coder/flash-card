@@ -281,11 +281,14 @@ function SceneCard({imagePrompt,word}) {
 
 function ClickableArabic({text,highlightWords=[],onWordClick,fontSize=20}) {
   const words = text.split(/\s+/).filter(Boolean);
+  const strip=s=>s.replace(/[\u064B-\u065F\u0670]/g,"");
+  const hlStripped=highlightWords.map(hw=>hw?strip(hw):"");
   return (
     <div className="ar" style={{fontSize,lineHeight:1.8,direction:"rtl"}}>
       {words.map((w,i)=>{
         const clean=w.replace(/[.,،؟!:؛"]/g,"");
-        const isHL=highlightWords.some(hw=>hw&&clean&&(clean===hw||clean.includes(hw)||hw.includes(clean)));
+        const cleanS=strip(clean);
+        const isHL=hlStripped.some(hw=>hw&&cleanS&&(cleanS===hw||cleanS.includes(hw)||hw.includes(cleanS)));
         return (
           <span key={i}>
             <span className={`ar-word${isHL?" hl":""}`} onClick={()=>onWordClick&&onWordClick(clean,text)} title="Tap to look up">{w}</span>{" "}
@@ -1328,19 +1331,19 @@ function ReadingScreen({decks,cardStates,onBack,onAddToFlashcard,trackUsage}) {
     try {
       const raw=await callClaude(
         `Expert Arabic language teacher creating reading practice.
-Learner selected ${selectedCards.length} cards across: ${deckNames}
-English vocabulary: ${selectedCards.map(c=>c.english).join(", ")}
-Arabic vocabulary: ${selectedCards.map(c=>c.arabicBase).join("، ")}
+Deck: ${deckNames}
+Arabic vocabulary (MUST use every word): ${selectedCards.map(c=>c.arabicBase).join("، ")}
 
-Create a natural Arabic reading passage (~${lenMap[settings.length]||"110-140"} words, ${settings.difficulty} level) that:
-- Uses the selected vocabulary as naturally as possible
-- Has full tashkeel (diacritics) on every Arabic word
-- Is grammatically correct and coherent
+Write a ${settings.difficulty}-level Arabic reading passage of exactly ~${lenMap[settings.length]||"110-140"} words.
+Rules:
+- Include every Arabic word from the list above at least once — this is mandatory
+- Full tashkeel (diacritics) on every Arabic word
+- Grammatically correct and coherent
 
-Return ONLY valid JSON: {"arabic":"...","translation":"...","vocabUsed":["arabic","words","from","selection","that","appear"]}`,
-        2000,"reading",trackUsage
+Return ONLY valid JSON: {"arabic":"...","translation":"...","vocabUsed":["base form of each vocab word that appears"]}`,
+        1500,"reading",trackUsage
       );
-      setPassage(JSON.parse(raw.replace(/```json|```/g,"").trim()));
+      setPassage(extractJSON(raw));
     } catch {
       setPassage({arabic:"حَدَثَ خَطَأٌ. يُرْجَى الْمُحَاوَلَةُ مَرَّةً أُخْرَى.",translation:"A generation error occurred.",vocabUsed:[]});
     } finally { setGenerating(false); }
@@ -1426,7 +1429,7 @@ Return ONLY valid JSON: {"arabic":"...","translation":"...","vocabUsed":["arabic
 // ─────────────────────────────────────────────────────────────
 function ListeningScreen({decks,cardStates,onBack,onAddToFlashcard,trackUsage}) {
   const [showSettings,setShowSettings]=useState(false);
-  const [settings,setSettings]=useState({length:"medium",difficulty:"intermediate",speed:0.82,showArabicDefault:false,showEnglishDefault:false});
+  const [settings,setSettings]=useState({length:"medium",difficulty:"intermediate",speed:0.82,showArabicDefault:false,showEnglishDefault:false,highlightVocab:true});
   const setSetting=(k,v)=>setSettings(p=>({...p,[k]:v}));
 
   // Multi-deck selection — all selected by default
@@ -1459,15 +1462,20 @@ function ListeningScreen({decks,cardStates,onBack,onAddToFlashcard,trackUsage}) 
     const lenMap={short:"50-70",medium:"90-120",long:"160-200"};
     try {
       const raw=await callClaude(
-        `Arabic teacher creating listening practice (~${lenMap[settings.length]} words, ${settings.difficulty} level).
-Learner selected ${selectedCards.length} cards across: ${deckNames}
-English: ${selectedCards.map(c=>c.english).join(", ")}
-Arabic: ${selectedCards.map(c=>c.arabicBase).join("، ")}
-Create natural spoken Arabic using the vocabulary. Full diacritics required.
-Return ONLY valid JSON: {"arabic":"...","translation":"..."}`,
-        1500,"listening",trackUsage
+        `Arabic teacher creating listening practice.
+Deck: ${deckNames}
+Arabic vocabulary (MUST use every word): ${selectedCards.map(c=>c.arabicBase).join("، ")}
+
+Write a ${settings.difficulty}-level spoken Arabic passage of exactly ~${lenMap[settings.length]} words.
+Rules:
+- Include every Arabic word from the list above at least once — this is mandatory
+- Natural conversational tone suitable for listening
+- Full tashkeel (diacritics) on every Arabic word
+
+Return ONLY valid JSON: {"arabic":"...","translation":"...","vocabUsed":["base form of each vocab word that appears"]}`,
+        1200,"listening",trackUsage
       );
-      setContent(JSON.parse(raw.replace(/```json|```/g,"").trim()));
+      setContent(extractJSON(raw));
     } catch {
       setContent({arabic:"حَدَثَ خَطَأٌ. يُرْجَى الْمُحَاوَلَةُ مَرَّةً أُخْرَى.",translation:"A generation error occurred."});
     } finally { setGenerating(false); }
@@ -1512,6 +1520,10 @@ Return ONLY valid JSON: {"arabic":"...","translation":"..."}`,
               <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
                 <span style={{fontSize:13.5,color:"var(--text2)"}}>Show English by default</span>
                 <div className={`chk ${settings.showEnglishDefault?"on":""}`} onClick={()=>setSetting("showEnglishDefault",!settings.showEnglishDefault)}>{settings.showEnglishDefault&&<Check size={11} color="white"/>}</div>
+              </div>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                <span style={{fontSize:13.5,color:"var(--text2)"}}>Highlight vocabulary</span>
+                <div className={`chk ${settings.highlightVocab?"on":""}`} onClick={()=>setSetting("highlightVocab",!settings.highlightVocab)}>{settings.highlightVocab&&<Check size={11} color="white"/>}</div>
               </div>
             </div>
           </div>
@@ -1561,8 +1573,13 @@ Return ONLY valid JSON: {"arabic":"...","translation":"..."}`,
             </button>
             {showArabic&&(
               <div className="gen-appear" style={{background:"var(--surface)",border:"1.5px solid var(--listen-border)",borderRadius:"var(--r)",padding:"18px 17px"}}>
-                <div className="sec" style={{margin:0,marginBottom:10,color:"var(--listen)"}}>Arabic Text</div>
-                <ClickableArabic text={content.arabic} onWordClick={(word,ctx)=>setWordPopup({word,context:ctx})} fontSize={20}/>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+                  <div className="sec" style={{margin:0,color:"var(--listen)"}}>Arabic Text</div>
+                  {content.vocabUsed?.length>0&&settings.highlightVocab&&(
+                    <span style={{fontSize:11,color:"var(--listen)",background:"var(--listen-bg)",padding:"2px 8px",borderRadius:100,border:"1px solid var(--listen-border)"}}>{content.vocabUsed.length} vocab words</span>
+                  )}
+                </div>
+                <ClickableArabic text={content.arabic} highlightWords={settings.highlightVocab?(content.vocabUsed||[]):[]} onWordClick={(word,ctx)=>setWordPopup({word,context:ctx})} fontSize={20}/>
                 <div style={{marginTop:10,fontSize:12,color:"var(--text3)"}}>💡 Tap any word to look it up</div>
               </div>
             )}
