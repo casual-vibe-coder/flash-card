@@ -14,7 +14,7 @@ import {
 // CONSTANTS
 // ─────────────────────────────────────────────────────────────
 const FORM_LABELS = {
-  singular:"Singular", plural:"Plural",
+  singular:"Singular", plural:"Plural 1", plural2:"Plural 2",
   synonym:"Synonym", synonymPlural:"Synonym Plural",
   antonym:"Antonym", antonymPlural:"Antonym Plural",
   harf:"Common Preposition",
@@ -23,7 +23,7 @@ const FORM_LABELS = {
   masculine:"Masculine", feminine:"Feminine",
 };
 const FORM_ARABIC = {
-  singular:"مفرد", plural:"جمع",
+  singular:"مفرد", plural:"جمع ١", plural2:"جمع ٢",
   synonym:"مرادف", synonymPlural:"جمع المرادف",
   antonym:"ضد", antonymPlural:"جمع الضد",
   harf:"حرف الجر",
@@ -32,10 +32,10 @@ const FORM_ARABIC = {
   masculine:"مذكر", feminine:"مؤنث",
 };
 const FORMS_BY_TYPE = {
-  noun:      ["singular","plural","synonym","synonymPlural","antonym","antonymPlural","harf"],
+  noun:      ["singular","plural","plural2","synonym","synonymPlural","antonym","antonymPlural","harf"],
   verb:      ["past","present","imperative","masdar","activePart","passivePart","harf"],
   adjective: ["masculine","feminine","plural","antonym","antonymPlural","harf"],
-  other:     ["singular","plural","synonym","antonym","harf"],
+  other:     ["singular","plural","plural2","synonym","antonym","harf"],
 };
 const OR_MODELS = [
   // OpenAI
@@ -702,6 +702,7 @@ Input: ${isEn?"English":"Arabic"} | Type: ${wordType} | Words: ${chunk.join(", "
 Required forms: ${formsDesc}
 
 Notes on special fields:
+- "plural2": a second plural form if the word has one (e.g. جمع تكسير vs جمع مؤنث سالم). Use "" if only one plural exists.
 - "harf": the single most common Arabic preposition/particle used with this word (e.g. فِي / إِلَى / مَعَ / عَنْ / مِنْ)
 - "synonymPlural": plural of the synonym if provided
 - "antonymPlural": plural of the antonym if provided
@@ -832,7 +833,7 @@ CRITICAL: Every Arabic word MUST have full tashkeel (فَتْحَة ضَمَّة
 // ─────────────────────────────────────────────────────────────
 // DECK SCREEN — with edit/delete deck
 // ─────────────────────────────────────────────────────────────
-function DeckScreen({deck,cards,onStartStudy,onBack,onAddCards,onEditCard,onDeleteCard,onRenameDeck,onDeleteDeck}) {
+function DeckScreen({deck,cards,onStartStudy,onBack,onAddCards,onEditCard,onDeleteCard,onRenameDeck,onDeleteDeck,savedIdx}) {
   const [deckMenu,setDeckMenu]=useState(false);
   const [renaming,setRenaming]=useState(false);
   const [newTitle,setNewTitle]=useState(deck.title);
@@ -869,8 +870,13 @@ function DeckScreen({deck,cards,onStartStudy,onBack,onAddCards,onEditCard,onDele
         </div>
         {cards.length>0&&(
           <div style={{display:"flex",flexDirection:"column",gap:8,marginBottom:20}}>
-            <button className="btn btn-primary" onClick={()=>onStartStudy("all")} style={{width:"100%",padding:"13px",borderRadius:"var(--r)",fontSize:14}}>
-              <BookOpen size={16}/> Study All ({cards.length})
+            {savedIdx>0&&savedIdx<cards.length&&(
+              <button className="btn btn-primary" onClick={()=>onStartStudy("all",false)} style={{width:"100%",padding:"13px",borderRadius:"var(--r)",fontSize:14}}>
+                <BookOpen size={16}/> Resume (Card {savedIdx+1}/{cards.length})
+              </button>
+            )}
+            <button className="btn btn-primary" onClick={()=>onStartStudy("all",true)} style={{width:"100%",padding:"13px",borderRadius:"var(--r)",fontSize:14,...(savedIdx>0&&savedIdx<cards.length?{background:"transparent",color:"var(--accent)",border:"1.5px solid var(--accent)"}:{})}}>
+              <BookOpen size={16}/> {savedIdx>0&&savedIdx<cards.length?"Restart from Beginning":"Study All"} ({cards.length})
             </button>
             {weak>0&&<button className="btn" onClick={()=>onStartStudy("weak")} style={{width:"100%",padding:"12px",borderRadius:"var(--r)",fontSize:14,fontWeight:600,background:"var(--weak-bg)",color:"var(--weak)",border:"1.5px solid var(--weak-border)"}}>
               <RotateCcw size={15}/> Practice Weak ({weak})
@@ -1070,7 +1076,7 @@ CRITICAL: Every Arabic word MUST have full tashkeel (فَتْحَة ضَمَّة
 // ─────────────────────────────────────────────────────────────
 // STUDY SCREEN
 // ─────────────────────────────────────────────────────────────
-function StudyScreen({cards,currentIndex,onSwipe,onExit,trackUsage,decks,cardStates,onAddToFlashcard}) {
+function StudyScreen({cards,currentIndex,onSwipe,onBack,onExit,trackUsage,decks,cardStates,onAddToFlashcard}) {
   const [flipped,setFlipped]=useState(false);
   const [selForm,setSelForm]=useState(null);
   const [gen,setGen]=useState(null);
@@ -1078,17 +1084,20 @@ function StudyScreen({cards,currentIndex,onSwipe,onExit,trackUsage,decks,cardSta
   const [imgLoading,setImgLoading]=useState(false);
   const [playing,setPlaying]=useState(false);
   const [wordPopup,setWordPopup]=useState(null);
+  const genRef=useRef(0); // prevent duplicate/stale generation
   const card=cards[currentIndex];
   const availForms=Object.entries(card.forms).filter(([,v])=>v);
 
   useEffect(()=>{
+    genRef.current++;
     setFlipped(false);setSelForm(availForms[0]?.[0]??null);setGen(null);setGenLoading(false);setImgLoading(false);
     if(window.speechSynthesis) window.speechSynthesis.cancel();
     setPlaying(false);
   },[currentIndex]);
 
   const generate=async(prevSentence=null)=>{
-    if(!selForm) return;
+    if(!selForm||genLoading) return;
+    const id=++genRef.current;
     const arabicForm=card.forms[selForm];
     const formLabel=FORM_LABELS[selForm]||selForm;
     setGenLoading(true);setGen(null);
@@ -1101,17 +1110,20 @@ Generate: 1) Short natural Arabic sentence (6-10w) using EXACTLY: ${arabicForm} 
 
 CRITICAL: Every single Arabic word MUST have full tashkeel (فَتْحَة ضَمَّة كَسْرَة سُكُون شَدَّة تَنْوِين) — no bare letters. Example: ذَهَبَ الطَّالِبُ إِلَى الْمَدْرَسَةِ not ذهب الطالب إلى المدرسة.
 Return ONLY valid JSON: {"sentence":"...","translation":"...","imagePrompt":"..."}`,
-        800,"sentence",trackUsage
+        600,"sentence",trackUsage
       );
+      if(id!==genRef.current) return;
       const parsed=extractJSON(raw);
       setGen({...parsed,imageUrl:null});
       setGenLoading(false);
       // Generate real DALL-E image in background
       setImgLoading(true);
       const url=await generateDalleImage(parsed.imagePrompt);
+      if(id!==genRef.current) return;
       setGen(prev=>prev?{...prev,imageUrl:url}:prev);
       setImgLoading(false);
     } catch {
+      if(id!==genRef.current) return;
       setGen({sentence:arabicForm,translation:card.english,imagePrompt:`A warm everyday scene representing "${card.english}" in Arabic-speaking daily life, natural lighting.`,imageUrl:null});
       setGenLoading(false);setImgLoading(false);
     }
@@ -1139,7 +1151,7 @@ Return ONLY valid JSON: {"sentence":"...","translation":"...","imagePrompt":"...
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
         <button className="btn btn-ghost" onClick={onExit} style={{width:32,height:32}}><X size={14}/></button>
         <span style={{fontSize:13,color:"var(--text2)",fontWeight:600}}>{currentIndex+1} <span style={{color:"var(--text3)",fontWeight:400}}>/ {cards.length}</span></span>
-        <div style={{width:32}}/>
+        <button className="btn btn-ghost" onClick={onBack} disabled={currentIndex===0} style={{width:32,height:32,opacity:currentIndex===0?0.3:1}}><ArrowLeft size={14}/></button>
       </div>
       <div className="progress-track" style={{marginBottom:16}}><div className="progress-fill" style={{width:`${((currentIndex+1)/cards.length)*100}%`,background:"var(--accent)"}}/></div>
 
@@ -1168,7 +1180,13 @@ Return ONLY valid JSON: {"sentence":"...","translation":"...","imagePrompt":"...
             </div>
             <div className="sec">Select a form</div>
             <div style={{display:"flex",flexWrap:"wrap",gap:7,marginBottom:12}}>
-              {availForms.filter(([k])=>k!=="harf").map(([key,val])=>(
+              {availForms
+                .filter(([k])=>k!=="harf")
+                .sort((a,b)=>{
+                  const order=["singular","plural","plural2","masculine","feminine","past","present","imperative","masdar","activePart","passivePart","synonym","synonymPlural","antonym","antonymPlural"];
+                  return (order.indexOf(a[0])===-1?99:order.indexOf(a[0]))-(order.indexOf(b[0])===-1?99:order.indexOf(b[0]));
+                })
+                .map(([key,val])=>(
                 <button key={key} className={`chip ${selForm===key?"chip-on":""}`} onClick={()=>{setSelForm(key);setGen(null);}}>
                   {FORM_LABELS[key]}<span className="ar" style={{fontSize:13,color:selForm===key?"rgba(255,255,255,.75)":"var(--text3)"}}>· {val}</span>
                 </button>
@@ -1783,18 +1801,31 @@ export default function App() {
     setCardStates(p=>{const n={...p};delete n[id];return n;});
     go("home");
   };
-  const startStudy=mode=>{
+  const savedIdx=useRef({});
+  const startStudy=(mode,restart=false)=>{
     const dc=cardStates[activeDeck.id]||[];
     const toStudy=mode==="weak"?dc.filter(c=>c.status==="weak"):[...dc];
     if(!toStudy.length) return;
-    sessionRes.current={known:0,weak:0};setSessionCards(toStudy);setCurrentIdx(0);go("study");
+    sessionRes.current={known:0,weak:0};setSessionCards(toStudy);
+    const key=activeDeck.id+"_"+mode;
+    const resumeIdx=(!restart&&savedIdx.current[key])||0;
+    setCurrentIdx(Math.min(resumeIdx,toStudy.length-1));
+    go("study");
   };
   const handleSwipe=(dir,cardId)=>{
     const ns=dir==="right"?"known":"weak";
     sessionRes.current[ns==="known"?"known":"weak"]++;
     setCardStates(p=>({...p,[activeDeck.id]:p[activeDeck.id].map(c=>c.id===cardId?{...c,status:ns}:c)}));
-    if(currentIdx<sessionCards.length-1) setCurrentIdx(i=>i+1);
-    else go("complete");
+    if(currentIdx<sessionCards.length-1){
+      const nextIdx=currentIdx+1;
+      setCurrentIdx(nextIdx);
+      // Save progress for resume
+      if(activeDeck) savedIdx.current[activeDeck.id+"_all"]=nextIdx;
+    } else {
+      // Reset saved progress on completion
+      if(activeDeck){savedIdx.current[activeDeck.id+"_all"]=0;savedIdx.current[activeDeck.id+"_weak"]=0;}
+      go("complete");
+    }
   };
   const saveCards=newCards=>{
     setCardStates(p=>({...p,[activeDeck.id]:[...(p[activeDeck.id]||[]),...newCards]}));
@@ -1814,9 +1845,9 @@ export default function App() {
     settings:<SettingsScreen settings={settings} setSettings={setSettings} onBack={()=>go("home")} usage={usage} user={user} onSignOut={handleSignOut}/>,
     createDeck:<CreateDeckScreen onBack={()=>go("home")} onCreate={createDeck}/>,
     addCards:activeDeck&&<AddCardsScreen deck={activeDeck} onBack={()=>go("deck")} onSave={saveCards} trackUsage={trackUsage}/>,
-    deck:activeDeck&&<DeckScreen deck={activeDeck} cards={cardStates[activeDeck.id]||[]} onStartStudy={startStudy} onBack={()=>go("home")} onAddCards={()=>go("addCards")} onEditCard={c=>{setActiveCard(c);go("editCard");}} onDeleteCard={deleteCard} onRenameDeck={renameDeck} onDeleteDeck={deleteDeck}/>,
+    deck:activeDeck&&<DeckScreen deck={activeDeck} cards={cardStates[activeDeck.id]||[]} onStartStudy={startStudy} onBack={()=>go("home")} onAddCards={()=>go("addCards")} onEditCard={c=>{setActiveCard(c);go("editCard");}} onDeleteCard={deleteCard} onRenameDeck={renameDeck} onDeleteDeck={deleteDeck} savedIdx={savedIdx.current[activeDeck.id+"_all"]||0}/>,
     editCard:activeCard&&activeDeck&&<EditCardScreen card={activeCard} onBack={()=>go("deck")} onSave={saveEditedCard} trackUsage={trackUsage}/>,
-    study:activeDeck&&sessionCards.length>0&&<StudyScreen cards={sessionCards} currentIndex={currentIdx} onSwipe={handleSwipe} onExit={()=>go("deck")} trackUsage={trackUsage} decks={decks} cardStates={cardStates} onAddToFlashcard={addToFlashcard}/>,
+    study:activeDeck&&sessionCards.length>0&&<StudyScreen cards={sessionCards} currentIndex={currentIdx} onSwipe={handleSwipe} onBack={()=>{if(currentIdx>0)setCurrentIdx(i=>i-1);}} onExit={()=>go("deck")} trackUsage={trackUsage} decks={decks} cardStates={cardStates} onAddToFlashcard={addToFlashcard}/>,
     complete:<CompleteScreen known={sessionRes.current.known} weak={sessionRes.current.weak} onBack={()=>go("deck")}/>,
     reading:<ReadingScreen {...commonProps} onBack={()=>go("home")} onAddToFlashcard={addToFlashcard}/>,
     listening:<ListeningScreen {...commonProps} onBack={()=>go("home")} onAddToFlashcard={addToFlashcard}/>,
