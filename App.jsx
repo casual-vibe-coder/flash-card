@@ -1106,14 +1106,21 @@ Return ONLY valid JSON: {"sentence":"...","translation":"...","imagePrompt":"...
     }
   };
 
+  // Stop audio on unmount or screen change
+  useEffect(()=>()=>{if(window.speechSynthesis){window.speechSynthesis.cancel();}setPlaying(false);},[]);
+
   const playAudio=()=>{
     if(!gen?.sentence||!window.speechSynthesis) return;
-    if(playing){window.speechSynthesis.cancel();setPlaying(false);return;}
-    const utt=new SpeechSynthesisUtterance(gen.sentence);
-    utt.lang="ar-SA";utt.rate=0.82;
-    const v=window.speechSynthesis.getVoices().find(v=>v.lang.startsWith("ar"));if(v) utt.voice=v;
-    utt.onstart=()=>setPlaying(true);utt.onend=()=>setPlaying(false);utt.onerror=()=>setPlaying(false);
-    window.speechSynthesis.speak(utt);
+    window.speechSynthesis.cancel();
+    if(playing){setPlaying(false);return;}
+    setTimeout(()=>{
+      const utt=new SpeechSynthesisUtterance(gen.sentence);
+      utt.lang="ar-SA";utt.rate=0.82;
+      const v=window.speechSynthesis.getVoices().find(v=>v.lang.startsWith("ar"));if(v) utt.voice=v;
+      utt.onend=()=>setPlaying(false);utt.onerror=()=>setPlaying(false);
+      setPlaying(true);
+      window.speechSynthesis.speak(utt);
+    },50);
   };
 
   return (
@@ -1692,6 +1699,7 @@ export default function App() {
             if(d.decks) setDecks(d.decks);
             if(d.cardStates) setCardStates(d.cardStates);
             if(d.settings) setSettings(s=>({...s,...d.settings}));
+            if(d.usage) setUsage(d.usage);
           }
         } catch(e){ console.error("Firestore load error:",e); }
         setDataLoaded(true);
@@ -1708,10 +1716,10 @@ export default function App() {
   useEffect(()=>{
     if(!user||!dataLoaded) return;
     const t=setTimeout(()=>{
-      setDoc(doc(db,"users",user.uid),{decks,cardStates,settings},{merge:true}).catch(e=>console.error("Save error:",e));
+      setDoc(doc(db,"users",user.uid),{decks,cardStates,settings,usage},{merge:true}).catch(e=>console.error("Save error:",e));
     },1500);
     return ()=>clearTimeout(t);
-  },[decks,cardStates,settings,user,dataLoaded]);
+  },[decks,cardStates,settings,usage,user,dataLoaded]);
 
   const handleSignIn=async()=>{
     setAuthLoading(true);setAuthError("");
