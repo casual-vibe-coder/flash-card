@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { auth, googleProvider, db } from "./firebase.js";
-import { signInWithPopup, signInWithRedirect, getRedirectResult, signOut, onAuthStateChanged } from "firebase/auth";
+import { signInWithPopup, signOut, onAuthStateChanged } from "firebase/auth";
 import { doc, getDoc, setDoc } from "firebase/firestore";
 import {
   Settings, ArrowLeft, ChevronRight, X, Volume2, RotateCcw, BookOpen,
@@ -1688,22 +1688,26 @@ export default function App() {
   // Firebase auth state listener
   useEffect(()=>{
     let mounted=true;
-    getRedirectResult(auth).catch(()=>{});
-    const unsub=onAuthStateChanged(auth,async u=>{
+    const unsub=onAuthStateChanged(auth,u=>{
       if(!mounted) return;
       if(u){
         setUser(u);
-        try {
-          const snap=await getDoc(doc(db,"users",u.uid));
-          if(mounted&&snap.exists()){
+        getDoc(doc(db,"users",u.uid)).then(snap=>{
+          if(!mounted) return;
+          if(snap.exists()){
             const d=snap.data();
-            if(d.decks?.length) setDecks(d.decks);
-            if(d.cardStates&&Object.keys(d.cardStates).length) setCardStates(d.cardStates);
-            if(d.settings) setSettings(s=>({...s,...d.settings}));
-            if(d.usage?.byTag) setUsage(d.usage);
+            try {
+              if(d.decks?.length) setDecks(d.decks);
+              if(d.cardStates&&Object.keys(d.cardStates).length) setCardStates(d.cardStates);
+              if(d.settings) setSettings(s=>({...s,...d.settings}));
+              if(d.usage?.byTag) setUsage(d.usage);
+            } catch(e){ console.error("Data parse error:",e); }
           }
-        } catch(e){ console.error("Firestore load error:",e); }
-        if(mounted) setDataLoaded(true);
+          setDataLoaded(true);
+        }).catch(e=>{
+          console.error("Firestore load error:",e);
+          if(mounted) setDataLoaded(true);
+        });
       } else {
         setUser(null);
         setDataLoaded(false);
@@ -1726,12 +1730,7 @@ export default function App() {
     try {
       await signInWithPopup(auth,googleProvider);
     } catch(e){
-      // If popup blocked or fails, try redirect
-      if(e.code==="auth/popup-blocked"||e.code==="auth/popup-closed-by-user"||e.code==="auth/cancelled-popup-request"){
-        try { await signInWithRedirect(auth,googleProvider); return; } catch(e2){ setAuthError(e2.message); }
-      } else {
-        setAuthError(e.message||"Sign-in failed. Please try again.");
-      }
+      setAuthError(e.message||"Sign-in failed. Please try again.");
     } finally { setAuthLoading(false); }
   };
 
