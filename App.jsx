@@ -217,7 +217,19 @@ function extractJSON(raw) {
   if (obj) { try { return JSON.parse(obj[0]); } catch {} }
   const arr = clean.match(/\[[\s\S]*\]/);
   if (arr) { try { return JSON.parse(arr[0]); } catch {} }
-  throw new Error("JSON extraction failed");
+  // Try to fix truncated JSON (missing closing brackets)
+  let fixed = clean;
+  for(let i=0;i<5;i++){
+    const opens=((fixed.match(/\[/g)||[]).length)-((fixed.match(/\]/g)||[]).length);
+    const braces=((fixed.match(/\{/g)||[]).length)-((fixed.match(/\}/g)||[]).length);
+    if(opens<=0&&braces<=0) break;
+    // Remove trailing incomplete object/entry
+    fixed=fixed.replace(/,?\s*\{[^}]*$/,"");
+    if(braces>0) fixed+="}";
+    if(opens>0) fixed+="]";
+    try { return JSON.parse(fixed); } catch {}
+  }
+  throw new Error("JSON extraction failed — the AI response may have been cut off. Try fewer words per batch.");
 }
 
 // DALL-E image generation — goes through /api/image proxy
@@ -690,7 +702,7 @@ function AddCardsScreen({deck,onBack,onSave,trackUsage}) {
     setErr("");setGenerating(true);setPreview(null);
     const isEn=inputLang==="english";
     const formsDesc=selForms.map(f=>`"${f}" (${FORM_LABELS[f]})`).join(", ");
-    const BATCH=8;
+    const BATCH=5;
     const chunks=[];
     for(let i=0;i<wordList.length;i+=BATCH) chunks.push(wordList.slice(i,i+BATCH));
     try {
@@ -713,7 +725,7 @@ Return ONLY valid JSON array, no markdown:
 Rules: exactly ${chunk.length} objects in same order.
 - Use "" for any form that does not naturally exist or is extremely rare/unnatural (e.g. no synonym, no antonym, no plural for an uncountable noun). Do NOT invent or force rare forms — only include commonly used ones.
 CRITICAL: Every Arabic word MUST have full tashkeel (فَتْحَة ضَمَّة كَسْرَة سُكُون شَدَّة تَنْوِين) — no bare letters.`,
-          Math.min(4000, chunk.length*350),"flashcard",trackUsage
+          Math.min(4000, chunk.length*500),"flashcard",trackUsage
         );
         const parsed=extractJSON(raw);
         allCards.push(...(Array.isArray(parsed)?parsed:[parsed]));
