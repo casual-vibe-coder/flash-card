@@ -181,6 +181,7 @@ textarea.input{resize:vertical;min-height:110px;line-height:1.7}
 // Module-level model ref — updated by root App when settings change.
 // Avoids threading model as a prop through every screen component.
 let _activeModel = "openai/gpt-4o-mini";
+let _orKey = ""; // OpenRouter key — synced from settings
 let _oaKey = ""; // OpenAI key for DALL-E — synced from settings
 
 async function callClaude(prompt, maxTokens=1500, tag="other", trackFn=null) {
@@ -190,7 +191,8 @@ async function callClaude(prompt, maxTokens=1500, tag="other", trackFn=null) {
     body:JSON.stringify({
       model: _activeModel,
       max_tokens: maxTokens,
-      messages:[{role:"user",content:prompt}]
+      messages:[{role:"user",content:prompt}],
+      ..._orKey ? {apiKey:_orKey} : {},
     }),
   });
   const d = await res.json();
@@ -597,34 +599,42 @@ function SettingsScreen({settings,setSettings,onBack,usage,user,onSignOut}) {
           </div>
         </div>
 
-        {/* API key info */}
+        {/* API keys */}
         <div style={{background:"var(--info-bg)",border:"1.5px solid var(--info-border)",borderRadius:"var(--r)",padding:"14px 16px"}}>
           <div style={{display:"flex",alignItems:"center",gap:7,marginBottom:10}}><Info size={14} color="var(--info)"/><div className="sec" style={{margin:0,color:"var(--info)"}}>API Keys</div></div>
-          <div style={{fontSize:13,color:"var(--text2)",lineHeight:1.7,marginBottom:10}}>
-            The OpenRouter key is set as a Vercel environment variable. Enter your OpenAI key below to enable DALL-E image generation.
+          <div style={{fontSize:13,color:"var(--text2)",lineHeight:1.7,marginBottom:12}}>
+            Your API keys are stored securely in your account. Each user needs their own keys.
           </div>
-          <div style={{display:"flex",flexDirection:"column",gap:8}}>
-            <div style={{display:"flex",gap:9,alignItems:"flex-start"}}>
-              <span style={{fontSize:14,flexShrink:0}}>🔑</span>
-              <div style={{flex:1}}>
-                <div style={{fontSize:12.5,fontWeight:700,color:"var(--text)",fontFamily:"monospace",letterSpacing:".02em",marginBottom:3}}>OPENROUTER_API_KEY</div>
-                <div style={{fontSize:11.5,color:"var(--text3)"}}>Vercel env var — openrouter.ai/keys</div>
+          <div style={{display:"flex",flexDirection:"column",gap:12}}>
+            <div>
+              <div style={{display:"flex",alignItems:"center",gap:7,marginBottom:4}}>
+                <span style={{fontSize:14}}>🔑</span>
+                <div style={{fontSize:12.5,fontWeight:700,color:"var(--text)",fontFamily:"monospace"}}>OpenRouter API Key</div>
               </div>
+              <input
+                className="input"
+                type="password"
+                placeholder="sk-or-… (from openrouter.ai/keys)"
+                value={local.orKey||""}
+                onChange={e=>set("orKey",e.target.value)}
+                style={{fontSize:12,padding:"7px 10px",fontFamily:"monospace"}}
+              />
+              <div style={{fontSize:11,color:"var(--text3)",marginTop:3}}>Required for all AI text generation (flashcards, sentences, reading, listening).</div>
             </div>
-            <div style={{display:"flex",gap:9,alignItems:"flex-start"}}>
-              <span style={{fontSize:14,flexShrink:0}}>🖼</span>
-              <div style={{flex:1}}>
-                <div style={{fontSize:12.5,fontWeight:700,color:"var(--text)",fontFamily:"monospace",letterSpacing:".02em",marginBottom:4}}>OPENAI_API_KEY · DALL-E Images</div>
-                <input
-                  className="input"
-                  type="password"
-                  placeholder="sk-… (from platform.openai.com/api-keys)"
-                  value={local.oaKey||""}
-                  onChange={e=>set("oaKey",e.target.value)}
-                  style={{fontSize:12,padding:"7px 10px",fontFamily:"monospace"}}
-                />
-                <div style={{fontSize:11,color:"var(--text3)",marginTop:3}}>Stored locally in your browser only. Required for DALL-E image generation.</div>
+            <div>
+              <div style={{display:"flex",alignItems:"center",gap:7,marginBottom:4}}>
+                <span style={{fontSize:14}}>🖼</span>
+                <div style={{fontSize:12.5,fontWeight:700,color:"var(--text)",fontFamily:"monospace"}}>OpenAI API Key</div>
               </div>
+              <input
+                className="input"
+                type="password"
+                placeholder="sk-… (from platform.openai.com/api-keys)"
+                value={local.oaKey||""}
+                onChange={e=>set("oaKey",e.target.value)}
+                style={{fontSize:12,padding:"7px 10px",fontFamily:"monospace"}}
+              />
+              <div style={{fontSize:11,color:"var(--text3)",marginTop:3}}>Optional — enables DALL-E image generation on flashcards.</div>
             </div>
           </div>
         </div>
@@ -1721,7 +1731,7 @@ export default function App() {
   };
 
   // Keep module-level refs in sync — picked up automatically by callClaude / generateDalleImage
-  useEffect(()=>{ _activeModel = settings.model; _oaKey = settings.oaKey||""; },[settings.model,settings.oaKey]);
+  useEffect(()=>{ _activeModel = settings.model; _orKey = settings.orKey||""; _oaKey = settings.oaKey||""; },[settings.model,settings.orKey,settings.oaKey]);
   const [sessionCards,setSessionCards]=useState([]);
   const [currentIdx,setCurrentIdx]=useState(0);
   const [usage,setUsage]=useState(initUsage);
