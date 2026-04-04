@@ -707,7 +707,8 @@ Notes on special fields:
 Return ONLY valid JSON array, no markdown:
 [{"english":"...","arabicBase":"Arabic with diacritics","wordType":"${wordType}","forms":{${selForms.map(f=>`"${f}":"Arabic with diacritics or empty string"`).join(",")}}}]
 
-Rules: exactly ${chunk.length} objects in same order; "" for inapplicable forms.
+Rules: exactly ${chunk.length} objects in same order.
+- Use "" for any form that does not naturally exist or is extremely rare/unnatural (e.g. no synonym, no antonym, no plural for an uncountable noun). Do NOT invent or force rare forms — only include commonly used ones.
 CRITICAL: Every Arabic word MUST have full tashkeel (فَتْحَة ضَمَّة كَسْرَة سُكُون شَدَّة تَنْوِين) — no bare letters.`,
           Math.min(4000, chunk.length*350),"flashcard",trackUsage
         );
