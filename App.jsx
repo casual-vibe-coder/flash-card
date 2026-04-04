@@ -1107,7 +1107,7 @@ Return ONLY valid JSON: {"sentence":"...","translation":"...","imagePrompt":"...
   };
 
   // Stop audio on unmount or screen change
-  useEffect(()=>()=>{if(window.speechSynthesis){window.speechSynthesis.cancel();}setPlaying(false);},[]);
+  useEffect(()=>()=>{if(window.speechSynthesis) window.speechSynthesis.cancel();},[]);
 
   const playAudio=()=>{
     if(!gen?.sentence||!window.speechSynthesis) return;
@@ -1687,29 +1687,29 @@ export default function App() {
 
   // Firebase auth state listener
   useEffect(()=>{
-    // Check for redirect result first (mobile/popup-blocked fallback)
+    let mounted=true;
     getRedirectResult(auth).catch(()=>{});
     const unsub=onAuthStateChanged(auth,async u=>{
-      setUser(u);
+      if(!mounted) return;
       if(u){
+        setUser(u);
         try {
           const snap=await getDoc(doc(db,"users",u.uid));
-          if(snap.exists()){
+          if(mounted&&snap.exists()){
             const d=snap.data();
-            if(d.decks) setDecks(d.decks);
-            if(d.cardStates) setCardStates(d.cardStates);
+            if(d.decks?.length) setDecks(d.decks);
+            if(d.cardStates&&Object.keys(d.cardStates).length) setCardStates(d.cardStates);
             if(d.settings) setSettings(s=>({...s,...d.settings}));
-            if(d.usage) setUsage(d.usage);
+            if(d.usage?.byTag) setUsage(d.usage);
           }
         } catch(e){ console.error("Firestore load error:",e); }
-        setDataLoaded(true);
+        if(mounted) setDataLoaded(true);
       } else {
+        setUser(null);
         setDataLoaded(false);
-        setDecks(SEED_DECKS);
-        setCardStates(SEED_CARDS);
       }
     });
-    return unsub;
+    return ()=>{mounted=false;unsub();};
   },[]);
 
   // Auto-save to Firestore whenever data changes
