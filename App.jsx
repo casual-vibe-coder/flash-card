@@ -689,6 +689,7 @@ function AddCardsScreen({deck,onBack,onSave,trackUsage}) {
   const [selForms,setSelForms]=useState(["singular","plural","harf"]);
   const [words,setWords]=useState("");
   const [generating,setGenerating]=useState(false);
+  const [genProgress,setGenProgress]=useState("");
   const [preview,setPreview]=useState(null);
   const [err,setErr]=useState("");
   const avail=FORMS_BY_TYPE[wordType]||FORMS_BY_TYPE.other;
@@ -699,15 +700,18 @@ function AddCardsScreen({deck,onBack,onSave,trackUsage}) {
   const generate=async()=>{
     if(!wordList.length){setErr("Enter at least one word.");return;}
     if(!selForms.length){setErr("Select at least one form.");return;}
-    setErr("");setGenerating(true);setPreview(null);
+    setErr("");setGenerating(true);setPreview(null);setGenProgress("");
     const isEn=inputLang==="english";
     const formsDesc=selForms.map(f=>`"${f}" (${FORM_LABELS[f]})`).join(", ");
-    const BATCH=5;
+    const BATCH=3;
     const chunks=[];
     for(let i=0;i<wordList.length;i+=BATCH) chunks.push(wordList.slice(i,i+BATCH));
-    try {
-      const allCards=[];
-      for(const chunk of chunks){
+    const allCards=[];
+    let failed=0;
+    for(let ci=0;ci<chunks.length;ci++){
+      const chunk=chunks[ci];
+      setGenProgress(`Batch ${ci+1}/${chunks.length} (${allCards.length} cards done)…`);
+      try {
         const raw=await callClaude(
           `Expert Arabic linguist creating flashcards.
 Input: ${isEn?"English":"Arabic"} | Type: ${wordType} | Words: ${chunk.join(", ")}
@@ -725,14 +729,19 @@ Return ONLY valid JSON array, no markdown:
 Rules: exactly ${chunk.length} objects in same order.
 - Use "" for any form that does not naturally exist or is extremely rare/unnatural (e.g. no synonym, no antonym, no plural for an uncountable noun). Do NOT invent or force rare forms — only include commonly used ones.
 CRITICAL: Every Arabic word MUST have full tashkeel (فَتْحَة ضَمَّة كَسْرَة سُكُون شَدَّة تَنْوِين) — no bare letters.`,
-          Math.min(4000, chunk.length*500),"flashcard",trackUsage
+          Math.min(4000, chunk.length*600),"flashcard",trackUsage
         );
         const parsed=extractJSON(raw);
         allCards.push(...(Array.isArray(parsed)?parsed:[parsed]));
-      }
+      } catch(e){ console.error(`Batch ${ci+1} failed:`,e); failed++; }
+    }
+    if(allCards.length>0){
       setPreview(allCards);
-    } catch(e) { setErr("Generation failed: "+(e.message||"Unknown error")+". Try fewer words or check your OpenRouter API key in Settings."); }
-    finally { setGenerating(false); }
+      if(failed>0) setErr(`${failed} batch${failed>1?"es":""} failed — ${allCards.length} cards generated successfully. You can save these and retry the rest.`);
+    } else {
+      setErr("Generation failed — check your OpenRouter API key in Settings and try again.");
+    }
+    setGenerating(false);setGenProgress("");
   };
 
   // Delete a card from preview before saving
@@ -790,7 +799,7 @@ CRITICAL: Every Arabic word MUST have full tashkeel (فَتْحَة ضَمَّة
         </div>
         {err&&<div style={{background:"var(--weak-bg)",border:"1px solid var(--weak-border)",borderRadius:"var(--rxs)",padding:"10px 13px",fontSize:13,color:"var(--weak)"}}>{err}</div>}
         <button className="btn btn-primary" onClick={generate} disabled={generating||!wordList.length||!selForms.length} style={{width:"100%",padding:14,borderRadius:"var(--r)",fontSize:14}}>
-          {generating?<><RefreshCw size={14} className="spin"/>Generating {wordList.length} card{wordList.length!==1?"s":""}…</>:<><Sparkles size={14}/>Generate {wordList.length||""} Card{wordList.length!==1?"s":""}</>}
+          {generating?<><RefreshCw size={14} className="spin"/>{genProgress||`Generating ${wordList.length} cards…`}</>:<><Sparkles size={14}/>Generate {wordList.length||""} Card{wordList.length!==1?"s":""}</>}
         </button>
 
         {/* PREVIEW with per-card delete */}
