@@ -702,7 +702,8 @@ Notes on special fields:
 Return ONLY valid JSON array, no markdown:
 [{"english":"...","arabicBase":"Arabic with diacritics","wordType":"${wordType}","forms":{${selForms.map(f=>`"${f}":"Arabic with diacritics or empty string"`).join(",")}}}]
 
-Rules: full tashkeel on all Arabic; exactly ${wordList.length} objects in same order; "" for inapplicable forms.`,
+Rules: exactly ${wordList.length} objects in same order; "" for inapplicable forms.
+CRITICAL: Every Arabic word MUST have full tashkeel (فَتْحَة ضَمَّة كَسْرَة سُكُون شَدَّة تَنْوِين) — no bare letters.`,
         2500,"flashcard",trackUsage
       );
       setPreview(JSON.parse(raw.replace(/```json|```/g,"").trim()));
@@ -980,7 +981,7 @@ Generate all relevant Arabic forms. Return ONLY valid JSON object (just the form
 {${forms.map(f=>`"${f}":"Arabic with diacritics or empty string"`).join(",")}}
 
 For "harf": the single most common Arabic preposition used with this ${local.wordType}.
-Include full tashkeel on all Arabic.`,
+CRITICAL: Every Arabic word MUST have full tashkeel (فَتْحَة ضَمَّة كَسْرَة سُكُون شَدَّة تَنْوِين) — no bare letters.`,
         800,"regen",trackUsage
       );
       const clean=raw.replace(/```json|```/g,"").trim();
@@ -1086,7 +1087,8 @@ function StudyScreen({cards,currentIndex,onSwipe,onExit,trackUsage,decks,cardSta
         `Arabic teacher creating flashcard learning aid.
 Word: "${card.english}" · Arabic form "${arabicForm}" (${formLabel})
 Generate: 1) Short natural Arabic sentence (6-10w) using EXACTLY: ${arabicForm}  2) English translation  3) Vivid DALL-E scene (2-3 sentences, real everyday Arabic life, no Arabic text in scene)${avoidClause}
-Full tashkeel (diacritics) on every Arabic word in the sentence.
+
+CRITICAL: Every single Arabic word MUST have full tashkeel (فَتْحَة ضَمَّة كَسْرَة سُكُون شَدَّة تَنْوِين) — no bare letters. Example: ذَهَبَ الطَّالِبُ إِلَى الْمَدْرَسَةِ not ذهب الطالب إلى المدرسة.
 Return ONLY valid JSON: {"sentence":"...","translation":"...","imagePrompt":"..."}`,
         800,"sentence",trackUsage
       );
@@ -1381,8 +1383,8 @@ Arabic vocabulary (MUST use every word): ${selectedCards.map(c=>c.arabicBase).jo
 Write a ${settings.difficulty}-level Arabic reading passage of exactly ~${lenMap[settings.length]||"110-140"} words.
 Rules:
 - Include every Arabic word from the list above at least once — this is mandatory
-- Full tashkeel (diacritics) on every Arabic word
 - Grammatically correct and coherent
+- CRITICAL: Every single Arabic word MUST have full tashkeel (فَتْحَة ضَمَّة كَسْرَة سُكُون شَدَّة تَنْوِين) — no bare letters. Example: ذَهَبَ الطَّالِبُ إِلَى الْمَدْرَسَةِ not ذهب الطالب إلى المدرسة.
 
 Return ONLY valid JSON: {"arabic":"...","translation":"...","vocabUsed":["base form of each vocab word that appears"]}`,
         1500,"reading",trackUsage
@@ -1514,7 +1516,7 @@ Write a ${settings.difficulty}-level spoken Arabic passage of exactly ~${lenMap[
 Rules:
 - Include every Arabic word from the list above at least once — this is mandatory
 - Natural conversational tone suitable for listening
-- Full tashkeel (diacritics) on every Arabic word
+- CRITICAL: Every single Arabic word MUST have full tashkeel (فَتْحَة ضَمَّة كَسْرَة سُكُون شَدَّة تَنْوِين) — no bare letters. Example: ذَهَبَ الطَّالِبُ إِلَى الْمَدْرَسَةِ not ذهب الطالب إلى المدرسة.
 
 Return ONLY valid JSON: {"arabic":"...","translation":"...","vocabUsed":["base form of each vocab word that appears"]}`,
         1200,"listening",trackUsage
