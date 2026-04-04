@@ -196,8 +196,10 @@ async function callClaude(prompt, maxTokens=1500, tag="other", trackFn=null) {
     }),
   });
   const d = await res.json();
+  if(d.error) throw new Error(d.error);
   // api/claude.js normalises OpenRouter response → {content:[{type:"text",text}], usage:{input_tokens, output_tokens}}
   const outputText = d.content?.find(b=>b.type==="text")?.text || "";
+  if(!outputText) throw new Error("Empty response from AI — check your API key in Settings.");
   if (trackFn) {
     trackFn(tag, prompt.length, outputText.length,
       d.usage?.input_tokens  || Math.ceil(prompt.length/4),
@@ -716,7 +718,7 @@ CRITICAL: Every Arabic word MUST have full tashkeel (فَتْحَة ضَمَّة
         allCards.push(...(Array.isArray(parsed)?parsed:[parsed]));
       }
       setPreview(allCards);
-    } catch { setErr("Generation failed — try again."); }
+    } catch(e) { setErr("Generation failed: "+(e.message||"Unknown error")+". Try fewer words or check your OpenRouter API key in Settings."); }
     finally { setGenerating(false); }
   };
 
