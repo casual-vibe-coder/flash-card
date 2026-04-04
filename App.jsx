@@ -1684,6 +1684,10 @@ export default function App() {
   const [dataLoaded,setDataLoaded]=useState(false);
   const [authLoading,setAuthLoading]=useState(false);
   const [authError,setAuthError]=useState("");
+  const [sessionCards,setSessionCards]=useState([]);
+  const [currentIdx,setCurrentIdx]=useState(0);
+  const [usage,setUsage]=useState(initUsage);
+  const sessionRes=useRef({known:0,weak:0});
 
   // Firebase auth state listener
   useEffect(()=>{
@@ -1741,10 +1745,6 @@ export default function App() {
 
   // Keep module-level refs in sync — picked up automatically by callClaude / generateDalleImage
   useEffect(()=>{ _activeModel = settings.model; _orKey = settings.orKey||""; _oaKey = settings.oaKey||""; },[settings.model,settings.orKey,settings.oaKey]);
-  const [sessionCards,setSessionCards]=useState([]);
-  const [currentIdx,setCurrentIdx]=useState(0);
-  const [usage,setUsage]=useState(initUsage);
-  const sessionRes=useRef({known:0,weak:0});
   const go=s=>setScreen(s);
 
   // Usage tracker function passed to all Claude calls
