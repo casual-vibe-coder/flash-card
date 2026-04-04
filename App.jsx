@@ -688,10 +688,15 @@ function AddCardsScreen({deck,onBack,onSave,trackUsage}) {
     setErr("");setGenerating(true);setPreview(null);
     const isEn=inputLang==="english";
     const formsDesc=selForms.map(f=>`"${f}" (${FORM_LABELS[f]})`).join(", ");
+    const BATCH=8;
+    const chunks=[];
+    for(let i=0;i<wordList.length;i+=BATCH) chunks.push(wordList.slice(i,i+BATCH));
     try {
-      const raw=await callClaude(
-        `Expert Arabic linguist creating flashcards.
-Input: ${isEn?"English":"Arabic"} | Type: ${wordType} | Words: ${wordList.join(", ")}
+      const allCards=[];
+      for(const chunk of chunks){
+        const raw=await callClaude(
+          `Expert Arabic linguist creating flashcards.
+Input: ${isEn?"English":"Arabic"} | Type: ${wordType} | Words: ${chunk.join(", ")}
 Required forms: ${formsDesc}
 
 Notes on special fields:
@@ -702,11 +707,14 @@ Notes on special fields:
 Return ONLY valid JSON array, no markdown:
 [{"english":"...","arabicBase":"Arabic with diacritics","wordType":"${wordType}","forms":{${selForms.map(f=>`"${f}":"Arabic with diacritics or empty string"`).join(",")}}}]
 
-Rules: exactly ${wordList.length} objects in same order; "" for inapplicable forms.
+Rules: exactly ${chunk.length} objects in same order; "" for inapplicable forms.
 CRITICAL: Every Arabic word MUST have full tashkeel (فَتْحَة ضَمَّة كَسْرَة سُكُون شَدَّة تَنْوِين) — no bare letters.`,
-        2500,"flashcard",trackUsage
-      );
-      setPreview(JSON.parse(raw.replace(/```json|```/g,"").trim()));
+          Math.min(4000, chunk.length*350),"flashcard",trackUsage
+        );
+        const parsed=extractJSON(raw);
+        allCards.push(...(Array.isArray(parsed)?parsed:[parsed]));
+      }
+      setPreview(allCards);
     } catch { setErr("Generation failed — try again."); }
     finally { setGenerating(false); }
   };
