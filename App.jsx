@@ -1313,8 +1313,10 @@ function MultiDeckCardSelector({decks,cardStates,selDeckIds,setSelDeckIds,selCar
   };
 
   const toggleCard=(id)=>setSelCardIds(p=>{const n=new Set(p);n.has(id)?n.delete(id):n.add(id);onReset&&onReset();return n;});
-  const selectAllCards=()=>setSelCardIds(new Set(pooledCards.map(c=>c.id)));
-  const clearAllCards=()=>setSelCardIds(new Set());
+  const selectAllCards=()=>{setSelCardIds(new Set(pooledCards.map(c=>c.id)));onReset&&onReset();};
+  const clearAllCards=()=>{setSelCardIds(new Set());onReset&&onReset();};
+  const selectWeakOnly=()=>{setSelCardIds(new Set(pooledCards.filter(c=>c.status==="weak").map(c=>c.id)));onReset&&onReset();};
+  const weakCount=pooledCards.filter(c=>c.status==="weak").length;
 
   return (
     <div style={{display:"flex",flexDirection:"column",gap:10}}>
@@ -1364,8 +1366,9 @@ function MultiDeckCardSelector({decks,cardStates,selDeckIds,setSelDeckIds,selCar
           </div>
           {showCardPicker&&(
             <div style={{padding:"10px 14px"}}>
-              <div style={{display:"flex",gap:8,marginBottom:10}}>
+              <div style={{display:"flex",gap:6,marginBottom:10,flexWrap:"wrap"}}>
                 <button className="btn btn-sm" onClick={selectAllCards} style={{background:"var(--know-bg)",color:"var(--know)",border:"1px solid var(--know-border)"}}>Select All</button>
+                {weakCount>0&&<button className="btn btn-sm" onClick={selectWeakOnly} style={{background:"var(--weak-bg)",color:"var(--weak)",border:"1px solid var(--weak-border)"}}>Weak Only ({weakCount})</button>}
                 <button className="btn btn-sm" onClick={clearAllCards} style={{background:"var(--surface2)",color:"var(--text2)"}}>Clear All</button>
               </div>
               <div style={{display:"flex",flexDirection:"column",gap:6,maxHeight:260,overflowY:"auto"}}>
@@ -1385,6 +1388,7 @@ function MultiDeckCardSelector({decks,cardStates,selDeckIds,setSelDeckIds,selCar
                               <span style={{fontSize:13.5,fontWeight:600,color:"var(--text)"}}>{c.english}</span>
                               <span className="ar" style={{fontSize:16,color:`var(${accentVar})`,marginRight:8}}> · {c.arabicBase}</span>
                             </div>
+                            {c.status&&c.status!=="new"&&<span className={`tag tag-${c.status}`} style={{fontSize:10}}>{c.status==="weak"?"Weak":"Known"}</span>}
                           </div>
                         );
                       })}
@@ -1430,21 +1434,32 @@ function ReadingScreen({decks,cardStates,onBack,onAddToFlashcard,trackUsage}) {
   const generate=async()=>{
     if(!selectedCards.length){alert("Select at least one card.");return;}
     setGenerating(true);setPassage(null);setShowTranslation(settings.showTranslation);
-    const lenMap={short:"60-80",medium:"110-140",long:"180-220"};
+    const baseLenMap={short:"60-80",medium:"110-140",long:"180-220"};
+    // Scale passage length with word count — more words need longer passages
+    const MAX_VOCAB=20;
+    let vocabCards=selectedCards;
+    if(vocabCards.length>MAX_VOCAB){
+      // Random subset for very large selections
+      vocabCards=[...vocabCards].sort(()=>Math.random()-0.5).slice(0,MAX_VOCAB);
+    }
+    const scaleFactor=Math.max(1,vocabCards.length/10);
+    const scaleLen=(range)=>{const[lo,hi]=range.split("-").map(Number);return `${Math.round(lo*scaleFactor)}-${Math.round(hi*scaleFactor)}`;};
+    const targetLen=scaleLen(baseLenMap[settings.length]||"110-140");
+    const maxTok=Math.min(4000,Math.max(1500,vocabCards.length*100));
     try {
       const raw=await callClaude(
         `Expert Arabic language teacher creating reading practice.
 Deck: ${deckNames}
-Arabic vocabulary (MUST use every word): ${selectedCards.map(c=>c.arabicBase).join("، ")}
+Arabic vocabulary (MUST use every word): ${vocabCards.map(c=>c.arabicBase).join("، ")}
 
-Write a ${settings.difficulty}-level Arabic reading passage of exactly ~${lenMap[settings.length]||"110-140"} words.
+Write a ${settings.difficulty}-level Arabic reading passage of exactly ~${targetLen} words.
 Rules:
 - Include every Arabic word from the list above at least once — this is mandatory
 - Grammatically correct and coherent
 - CRITICAL: Every single Arabic word MUST have full tashkeel (فَتْحَة ضَمَّة كَسْرَة سُكُون شَدَّة تَنْوِين) — no bare letters. Example: ذَهَبَ الطَّالِبُ إِلَى الْمَدْرَسَةِ not ذهب الطالب إلى المدرسة.
 
 Return ONLY valid JSON: {"arabic":"...","translation":"...","vocabUsed":["base form of each vocab word that appears"]}`,
-        1500,"reading",trackUsage
+        maxTok,"reading",trackUsage
       );
       setPassage(extractJSON(raw));
     } catch {
@@ -1562,21 +1577,30 @@ function ListeningScreen({decks,cardStates,onBack,onAddToFlashcard,trackUsage}) 
     if(!selectedCards.length){alert("Select at least one card.");return;}
     setGenerating(true);setContent(null);
     setShowArabic(settings.showArabicDefault);setShowEnglish(settings.showEnglishDefault);
-    const lenMap={short:"50-70",medium:"90-120",long:"160-200"};
+    const baseLenMap={short:"50-70",medium:"90-120",long:"160-200"};
+    const MAX_VOCAB=20;
+    let vocabCards=selectedCards;
+    if(vocabCards.length>MAX_VOCAB){
+      vocabCards=[...vocabCards].sort(()=>Math.random()-0.5).slice(0,MAX_VOCAB);
+    }
+    const scaleFactor=Math.max(1,vocabCards.length/10);
+    const scaleLen=(range)=>{const[lo,hi]=range.split("-").map(Number);return `${Math.round(lo*scaleFactor)}-${Math.round(hi*scaleFactor)}`;};
+    const targetLen=scaleLen(baseLenMap[settings.length]||"90-120");
+    const maxTok=Math.min(4000,Math.max(1200,vocabCards.length*100));
     try {
       const raw=await callClaude(
         `Arabic teacher creating listening practice.
 Deck: ${deckNames}
-Arabic vocabulary (MUST use every word): ${selectedCards.map(c=>c.arabicBase).join("، ")}
+Arabic vocabulary (MUST use every word): ${vocabCards.map(c=>c.arabicBase).join("، ")}
 
-Write a ${settings.difficulty}-level spoken Arabic passage of exactly ~${lenMap[settings.length]} words.
+Write a ${settings.difficulty}-level spoken Arabic passage of exactly ~${targetLen} words.
 Rules:
 - Include every Arabic word from the list above at least once — this is mandatory
 - Natural conversational tone suitable for listening
 - CRITICAL: Every single Arabic word MUST have full tashkeel (فَتْحَة ضَمَّة كَسْرَة سُكُون شَدَّة تَنْوِين) — no bare letters. Example: ذَهَبَ الطَّالِبُ إِلَى الْمَدْرَسَةِ not ذهب الطالب إلى المدرسة.
 
 Return ONLY valid JSON: {"arabic":"...","translation":"...","vocabUsed":["base form of each vocab word that appears"]}`,
-        1200,"listening",trackUsage
+        maxTok,"listening",trackUsage
       );
       setContent(extractJSON(raw));
     } catch {
