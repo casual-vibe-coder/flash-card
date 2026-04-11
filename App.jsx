@@ -227,6 +227,34 @@ function getLast7DaysData(log){
   return days;
 }
 
+// B2 benchmark: ~4000-5000 known words
+const B2_WORD_TARGET = 4500;
+
+/** Get module skill scores from master-session ratings only */
+function getModuleSkillScores(studyLog) {
+  const scores = { vocab: [], reading: [], listening: [], speaking: [] };
+  for (const e of (studyLog.entries || [])) {
+    if (!e.rating || !e.master) continue; // Only count master sessions
+    if (scores[e.module]) scores[e.module].push(e.rating);
+  }
+  const result = {};
+  for (const [mod, ratings] of Object.entries(scores)) {
+    if (!ratings.length) { result[mod] = null; continue; }
+    // Weighted average — recent ratings count more
+    const weighted = ratings.map((r, i) => ({ r, w: 1 + i * 0.3 }));
+    const sum = weighted.reduce((s, x) => s + x.r * x.w, 0);
+    const wSum = weighted.reduce((s, x) => s + x.w, 0);
+    result[mod] = Math.round(sum / wSum * 10) / 10;
+  }
+  return result;
+}
+
+/** Get vocab level as percentage toward B2 */
+function getVocabProgress(cardStates) {
+  const known = Object.values(cardStates).flat().filter(c => c.status === "known").length;
+  return { known, target: B2_WORD_TARGET, pct: Math.min(100, Math.round(known / B2_WORD_TARGET * 100)) };
+}
+
 /** Generate a performance interpretation from card data and study log */
 function getPerformanceInsights(cardStates,studyLog){
   const allCards=Object.values(cardStates).flat();
@@ -1919,7 +1947,7 @@ function MultiDeckCardSelector({decks,cardStates,selDeckIds,setSelDeckIds,selCar
 // ─────────────────────────────────────────────────────────────
 // READING — multi-deck + multi-card pool
 // ─────────────────────────────────────────────────────────────
-function ReadingScreen({decks,cardStates,onBack,onAddToFlashcard,trackUsage,onLogStudy}) {
+function ReadingScreen({decks,cardStates,onBack,onFinish,onAddToFlashcard,trackUsage,onLogStudy}) {
   const screenStart=useRef(Date.now());
   useEffect(()=>{screenStart.current=Date.now();return ()=>{
     const mins=Math.max(1,Math.round((Date.now()-screenStart.current)/60000));
@@ -2048,9 +2076,12 @@ Return ONLY valid JSON: {"arabic":"...","translation":"...","vocabUsed":["base f
                 <SkipBack size={14}/> Read Again
               </button>
               <button className="btn btn-read" onClick={generate} style={{flex:2,padding:"11px",borderRadius:"var(--rs)",fontSize:13}}>
-                <RefreshCw size={14}/> Generate New
+                <RefreshCw size={14}/> Next Passage
               </button>
             </div>
+            <button className="btn" onClick={onFinish} style={{width:"100%",padding:"11px",borderRadius:"var(--rs)",fontSize:13,fontWeight:600,background:"var(--know-bg)",color:"var(--know)",border:"1.5px solid var(--know-border)"}}>
+              <CheckCircle2 size={14}/> Finish Session
+            </button>
           </div>
         )}
       </div>
@@ -2062,7 +2093,7 @@ Return ONLY valid JSON: {"arabic":"...","translation":"...","vocabUsed":["base f
 // ─────────────────────────────────────────────────────────────
 // LISTENING — multi-deck + multi-card pool
 // ─────────────────────────────────────────────────────────────
-function ListeningScreen({decks,cardStates,onBack,onAddToFlashcard,trackUsage,onLogStudy}) {
+function ListeningScreen({decks,cardStates,onBack,onFinish,onAddToFlashcard,trackUsage,onLogStudy}) {
   const screenStart=useRef(Date.now());
   useEffect(()=>{screenStart.current=Date.now();return ()=>{
     const mins=Math.max(1,Math.round((Date.now()-screenStart.current)/60000));
@@ -2248,9 +2279,12 @@ Return ONLY valid JSON: {"arabic":"...","translation":"...","vocabUsed":["base f
                 <SkipBack size={14}/> Listen Again
               </button>
               <button className="btn btn-listen" onClick={generate} style={{flex:2,padding:"11px",borderRadius:"var(--rs)",fontSize:13}}>
-                <RefreshCw size={14}/> Generate New
+                <RefreshCw size={14}/> Next Passage
               </button>
             </div>
+            <button className="btn" onClick={onFinish} style={{width:"100%",padding:"11px",borderRadius:"var(--rs)",fontSize:13,fontWeight:600,background:"var(--know-bg)",color:"var(--know)",border:"1.5px solid var(--know-border)"}}>
+              <CheckCircle2 size={14}/> Finish Session
+            </button>
           </div>
         )}
       </div>
@@ -2372,7 +2406,7 @@ function Onboarding({onComplete}) {
 // ─────────────────────────────────────────────────────────────
 // CONVERSATION MODULE
 // ─────────────────────────────────────────────────────────────
-function ConversationScreen({decks,cardStates,onBack,trackUsage,onLogStudy,onAddToFlashcard}) {
+function ConversationScreen({decks,cardStates,onBack,onFinish,trackUsage,onLogStudy,onAddToFlashcard}) {
   const screenStart=useRef(Date.now());
   useEffect(()=>{screenStart.current=Date.now();return ()=>{
     const mins=Math.max(1,Math.round((Date.now()-screenStart.current)/60000));
@@ -2525,10 +2559,16 @@ Return plain text, NOT JSON.`,
     <div className="screen" style={{display:"flex",flexDirection:"column",paddingBottom:0}}>
       <Hdr title="Conversation" sub="Practice" onBack={()=>{if(window.speechSynthesis) window.speechSynthesis.cancel();recognitionRef.current?.stop();onBack();}}
         right={started&&(
-          <button className={`btn btn-sm ${voiceMode?"btn-primary":""}`} onClick={()=>{setVoiceMode(v=>!v);if(window.speechSynthesis) window.speechSynthesis.cancel();setSpeaking(false);}}
-            style={voiceMode?{}:{background:"var(--surface2)",color:"var(--text2)"}}>
-            {voiceMode?<><Volume2 size={13}/>Voice On</>:<><Mic size={13}/>Voice Off</>}
-          </button>
+          <div style={{display:"flex",gap:6}}>
+            <button className={`btn btn-sm ${voiceMode?"btn-primary":""}`} onClick={()=>{setVoiceMode(v=>!v);if(window.speechSynthesis) window.speechSynthesis.cancel();setSpeaking(false);}}
+              style={voiceMode?{}:{background:"var(--surface2)",color:"var(--text2)"}}>
+              {voiceMode?<><Volume2 size={13}/>Voice</>:<><Mic size={13}/>Voice</>}
+            </button>
+            <button className="btn btn-sm" onClick={()=>{if(window.speechSynthesis) window.speechSynthesis.cancel();recognitionRef.current?.stop();onFinish();}}
+              style={{background:"var(--know-bg)",color:"var(--know)",border:"1px solid var(--know-border)"}}>
+              <CheckCircle2 size={13}/> Finish
+            </button>
+          </div>
         )}/>
       <div style={{flex:1,display:"flex",flexDirection:"column",padding:"12px 20px 0",overflow:"hidden"}}>
         {!started?(
@@ -2918,133 +2958,179 @@ function ProgressScreen({cardStates,studyLog,onBack,onLogManual}) {
   const weeklyTarget=studyLog?.targets?.weeklyMinutes||150;
   const insights=getPerformanceInsights(cardStates,studyLog);
 
-  // Recent ratings
-  const recentRatings=(studyLog.entries||[]).filter(e=>e.rating).slice(-10);
-  const avgRating=recentRatings.length?Math.round(recentRatings.reduce((s,e)=>s+e.rating,0)/recentRatings.length*10)/10:0;
+  // Skill scores from master sessions only
+  const skillScores=getModuleSkillScores(studyLog);
+  const vocabProgress=getVocabProgress(cardStates);
 
-  // Card status trend (simplified — show current snapshot)
   const [showLog,setShowLog]=useState(false);
   const [manualMin,setManualMin]=useState("");
   const [manualNote,setManualNote]=useState("");
   const [manualModule,setManualModule]=useState("manual");
+  const [manualDate,setManualDate]=useState(TODAY_KEY());
+  const [tab,setTab]=useState("performance"); // performance | progress
 
   const submitManual=()=>{
     const mins=parseInt(manualMin);
     if(!mins||mins<=0){showToast("Enter valid minutes","error");return;}
-    onLogManual({type:"manual",module:manualModule,minutes:mins,notes:manualNote||undefined});
+    onLogManual({type:"manual",module:manualModule,minutes:mins,notes:manualNote||undefined,date:manualDate});
     setManualMin("");setManualNote("");setShowLog(false);
-    showToast(`Logged ${mins} min of outside study`,"success");
+    showToast(`Logged ${mins} min of ${manualDate===TODAY_KEY()?"today's":manualDate} study`,"success");
   };
 
   return (
     <div className="screen">
-      <Hdr title="Progress" sub="Analytics" onBack={onBack}
-        right={<button className="btn btn-sm" onClick={()=>setShowLog(true)} style={{background:"var(--surface2)",color:"var(--text2)"}}><PenLine size={13}/>Log Study</button>}/>
+      <Hdr title="Analytics" sub="Progress & Performance" onBack={onBack}
+        right={<button className="btn btn-sm" onClick={()=>setShowLog(true)} style={{background:"var(--surface2)",color:"var(--text2)"}}><PenLine size={13}/>Log</button>}/>
+      <div style={{padding:"12px 20px 0"}}>
+        {/* Tab toggle */}
+        <Seg options={[{value:"performance",label:"Performance"},{value:"progress",label:"Progress"}]} value={tab} onChange={setTab}/>
+      </div>
       <div style={{padding:"16px 20px 0",display:"flex",flexDirection:"column",gap:16}}>
-        {/* Today summary */}
-        <div style={{display:"flex",gap:8}}>
-          <div className="stat-card" style={{borderColor:todayMin>=dailyTarget?"var(--know-border)":"var(--border)"}}>
-            <div className="stat-num" style={{color:todayMin>=dailyTarget?"var(--know)":"var(--text)"}}>{todayMin}</div>
-            <div className="stat-label">min today</div>
-            <div style={{fontSize:10,color:"var(--text3)",marginTop:2}}>{dailyTarget} min target</div>
-          </div>
-          <div className="stat-card" style={{borderColor:weekMin>=weeklyTarget?"var(--know-border)":"var(--border)"}}>
-            <div className="stat-num" style={{color:weekMin>=weeklyTarget?"var(--know)":"var(--text)"}}>{weekMin}</div>
-            <div className="stat-label">min this week</div>
-            <div style={{fontSize:10,color:"var(--text3)",marginTop:2}}>{weeklyTarget} min target</div>
-          </div>
-          {avgRating>0&&(
-            <div className="stat-card">
-              <div className="stat-num" style={{color:"var(--accent)"}}>{avgRating}</div>
-              <div className="stat-label">avg rating</div>
-              <div style={{fontSize:10,color:"var(--text3)",marginTop:2}}>last {recentRatings.length} sessions</div>
+
+        {tab==="performance"&&(
+          <>
+            {/* B2 Vocab Progress */}
+            <div style={{background:"var(--surface)",border:"1.5px solid var(--border)",borderRadius:"var(--r)",padding:"16px"}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+                <div className="sec" style={{margin:0}}>Vocabulary → B2 Level</div>
+                <span style={{fontSize:13,fontWeight:700,color:"var(--accent)"}}>{vocabProgress.pct}%</span>
+              </div>
+              <div className="progress-track" style={{height:10,marginBottom:8}}>
+                <div className="progress-fill" style={{width:`${vocabProgress.pct}%`,background:"linear-gradient(90deg, var(--accent), var(--know))"}}/>
+              </div>
+              <div style={{display:"flex",justifyContent:"space-between",fontSize:12}}>
+                <span style={{color:"var(--know)",fontWeight:600}}>{vocabProgress.known} known</span>
+                <span style={{color:"var(--text3)"}}>B2 target: ~{B2_WORD_TARGET.toLocaleString()} words</span>
+              </div>
+              <div style={{fontSize:11,color:"var(--text3)",marginTop:6,lineHeight:1.5}}>
+                {vocabProgress.pct>=80?"Approaching B2 vocabulary level! Focus on mastery.":
+                 vocabProgress.pct>=50?"Solid progress. Over halfway to B2 vocab.":
+                 vocabProgress.pct>=20?"Building foundation. Keep adding and reviewing.":
+                 "Early stage. Every word counts at this point."}
+              </div>
             </div>
-          )}
-        </div>
 
-        {/* Daily progress bar */}
-        <div style={{background:"var(--surface)",border:"1.5px solid var(--border)",borderRadius:"var(--rs)",padding:"12px 14px"}}>
-          <div style={{display:"flex",justifyContent:"space-between",fontSize:12,marginBottom:6}}>
-            <span style={{color:"var(--text2)",fontWeight:600}}>Today's Progress</span>
-            <span style={{color:todayMin>=dailyTarget?"var(--know)":"var(--text3)",fontWeight:700}}>{Math.min(100,Math.round(todayMin/dailyTarget*100))}%</span>
-          </div>
-          <div className="progress-track" style={{height:6}}>
-            <div className="progress-fill" style={{width:`${Math.min(100,todayMin/dailyTarget*100)}%`,background:todayMin>=dailyTarget?"var(--know)":"var(--accent)"}}/>
-          </div>
-        </div>
-
-        {/* 7-day chart */}
-        <div style={{background:"var(--surface)",border:"1.5px solid var(--border)",borderRadius:"var(--rs)",padding:"14px"}}>
-          <div className="sec">Last 7 Days</div>
-          <BarChart data={weekData}/>
-          <div style={{display:"flex",gap:12,marginTop:8,justifyContent:"center"}}>
-            <div style={{display:"flex",alignItems:"center",gap:4,fontSize:11,color:"var(--text3)"}}><div style={{width:8,height:8,borderRadius:2,background:"var(--accent)"}}/> App</div>
-            <div style={{display:"flex",alignItems:"center",gap:4,fontSize:11,color:"var(--text3)"}}><div style={{width:8,height:8,borderRadius:2,background:"var(--info)",opacity:.6}}/> Outside</div>
-          </div>
-        </div>
-
-        {/* Module breakdown */}
-        <div style={{background:"var(--surface)",border:"1.5px solid var(--border)",borderRadius:"var(--rs)",padding:"14px"}}>
-          <div className="sec">Module Activity (This Week)</div>
-          <div style={{display:"flex",flexDirection:"column",gap:8}}>
-            {[["vocab","Vocabulary",BookOpen,"var(--accent)"],["reading","Reading",FileText,"var(--read)"],["listening","Listening",Headphones,"var(--listen)"],["speaking","Speaking",MessageCircle,"var(--accent)"],["manual","Outside Study",PenLine,"var(--info)"]].map(([key,label,Icon,color])=>{
-              const mins=weekByMod[key]||0;const maxMins=Math.max(...Object.values(weekByMod),1);
-              return (
-                <div key={key} style={{display:"flex",alignItems:"center",gap:10}}>
-                  <Icon size={14} color={color} style={{flexShrink:0}}/>
-                  <div style={{flex:1}}>
-                    <div style={{display:"flex",justifyContent:"space-between",fontSize:12,marginBottom:3}}>
-                      <span style={{color:"var(--text)",fontWeight:500}}>{label}</span>
-                      <span style={{color:"var(--text3)"}}>{mins} min</span>
+            {/* Skill Scores from master sessions */}
+            <div style={{background:"var(--surface)",border:"1.5px solid var(--border)",borderRadius:"var(--r)",padding:"16px"}}>
+              <div className="sec">Skill Scores (Master Sessions Only)</div>
+              <div style={{fontSize:11,color:"var(--text3)",marginBottom:12,lineHeight:1.5}}>
+                Based on your session ratings when using all vocabulary. Cherry-picked sessions don't count here.
+              </div>
+              <div style={{display:"flex",gap:8}}>
+                {[["vocab","Vocab",BookOpen,"var(--accent)"],["reading","Reading",FileText,"var(--read)"],["listening","Listen",Headphones,"var(--listen)"],["speaking","Speak",MessageCircle,"var(--accent)"]].map(([key,label,Icon,color])=>{
+                  const score=skillScores[key];
+                  return (
+                    <div key={key} className="stat-card" style={{padding:"10px 8px"}}>
+                      <Icon size={14} color={color} style={{marginBottom:4}}/>
+                      <div className="stat-num" style={{fontSize:18,color:score?color:"var(--text3)"}}>{score||"—"}</div>
+                      <div className="stat-label" style={{fontSize:9}}>{label}</div>
+                      {score&&<div style={{width:"100%",marginTop:4}}><div className="progress-track" style={{height:3}}><div className="progress-fill" style={{width:`${score/5*100}%`,background:color}}/></div></div>}
                     </div>
-                    <div className="progress-track" style={{height:4}}><div className="progress-fill" style={{width:`${(mins/maxMins)*100}%`,background:color}}/></div>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-
-        {/* Card status breakdown */}
-        <div style={{background:"var(--surface)",border:"1.5px solid var(--border)",borderRadius:"var(--rs)",padding:"14px"}}>
-          <div className="sec">Vocabulary Status</div>
-          <div style={{display:"flex",gap:6,marginBottom:10}}>
-            <div style={{flex:known,height:8,borderRadius:4,background:"var(--know)",transition:"flex .5s"}}/>
-            <div style={{flex:weak||0.01,height:8,borderRadius:4,background:"var(--weak)",transition:"flex .5s"}}/>
-            <div style={{flex:newC||0.01,height:8,borderRadius:4,background:"var(--surface2)",transition:"flex .5s"}}/>
-          </div>
-          <div style={{display:"flex",justifyContent:"space-between",fontSize:12}}>
-            <span style={{color:"var(--know)"}}>{known} known ({knownPct}%)</span>
-            <span style={{color:"var(--weak)"}}>{weak} weak</span>
-            <span style={{color:"var(--text3)"}}>{newC} new</span>
-          </div>
-        </div>
-
-        {/* Performance insights */}
-        {insights.length>0&&(
-          <div>
-            <div className="sec">Performance Insights</div>
-            <div style={{display:"flex",flexDirection:"column",gap:8}}>
-              {insights.map((ins,i)=>(
-                <div key={i} className={`insight-card ${ins.type}`}>
-                  <span style={{fontSize:16,flexShrink:0}}>{ins.icon}</span>
-                  <span>{ins.text}</span>
-                </div>
-              ))}
+                  );
+                })}
+              </div>
             </div>
-          </div>
+
+            {/* Card status breakdown */}
+            <div style={{background:"var(--surface)",border:"1.5px solid var(--border)",borderRadius:"var(--rs)",padding:"14px"}}>
+              <div className="sec">Vocabulary Status</div>
+              <div style={{display:"flex",gap:6,marginBottom:10}}>
+                <div style={{flex:known||0.01,height:8,borderRadius:4,background:"var(--know)",transition:"flex .5s"}}/>
+                <div style={{flex:weak||0.01,height:8,borderRadius:4,background:"var(--weak)",transition:"flex .5s"}}/>
+                <div style={{flex:newC||0.01,height:8,borderRadius:4,background:"var(--surface2)",transition:"flex .5s"}}/>
+              </div>
+              <div style={{display:"flex",justifyContent:"space-between",fontSize:12}}>
+                <span style={{color:"var(--know)"}}>{known} known ({knownPct}%)</span>
+                <span style={{color:"var(--weak)"}}>{weak} weak</span>
+                <span style={{color:"var(--text3)"}}>{newC} new</span>
+              </div>
+            </div>
+
+            {/* Performance insights */}
+            {insights.length>0&&(
+              <div>
+                <div className="sec">Insights</div>
+                <div style={{display:"flex",flexDirection:"column",gap:8}}>
+                  {insights.map((ins,i)=>(<div key={i} className={`insight-card ${ins.type}`}><span style={{fontSize:16,flexShrink:0}}>{ins.icon}</span><span>{ins.text}</span></div>))}
+                </div>
+              </div>
+            )}
+          </>
+        )}
+
+        {tab==="progress"&&(
+          <>
+            {/* Today + Week summary */}
+            <div style={{display:"flex",gap:8}}>
+              <div className="stat-card" style={{borderColor:todayMin>=dailyTarget?"var(--know-border)":"var(--border)"}}>
+                <div className="stat-num" style={{color:todayMin>=dailyTarget?"var(--know)":"var(--text)"}}>{todayMin}</div>
+                <div className="stat-label">min today</div>
+                <div style={{fontSize:10,color:"var(--text3)",marginTop:2}}>/{dailyTarget}m target</div>
+              </div>
+              <div className="stat-card" style={{borderColor:weekMin>=weeklyTarget?"var(--know-border)":"var(--border)"}}>
+                <div className="stat-num" style={{color:weekMin>=weeklyTarget?"var(--know)":"var(--text)"}}>{weekMin}</div>
+                <div className="stat-label">min this week</div>
+                <div style={{fontSize:10,color:"var(--text3)",marginTop:2}}>/{weeklyTarget}m target</div>
+              </div>
+            </div>
+
+            {/* Daily progress bar */}
+            <div style={{background:"var(--surface)",border:"1.5px solid var(--border)",borderRadius:"var(--rs)",padding:"12px 14px"}}>
+              <div style={{display:"flex",justifyContent:"space-between",fontSize:12,marginBottom:6}}>
+                <span style={{color:"var(--text2)",fontWeight:600}}>Today</span>
+                <span style={{color:todayMin>=dailyTarget?"var(--know)":"var(--text3)",fontWeight:700}}>{Math.min(100,Math.round(todayMin/dailyTarget*100))}%</span>
+              </div>
+              <div className="progress-track" style={{height:6}}><div className="progress-fill" style={{width:`${Math.min(100,todayMin/dailyTarget*100)}%`,background:todayMin>=dailyTarget?"var(--know)":"var(--accent)"}}/></div>
+            </div>
+
+            {/* 7-day chart */}
+            <div style={{background:"var(--surface)",border:"1.5px solid var(--border)",borderRadius:"var(--rs)",padding:"14px"}}>
+              <div className="sec">Last 7 Days</div>
+              <BarChart data={weekData}/>
+              <div style={{display:"flex",gap:12,marginTop:8,justifyContent:"center"}}>
+                <div style={{display:"flex",alignItems:"center",gap:4,fontSize:11,color:"var(--text3)"}}><div style={{width:8,height:8,borderRadius:2,background:"var(--accent)"}}/> App</div>
+                <div style={{display:"flex",alignItems:"center",gap:4,fontSize:11,color:"var(--text3)"}}><div style={{width:8,height:8,borderRadius:2,background:"var(--info)",opacity:.6}}/> Outside</div>
+              </div>
+            </div>
+
+            {/* Module breakdown */}
+            <div style={{background:"var(--surface)",border:"1.5px solid var(--border)",borderRadius:"var(--rs)",padding:"14px"}}>
+              <div className="sec">Module Activity (This Week)</div>
+              <div style={{display:"flex",flexDirection:"column",gap:8}}>
+                {[["vocab","Vocabulary",BookOpen,"var(--accent)"],["reading","Reading",FileText,"var(--read)"],["listening","Listening",Headphones,"var(--listen)"],["speaking","Speaking",MessageCircle,"var(--accent)"],["manual","Outside Study",PenLine,"var(--info)"]].map(([key,label,Icon,color])=>{
+                  const mins=weekByMod[key]||0;const maxMins=Math.max(...Object.values(weekByMod),1);
+                  return (
+                    <div key={key} style={{display:"flex",alignItems:"center",gap:10}}>
+                      <Icon size={14} color={color} style={{flexShrink:0}}/>
+                      <div style={{flex:1}}>
+                        <div style={{display:"flex",justifyContent:"space-between",fontSize:12,marginBottom:3}}>
+                          <span style={{color:"var(--text)",fontWeight:500}}>{label}</span>
+                          <span style={{color:"var(--text3)"}}>{mins} min</span>
+                        </div>
+                        <div className="progress-track" style={{height:4}}><div className="progress-fill" style={{width:`${(mins/maxMins)*100}%`,background:color}}/></div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          </>
         )}
       </div>
 
-      {/* Manual study log drawer */}
+      {/* Manual study log drawer — with retroactive date */}
       {showLog&&(
         <div className="overlay" onClick={e=>{if(e.target===e.currentTarget) setShowLog(false);}}>
           <div className="drawer">
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
-              <div style={{fontFamily:"Lora,serif",fontSize:17,fontWeight:600}}>Log Outside Study</div>
+              <div style={{fontFamily:"Lora,serif",fontSize:17,fontWeight:600}}>Log Study Time</div>
               <button className="btn btn-ghost" onClick={()=>setShowLog(false)} style={{width:30,height:30}}><X size={13}/></button>
             </div>
             <div style={{display:"flex",flexDirection:"column",gap:14}}>
+              <div>
+                <label className="lbl">Date</label>
+                <input className="input" type="date" value={manualDate} onChange={e=>setManualDate(e.target.value)} max={TODAY_KEY()}/>
+              </div>
               <div>
                 <label className="lbl">Type</label>
                 <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
@@ -3504,12 +3590,12 @@ export default function App() {
     editCard:activeCard&&activeDeck&&<EditCardScreen card={activeCard} onBack={()=>go("deck")} onSave={saveEditedCard} trackUsage={trackUsage}/>,
     study:activeDeck&&sessionCards.length>0&&<StudyScreen cards={sessionCards} currentIndex={currentIdx} onSwipe={handleSwipe} onBack={()=>{if(currentIdx>0)setCurrentIdx(i=>i-1);}} onExit={()=>go("deck")} trackUsage={trackUsage} decks={decks} cardStates={cardStates} onAddToFlashcard={addToFlashcard}/>,
     complete:<CompleteScreen known={sessionRes.current.known} weak={sessionRes.current.weak} onBack={()=>{go("deck");setSessionRating({module:"vocab"});}}/>,
-    reading:<ReadingScreen {...commonProps} onBack={()=>{go("home");setSessionRating({module:"reading"});}} onAddToFlashcard={addToFlashcard} onLogStudy={logStudy}/>,
-    listening:<ListeningScreen {...commonProps} onBack={()=>{go("home");setSessionRating({module:"listening"});}} onAddToFlashcard={addToFlashcard} onLogStudy={logStudy}/>,
-    conversation:<ConversationScreen {...commonProps} onBack={()=>{go("home");setSessionRating({module:"speaking"});}} onLogStudy={logStudy} onAddToFlashcard={addToFlashcard}/>,
+    reading:<ReadingScreen {...commonProps} onBack={()=>go("home")} onFinish={()=>{go("home");setSessionRating({module:"reading"});}} onAddToFlashcard={addToFlashcard} onLogStudy={logStudy}/>,
+    listening:<ListeningScreen {...commonProps} onBack={()=>go("home")} onFinish={()=>{go("home");setSessionRating({module:"listening"});}} onAddToFlashcard={addToFlashcard} onLogStudy={logStudy}/>,
+    conversation:<ConversationScreen {...commonProps} onBack={()=>go("home")} onFinish={()=>{go("home");setSessionRating({module:"speaking"});}} onLogStudy={logStudy} onAddToFlashcard={addToFlashcard}/>,
     progress:<ProgressScreen cardStates={cardStates} studyLog={studyLog} onBack={()=>go("home")} onLogManual={(e)=>logStudy(e)}/>,
     test:<TestScreen decks={decks} cardStates={cardStates} onBack={()=>go("home")} trackUsage={trackUsage} studyLog={studyLog} onLogStudy={logStudy}/>,
-    masterReview:<MasterReviewScreen decks={decks} cardStates={cardStates} onBack={()=>{go("home");setSessionRating({module:"vocab"});}} onSwipeCard={handleMasterSwipe} trackUsage={trackUsage} onAddToFlashcard={addToFlashcard} studyLog={studyLog} onLogStudy={logStudy}/>,
+    masterReview:<MasterReviewScreen decks={decks} cardStates={cardStates} onBack={()=>{go("home");setSessionRating({module:"vocab",master:true});}} onSwipeCard={handleMasterSwipe} trackUsage={trackUsage} onAddToFlashcard={addToFlashcard} studyLog={studyLog} onLogStudy={logStudy}/>,
   };
 
   // Show loading spinner while Firebase checks auth state
@@ -3531,7 +3617,7 @@ export default function App() {
       <ToastContainer/>
       {showSearch&&<GlobalSearch decks={decks} cardStates={cardStates} onClose={()=>setShowSearch(false)} onSelectCard={handleSearchSelect}/>}
       {showOnboarding&&<Onboarding onComplete={completeOnboarding}/>}
-      {sessionRating&&<SessionRating module={sessionRating.module} onSubmit={(r)=>{logStudy({type:"app",module:sessionRating.module,minutes:0,rating:r});setSessionRating(null);}} onSkip={()=>setSessionRating(null)}/>}
+      {sessionRating&&<SessionRating module={sessionRating.module} onSubmit={(r)=>{logStudy({type:"app",module:sessionRating.module,minutes:0,rating:r,master:sessionRating.master||false});setSessionRating(null);}} onSkip={()=>setSessionRating(null)}/>}
       <div className="app">{screens[screen]}</div>
     </>
   );
