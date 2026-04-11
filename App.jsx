@@ -813,7 +813,7 @@ function UsageMeter({usage}) {
 // ─────────────────────────────────────────────────────────────
 // HOME
 // ─────────────────────────────────────────────────────────────
-function HomeScreen({decks,cardStates,onOpenDeck,onSettings,onCreateDeck,onReading,onListening,onConversation,onSearch,onProgress,onTest,onMasterReview,darkMode,onToggleDark,studyLog}) {
+function HomeScreen({decks,cardStates,onOpenDeck,onSettings,onCreateDeck,onReading,onListening,onConversation,onSearch,onProgress,onMasterReview,darkMode,onToggleDark,studyLog}) {
   const sorted=[...decks].sort((a,b)=>b.createdAt-a.createdAt);
   const importRef=useRef(null);
   const handleImport=(e)=>{
@@ -913,16 +913,14 @@ function HomeScreen({decks,cardStates,onOpenDeck,onSettings,onCreateDeck,onReadi
             <div style={{flex:1}}><div style={{fontWeight:700,fontSize:14.5,color:"var(--accent)"}}>Conversation</div><div style={{fontSize:12.5,color:"var(--text2)",marginTop:2}}>AI chat practice using your vocabulary</div></div>
             <ChevronRight size={15} color="var(--accent)"/>
           </div>
-          <div style={{display:"flex",gap:9}}>
-            <div className="module-card" style={{flex:1,borderColor:"var(--border)"}} onClick={onTest}>
-              <Brain size={18} color="var(--text2)"/>
-              <div style={{flex:1}}><div style={{fontWeight:700,fontSize:13.5}}>Test</div></div>
+          <div className="module-card" style={{borderColor:"var(--border)"}} onClick={onProgress}>
+            <div style={{width:40,height:40,borderRadius:12,background:"var(--surface2)",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}><BarChart3 size={19} color="var(--text2)"/></div>
+            <div style={{flex:1}}>
+              <div style={{fontWeight:700,fontSize:14.5}}>Progress & Analytics</div>
+              <div style={{fontSize:12.5,color:"var(--text2)",marginTop:2}}>Performance scores, study time, B2 tracking</div>
             </div>
-            <div className="module-card" style={{flex:1,borderColor:"var(--border)"}} onClick={onProgress}>
-              <BarChart3 size={18} color="var(--text2)"/>
-              <div style={{flex:1}}><div style={{fontWeight:700,fontSize:13.5}}>Progress</div></div>
-              {studyLog&&(()=>{const t=sumMinutes(getEntriesForDate(studyLog,TODAY_KEY()));return t>0?<span style={{fontSize:11,color:"var(--know)",fontWeight:600}}>{t}m</span>:null;})()}
-            </div>
+            {studyLog&&(()=>{const t=sumMinutes(getEntriesForDate(studyLog,TODAY_KEY()));return t>0?<span style={{fontSize:12,color:"var(--know)",fontWeight:700}}>{t}m today</span>:null;})()}
+            <ChevronRight size={15} color="var(--text3)"/>
           </div>
         </div>
         <div className="sec">Flashcard Decks</div>
@@ -1947,7 +1945,7 @@ function MultiDeckCardSelector({decks,cardStates,selDeckIds,setSelDeckIds,selCar
 // ─────────────────────────────────────────────────────────────
 // READING — multi-deck + multi-card pool
 // ─────────────────────────────────────────────────────────────
-function ReadingScreen({decks,cardStates,onBack,onFinish,onAddToFlashcard,trackUsage,onLogStudy}) {
+function ReadingScreen({decks,cardStates,onBack,onFinish,onAddToFlashcard,trackUsage,onLogStudy,master}) {
   const screenStart=useRef(Date.now());
   useEffect(()=>{screenStart.current=Date.now();return ()=>{
     const mins=Math.max(1,Math.round((Date.now()-screenStart.current)/60000));
@@ -2014,7 +2012,7 @@ Return ONLY valid JSON: {"arabic":"...","translation":"...","vocabUsed":["base f
 
   return (
     <div className="screen">
-      <Hdr title="Reading" sub="Practice" onBack={onBack}
+      <Hdr title={master?"Master Reading":"Reading"} sub="Practice" onBack={onBack}
         right={<button className="btn btn-ghost" onClick={()=>setShowSettings(v=>!v)} style={{width:34,height:34}}><Sliders size={15}/></button>}/>
       <div style={{padding:"18px 20px 0",display:"flex",flexDirection:"column",gap:16}}>
         {showSettings&&(
@@ -2035,13 +2033,14 @@ Return ONLY valid JSON: {"arabic":"...","translation":"...","vocabUsed":["base f
           </div>
         )}
 
-        <MultiDeckCardSelector
+        {!master&&<MultiDeckCardSelector
           decks={decks} cardStates={cardStates}
           selDeckIds={selDeckIds} setSelDeckIds={setSelDeckIds}
           selCardIds={selCardIds} setSelCardIds={setSelCardIds}
           accentVar="--read" accentBgVar="--read-bg" accentBorderVar="--read-border"
           onReset={()=>setPassage(null)}
-        />
+        />}
+        {master&&<div style={{background:"var(--read-bg)",border:"1px solid var(--read-border)",borderRadius:"var(--rs)",padding:"10px 14px",fontSize:13,color:"var(--read)",fontWeight:500}}>Using all {selectedCards.length} vocabulary words · Master session</div>}
 
         <button className="btn btn-read" onClick={generate} disabled={generating||!selectedCards.length} style={{width:"100%",padding:"14px",borderRadius:"var(--r)",fontSize:14}}>
           {generating
@@ -2093,7 +2092,7 @@ Return ONLY valid JSON: {"arabic":"...","translation":"...","vocabUsed":["base f
 // ─────────────────────────────────────────────────────────────
 // LISTENING — multi-deck + multi-card pool
 // ─────────────────────────────────────────────────────────────
-function ListeningScreen({decks,cardStates,onBack,onFinish,onAddToFlashcard,trackUsage,onLogStudy}) {
+function ListeningScreen({decks,cardStates,onBack,onFinish,onAddToFlashcard,trackUsage,onLogStudy,master}) {
   const screenStart=useRef(Date.now());
   useEffect(()=>{screenStart.current=Date.now();return ()=>{
     const mins=Math.max(1,Math.round((Date.now()-screenStart.current)/60000));
@@ -2179,7 +2178,7 @@ Return ONLY valid JSON: {"arabic":"...","translation":"...","vocabUsed":["base f
 
   return (
     <div className="screen">
-      <Hdr title="Listening" sub="Practice" onBack={onBack}
+      <Hdr title={master?"Master Listening":"Listening"} sub="Practice" onBack={onBack}
         right={<button className="btn btn-ghost" onClick={()=>setShowSettings(v=>!v)} style={{width:34,height:34}}><Sliders size={15}/></button>}/>
       <div style={{padding:"18px 20px 0",display:"flex",flexDirection:"column",gap:16}}>
         {showSettings&&(
@@ -2209,18 +2208,19 @@ Return ONLY valid JSON: {"arabic":"...","translation":"...","vocabUsed":["base f
           </div>
         )}
 
-        <MultiDeckCardSelector
+        {!master&&<MultiDeckCardSelector
           decks={decks} cardStates={cardStates}
           selDeckIds={selDeckIds} setSelDeckIds={setSelDeckIds}
           selCardIds={selCardIds} setSelCardIds={setSelCardIds}
           accentVar="--listen" accentBgVar="--listen-bg" accentBorderVar="--listen-border"
           onReset={()=>{setContent(null);if(window.speechSynthesis) window.speechSynthesis.cancel();setPlaying(false);}}
-        />
+        />}
+        {master&&<div style={{background:"var(--listen-bg)",border:"1px solid var(--listen-border)",borderRadius:"var(--rs)",padding:"10px 14px",fontSize:13,color:"var(--listen)",fontWeight:500}}>Using all {selectedCards.length} vocabulary words · Master session</div>}
 
         <button className="btn btn-listen" onClick={generate} disabled={generating||!selectedCards.length} style={{width:"100%",padding:"14px",borderRadius:"var(--r)",fontSize:14}}>
           {generating
             ?<><RefreshCw size={14} className="spin"/>Generating…</>
-            :<><Mic size={15}/>Generate from {selectedCards.length} Card{selectedCards.length!==1?"s":""} · {selDeckIds.size} Deck{selDeckIds.size!==1?"s":""}</>}
+            :<><Mic size={15}/>{master?"Generate Master Passage":`Generate from ${selectedCards.length} Card${selectedCards.length!==1?"s":""}`}</>}
         </button>
 
         {content&&!generating&&(
@@ -2406,7 +2406,7 @@ function Onboarding({onComplete}) {
 // ─────────────────────────────────────────────────────────────
 // CONVERSATION MODULE
 // ─────────────────────────────────────────────────────────────
-function ConversationScreen({decks,cardStates,onBack,onFinish,trackUsage,onLogStudy,onAddToFlashcard}) {
+function ConversationScreen({decks,cardStates,onBack,onFinish,trackUsage,onLogStudy,onAddToFlashcard,master}) {
   const screenStart=useRef(Date.now());
   useEffect(()=>{screenStart.current=Date.now();return ()=>{
     const mins=Math.max(1,Math.round((Date.now()-screenStart.current)/60000));
@@ -2557,7 +2557,7 @@ Return plain text, NOT JSON.`,
 
   return (
     <div className="screen" style={{display:"flex",flexDirection:"column",paddingBottom:0}}>
-      <Hdr title="Conversation" sub="Practice" onBack={()=>{if(window.speechSynthesis) window.speechSynthesis.cancel();recognitionRef.current?.stop();onBack();}}
+      <Hdr title={master?"Master Speaking":"Conversation"} sub="Practice" onBack={()=>{if(window.speechSynthesis) window.speechSynthesis.cancel();recognitionRef.current?.stop();onBack();}}
         right={started&&(
           <div style={{display:"flex",gap:6}}>
             <button className={`btn btn-sm ${voiceMode?"btn-primary":""}`} onClick={()=>{setVoiceMode(v=>!v);if(window.speechSynthesis) window.speechSynthesis.cancel();setSpeaking(false);}}
@@ -2586,16 +2586,17 @@ Return plain text, NOT JSON.`,
               </div>
               <div className={`chk ${voiceMode?"on":""}`} onClick={()=>setVoiceMode(v=>!v)}>{voiceMode&&<Check size={11} color="white"/>}</div>
             </div>
-            <MultiDeckCardSelector
+            {!master&&<MultiDeckCardSelector
               decks={decks} cardStates={cardStates}
               selDeckIds={selDeckIds} setSelDeckIds={setSelDeckIds}
               selCardIds={selCardIds} setSelCardIds={setSelCardIds}
               accentVar="--accent" accentBgVar="--accent-bg" accentBorderVar="--accent-border"
               onReset={()=>{}}
-            />
+            />}
+            {master&&<div style={{background:"var(--accent-bg)",border:"1px solid var(--accent-border)",borderRadius:"var(--rs)",padding:"10px 14px",fontSize:13,color:"var(--accent)",fontWeight:500}}>Using all {selectedCards.length} vocabulary words · Master session</div>}
             <button className="btn btn-primary" onClick={startConversation} disabled={loading||!selectedCards.length}
               style={{width:"100%",padding:"14px",borderRadius:"var(--r)",fontSize:14}}>
-              {loading?<><RefreshCw size={14} className="spin"/>Starting…</>:<><MessageCircle size={15}/>Start Conversation with {selectedCards.length} words</>}
+              {loading?<><RefreshCw size={14} className="spin"/>Starting…</>:<><MessageCircle size={15}/>{master?"Start Master Conversation":`Start Conversation with ${selectedCards.length} words`}</>}
             </button>
           </div>
         ):(
@@ -2657,7 +2658,7 @@ Return plain text, NOT JSON.`,
 // ─────────────────────────────────────────────────────────────
 // MASTER REVIEW — Anki-style across all decks
 // ─────────────────────────────────────────────────────────────
-function MasterReviewScreen({decks,cardStates,onBack,onSwipeCard,trackUsage,onAddToFlashcard,studyLog,onLogStudy}) {
+function MasterReviewScreen({decks,cardStates,onBack,onSwipeCard,trackUsage,onAddToFlashcard,studyLog,onLogStudy,onMasterReading,onMasterListening,onMasterSpeaking}) {
   const [started,setStarted]=useState(false);
   const [mode,setMode]=useState("smart"); // smart, due, weak, new, all
   const [limit,setLimit]=useState(50);
@@ -2879,6 +2880,24 @@ function MasterReviewScreen({decks,cardStates,onBack,onSwipeCard,trackUsage,onAd
             <div><span style={{fontWeight:700,color:"var(--text3)"}}>{newCards.length}</span> <span style={{color:"var(--text3)"}}>new</span></div>
             <div><span style={{fontWeight:700,color:"var(--know)"}}>{knownCards.length}</span> <span style={{color:"var(--text3)"}}>known</span></div>
           </div>
+        </div>
+
+        {/* Master Module Sessions — use ALL vocab for skill scoring */}
+        <div className="sec" style={{marginTop:4}}>Master Practice (All Vocab)</div>
+        <div style={{fontSize:12,color:"var(--text3)",marginBottom:8,lineHeight:1.5}}>
+          These sessions use your entire vocabulary and count toward your skill scores.
+        </div>
+        <div className="test-option" onClick={onMasterReading}>
+          <div style={{width:40,height:40,borderRadius:12,background:"var(--read)",display:"flex",alignItems:"center",justifyContent:"center"}}><FileText size={18} color="white"/></div>
+          <div style={{flex:1}}><div style={{fontWeight:600,fontSize:14,color:"var(--read)"}}>Master Reading</div><div style={{fontSize:12,color:"var(--text3)",marginTop:2}}>AI passage using all {allCards.length} vocab words</div></div>
+        </div>
+        <div className="test-option" onClick={onMasterListening}>
+          <div style={{width:40,height:40,borderRadius:12,background:"var(--listen)",display:"flex",alignItems:"center",justifyContent:"center"}}><Headphones size={18} color="white"/></div>
+          <div style={{flex:1}}><div style={{fontWeight:600,fontSize:14,color:"var(--listen)"}}>Master Listening</div><div style={{fontSize:12,color:"var(--text3)",marginTop:2}}>Audio practice using all vocabulary</div></div>
+        </div>
+        <div className="test-option" onClick={onMasterSpeaking}>
+          <div style={{width:40,height:40,borderRadius:12,background:"var(--accent)",display:"flex",alignItems:"center",justifyContent:"center"}}><MessageCircle size={18} color="white"/></div>
+          <div style={{flex:1}}><div style={{fontWeight:600,fontSize:14,color:"var(--accent)"}}>Master Speaking</div><div style={{fontSize:12,color:"var(--text3)",marginTop:2}}>Conversation using all vocabulary</div></div>
         </div>
       </div>
     </div>
@@ -3582,20 +3601,23 @@ export default function App() {
   const commonProps={decks,cardStates,trackUsage};
 
   const screens={
-    home:<HomeScreen {...commonProps} onOpenDeck={openDeck} onSettings={()=>go("settings")} onCreateDeck={()=>go("createDeck")} onReading={()=>go("reading")} onListening={()=>go("listening")} onConversation={()=>go("conversation")} onSearch={()=>setShowSearch(true)} onProgress={()=>go("progress")} onTest={()=>go("test")} onMasterReview={()=>go("masterReview")} darkMode={darkMode} onToggleDark={()=>setDarkMode(d=>!d)} studyLog={studyLog}/>,
+    home:<HomeScreen {...commonProps} onOpenDeck={openDeck} onSettings={()=>go("settings")} onCreateDeck={()=>go("createDeck")} onReading={()=>go("reading")} onListening={()=>go("listening")} onConversation={()=>go("conversation")} onSearch={()=>setShowSearch(true)} onProgress={()=>go("progress")} onMasterReview={()=>go("masterReview")} darkMode={darkMode} onToggleDark={()=>setDarkMode(d=>!d)} studyLog={studyLog}/>,
     settings:<SettingsScreen settings={settings} setSettings={setSettings} onBack={()=>go("home")} usage={usage} user={user} onSignOut={handleSignOut} onReplayOnboarding={()=>setShowOnboarding(true)} studyLog={studyLog} onUpdateTargets={(t)=>setStudyLog(sl=>({...sl,targets:t}))}/>,
     createDeck:<CreateDeckScreen onBack={()=>go("home")} onCreate={createDeck}/>,
     addCards:activeDeck&&<AddCardsScreen deck={activeDeck} onBack={()=>go("deck")} onSave={saveCards} trackUsage={trackUsage}/>,
     deck:activeDeck&&<DeckScreen deck={activeDeck} cards={cardStates[activeDeck.id]||[]} onStartStudy={startStudy} onBack={()=>go("home")} onAddCards={()=>go("addCards")} onEditCard={c=>{setActiveCard(c);go("editCard");}} onDeleteCard={deleteCard} onRenameDeck={renameDeck} onDeleteDeck={deleteDeck} savedIdx={savedIdx.current[activeDeck.id+"_all"]||0}/>,
     editCard:activeCard&&activeDeck&&<EditCardScreen card={activeCard} onBack={()=>go("deck")} onSave={saveEditedCard} trackUsage={trackUsage}/>,
     study:activeDeck&&sessionCards.length>0&&<StudyScreen cards={sessionCards} currentIndex={currentIdx} onSwipe={handleSwipe} onBack={()=>{if(currentIdx>0)setCurrentIdx(i=>i-1);}} onExit={()=>go("deck")} trackUsage={trackUsage} decks={decks} cardStates={cardStates} onAddToFlashcard={addToFlashcard}/>,
-    complete:<CompleteScreen known={sessionRes.current.known} weak={sessionRes.current.weak} onBack={()=>{go("deck");setSessionRating({module:"vocab"});}}/>,
+    complete:<CompleteScreen known={sessionRes.current.known} weak={sessionRes.current.weak} onBack={()=>go("deck")}/>,
     reading:<ReadingScreen {...commonProps} onBack={()=>go("home")} onFinish={()=>{go("home");setSessionRating({module:"reading"});}} onAddToFlashcard={addToFlashcard} onLogStudy={logStudy}/>,
     listening:<ListeningScreen {...commonProps} onBack={()=>go("home")} onFinish={()=>{go("home");setSessionRating({module:"listening"});}} onAddToFlashcard={addToFlashcard} onLogStudy={logStudy}/>,
+    masterReading:<ReadingScreen {...commonProps} master={true} onBack={()=>go("masterReview")} onFinish={()=>{go("home");setSessionRating({module:"reading",master:true});}} onAddToFlashcard={addToFlashcard} onLogStudy={logStudy}/>,
+    masterListening:<ListeningScreen {...commonProps} master={true} onBack={()=>go("masterReview")} onFinish={()=>{go("home");setSessionRating({module:"listening",master:true});}} onAddToFlashcard={addToFlashcard} onLogStudy={logStudy}/>,
+    masterSpeaking:<ConversationScreen {...commonProps} master={true} onBack={()=>go("masterReview")} onFinish={()=>{go("home");setSessionRating({module:"speaking",master:true});}} onLogStudy={logStudy} onAddToFlashcard={addToFlashcard}/>,
     conversation:<ConversationScreen {...commonProps} onBack={()=>go("home")} onFinish={()=>{go("home");setSessionRating({module:"speaking"});}} onLogStudy={logStudy} onAddToFlashcard={addToFlashcard}/>,
     progress:<ProgressScreen cardStates={cardStates} studyLog={studyLog} onBack={()=>go("home")} onLogManual={(e)=>logStudy(e)}/>,
     test:<TestScreen decks={decks} cardStates={cardStates} onBack={()=>go("home")} trackUsage={trackUsage} studyLog={studyLog} onLogStudy={logStudy}/>,
-    masterReview:<MasterReviewScreen decks={decks} cardStates={cardStates} onBack={()=>{go("home");setSessionRating({module:"vocab",master:true});}} onSwipeCard={handleMasterSwipe} trackUsage={trackUsage} onAddToFlashcard={addToFlashcard} studyLog={studyLog} onLogStudy={logStudy}/>,
+    masterReview:<MasterReviewScreen decks={decks} cardStates={cardStates} onBack={()=>go("home")} onSwipeCard={handleMasterSwipe} trackUsage={trackUsage} onAddToFlashcard={addToFlashcard} studyLog={studyLog} onLogStudy={logStudy} onMasterReading={()=>go("masterReading")} onMasterListening={()=>go("masterListening")} onMasterSpeaking={()=>go("masterSpeaking")}/>,
   };
 
   // Show loading spinner while Firebase checks auth state
