@@ -9,8 +9,7 @@ import {
   PlusCircle, Mic, Info, Image as ImageIcon, MoreVertical, Pencil,
   DollarSign, Zap, ChevronDown, ChevronUp, SquareCheck, Square,
   Moon, Sun, Download, Upload, Search, MessageCircle, HelpCircle,
-  Send, Clock, Target, BarChart3, Hash, TrendingUp, Calendar,
-  Award, Star, PenLine, Timer, Activity, Brain, CheckCircle2
+  Send, Clock, Target, BarChart3, Hash, Star, PenLine, Brain, CheckCircle2
 } from "lucide-react";
 
 // ─────────────────────────────────────────────────────────────
@@ -197,12 +196,6 @@ function getEntriesForDate(log,dateKey){return (log.entries||[]).filter(e=>e.dat
 function getEntriesForWeek(log){
   const now=new Date();const weekAgo=new Date(now);weekAgo.setDate(now.getDate()-7);
   const cutoff=weekAgo.toISOString().slice(0,10);
-  return (log.entries||[]).filter(e=>e.date>=cutoff);
-}
-
-function getEntriesForDays(log,days){
-  const now=new Date();const ago=new Date(now);ago.setDate(now.getDate()-days);
-  const cutoff=ago.toISOString().slice(0,10);
   return (log.entries||[]).filter(e=>e.date>=cutoff);
 }
 
@@ -458,7 +451,6 @@ textarea.input{resize:vertical;min-height:110px;line-height:1.7}
 .scene-card{background:linear-gradient(135deg,#1a1a2e,#16213e 50%,#0f3460);border-radius:var(--rs);overflow:hidden;position:relative}
 .scene-inner{padding:18px;position:relative;z-index:1}
 .scene-stars{position:absolute;inset:0;background-image:radial-gradient(circle,rgba(255,255,255,.15) 1px,transparent 1px);background-size:20px 20px;opacity:.4}
-.usage-dot{width:8px;height:8px;border-radius:50%;display:inline-block;margin-left:4px}
 ::-webkit-scrollbar{width:3px}::-webkit-scrollbar-track{background:transparent}::-webkit-scrollbar-thumb{background:var(--border);border-radius:4px}
 .toast-container{position:fixed;top:16px;left:50%;transform:translateX(-50%);z-index:200;display:flex;flex-direction:column;gap:8px;max-width:400px;width:calc(100% - 32px);pointer-events:none}
 .toast{padding:12px 16px;border-radius:var(--rs);font-size:13px;font-weight:500;pointer-events:auto;animation:toastIn .3s ease;box-shadow:0 4px 16px rgba(0,0,0,.15);display:flex;align-items:center;gap:8px}
@@ -2418,12 +2410,13 @@ function GlobalSearch({decks,cardStates,onClose,onSelectCard}) {
 // ONBOARDING
 // ─────────────────────────────────────────────────────────────
 const ONBOARDING_STEPS=[
-  {icon:"🗂️",title:"Welcome to Arabic Flashcards",body:"Learn Arabic vocabulary with AI-powered flashcards, spaced repetition, reading, listening, and conversation practice."},
-  {icon:"📇",title:"Flashcard Decks",body:"Create decks and add words. The AI generates all Arabic forms (singular, plural, synonyms, antonyms, verb conjugations) with full tashkeel automatically."},
-  {icon:"🔁",title:"Spaced Repetition",body:"Cards are scheduled based on how well you know them. \"Known\" cards appear less often, \"Weak\" cards come back sooner. Due cards are prioritized each session."},
-  {icon:"📖",title:"Practice Modules",body:"Reading generates passages, Listening creates audio exercises, and Conversation lets you chat — all using vocabulary from your selected decks."},
-  {icon:"🔍",title:"Search & Track Progress",body:"Use global search to find any word instantly. Your dashboard shows total cards, known/weak/new counts, and word instances across all forms."},
-  {icon:"🚀",title:"Ready to Start!",body:"Create your first deck, add some words, and start studying. The AI handles Arabic forms and tashkeel — you focus on learning."},
+  {icon:"🗂️",title:"Welcome to Arabic Flashcards",body:"Your all-in-one Arabic learning app. AI-powered flashcards with full tashkeel, spaced repetition, reading, listening, conversation, and progress tracking toward B2."},
+  {icon:"📇",title:"How Flashcards Work",body:"Create decks and add English or Arabic words. The AI generates all forms — singular, plural, synonyms, antonyms, verb conjugations, and the common preposition (harf) — all with full diacritics."},
+  {icon:"🎯",title:"Master Review",body:"The Master Review button on your home screen is your daily study hub. It works like Anki — due cards first, then weak, then new. Choose 20 to 200 cards per session. You can also launch Master Reading, Listening, and Speaking from here."},
+  {icon:"🔁",title:"Spaced Repetition",body:"Known cards come back in 1 day, then 3, then 7, and so on. Weak cards reset to immediate review. Each form (singular, plural, etc.) is tracked separately — if you fail on plural, it shows plural first next time."},
+  {icon:"📖",title:"Practice Modules",body:"Reading generates AI passages. Listening creates audio exercises. Conversation lets you chat with AI — all using your vocabulary. Tap any Arabic word to look it up and save it. \"Finish Session\" lets you rate how it went."},
+  {icon:"📊",title:"Progress & Performance",body:"Two views: Performance tracks your skill scores (from master sessions only), B2 vocab progress, and insights. Progress tracks study time, daily/weekly targets, and module activity. Log outside study too."},
+  {icon:"🚀",title:"Ready to Start!",body:"Create a deck, add words, then hit Master Review. Set your daily target in Settings. The app tracks everything — you focus on learning Arabic."},
 ];
 
 function Onboarding({onComplete}) {
@@ -3234,139 +3227,6 @@ function ProgressScreen({cardStates,studyLog,onBack,onLogManual}) {
 }
 
 // ─────────────────────────────────────────────────────────────
-// TESTING / ASSESSMENT SCREEN
-// ─────────────────────────────────────────────────────────────
-function TestScreen({decks,cardStates,onBack,trackUsage,onSwipe,studyLog,onLogStudy}) {
-  const [mode,setMode]=useState(null); // null=picker, "quiz"=active
-  const [testCards,setTestCards]=useState([]);
-  const [idx,setIdx]=useState(0);
-  const [results,setResults]=useState([]);
-  const [showAnswer,setShowAnswer]=useState(false);
-  const [testType,setTestType]=useState("all"); // all, weak, due
-  const [showRating,setShowRating]=useState(false);
-  const startRef=useRef(null);
-
-  const allCards=Object.values(cardStates).flat();
-  const now=Date.now();
-  const weakCards=allCards.filter(c=>c.status==="weak");
-  const dueCards=allCards.filter(c=>c.srsLastReview&&c.srsNextReview&&c.srsNextReview<=now);
-
-  const startTest=(type)=>{
-    let pool=type==="weak"?weakCards:type==="due"?dueCards:[...allCards];
-    pool=pool.sort(()=>Math.random()-0.5).slice(0,20); // Max 20 cards per test
-    if(!pool.length){showToast("No cards available for this test","error");return;}
-    setTestCards(pool);setIdx(0);setResults([]);setShowAnswer(false);setMode("quiz");setTestType(type);
-    startRef.current=Date.now();
-  };
-
-  const answer=(correct)=>{
-    setResults(p=>[...p,{card:testCards[idx],correct}]);
-    if(idx<testCards.length-1){
-      setIdx(i=>i+1);setShowAnswer(false);
-    } else {
-      setMode("results");
-      // Log time
-      if(startRef.current){
-        const mins=Math.max(1,Math.round((Date.now()-startRef.current)/60000));
-        onLogStudy({type:"app",module:"vocab",minutes:mins,subtype:"test"});
-      }
-      setShowRating(true);
-    }
-  };
-
-  const card=testCards[idx];
-  const score=results.filter(r=>r.correct).length;
-  const total=results.length;
-  const pct=total?Math.round(score/total*100):0;
-
-  if(showRating) return (
-    <SessionRating module="test" onSubmit={(r)=>{onLogStudy({type:"app",module:"vocab",minutes:0,rating:r,subtype:"test-rating"});setShowRating(false);}}
-      onSkip={()=>setShowRating(false)}/>
-  );
-
-  if(mode==="results") return (
-    <div className="screen" style={{display:"flex",alignItems:"center",justifyContent:"center",minHeight:"100vh",padding:28,textAlign:"center"}}>
-      <div className="pop-appear" style={{width:"100%",maxWidth:340}}>
-        <div style={{fontSize:52,marginBottom:14}}>{pct>=80?"🏆":pct>=60?"📈":"💪"}</div>
-        <div style={{fontFamily:"Lora,serif",fontSize:24,fontWeight:600,marginBottom:8}}>Test Complete</div>
-        <div style={{fontSize:28,fontWeight:700,color:pct>=70?"var(--know)":"var(--weak)",marginBottom:8}}>{pct}%</div>
-        <div style={{fontSize:14,color:"var(--text2)",marginBottom:24}}>
-          {score} of {total} correct
-        </div>
-        <div className="progress-track" style={{height:6,marginBottom:24}}>
-          <div className="progress-fill" style={{width:`${pct}%`,background:pct>=70?"var(--know)":"var(--weak)"}}/>
-        </div>
-        <button className="btn btn-primary" onClick={()=>setMode(null)} style={{width:"100%",padding:"14px",borderRadius:"var(--r)",fontSize:15}}>Back to Tests</button>
-      </div>
-    </div>
-  );
-
-  if(mode==="quiz"&&card) return (
-    <div className="screen" style={{display:"flex",flexDirection:"column",padding:"18px 18px 20px"}}>
-      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
-        <button className="btn btn-ghost" onClick={()=>setMode(null)} style={{width:32,height:32}}><X size={14}/></button>
-        <span style={{fontSize:13,color:"var(--text2)",fontWeight:600}}>{idx+1} / {testCards.length}</span>
-        <span style={{fontSize:13,color:"var(--know)",fontWeight:600}}>{score}✓</span>
-      </div>
-      <div className="progress-track" style={{marginBottom:16}}><div className="progress-fill" style={{width:`${((idx+1)/testCards.length)*100}%`,background:"var(--accent)"}}/></div>
-
-      <div style={{flex:1,display:"flex",flexDirection:"column",gap:14}}>
-        <div className="card-appear" style={{background:"var(--surface)",border:"1.5px solid var(--border)",borderRadius:"var(--r)",padding:"36px 24px",textAlign:"center",boxShadow:"0 5px 24px rgba(0,0,0,0.08)",minHeight:160,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center"}}>
-          <div className="sec" style={{margin:0,marginBottom:12}}>What is this word?</div>
-          <div className="ar" style={{fontSize:40,color:"var(--text)"}}>{card.arabicBase}</div>
-          {card.forms?.harf&&<div className="ar" style={{fontSize:16,color:"var(--harf)",marginTop:8}}>({card.forms.harf})</div>}
-        </div>
-
-        {!showAnswer?(
-          <button className="btn btn-primary" onClick={()=>setShowAnswer(true)} style={{width:"100%",padding:"14px",borderRadius:"var(--r)",fontSize:14}}>
-            <Eye size={15}/> Show Answer
-          </button>
-        ):(
-          <div className="gen-appear" style={{display:"flex",flexDirection:"column",gap:10}}>
-            <div style={{background:"var(--accent-bg)",border:"1px solid var(--accent-border)",borderRadius:"var(--rs)",padding:"14px",textAlign:"center"}}>
-              <div style={{fontFamily:"Lora,serif",fontSize:24,fontWeight:600,marginBottom:4}}>{card.english}</div>
-              <div style={{fontSize:12,color:"var(--text3)",textTransform:"capitalize"}}>{card.wordType}</div>
-            </div>
-            <div style={{display:"flex",gap:10}}>
-              <button className="btn" onClick={()=>answer(false)} style={{flex:1,padding:"14px",borderRadius:"var(--r)",background:"var(--weak-bg)",color:"var(--weak)",border:"1.5px solid var(--weak-border)",fontWeight:600}}>✗ Wrong</button>
-              <button className="btn" onClick={()=>answer(true)} style={{flex:1,padding:"14px",borderRadius:"var(--r)",background:"var(--know-bg)",color:"var(--know)",border:"1.5px solid var(--know-border)",fontWeight:600}}>✓ Correct</button>
-            </div>
-          </div>
-        )}
-      </div>
-    </div>
-  );
-
-  // Test picker
-  return (
-    <div className="screen">
-      <Hdr title="Test Yourself" sub="Assessment" onBack={onBack}/>
-      <div style={{padding:"18px 20px 0",display:"flex",flexDirection:"column",gap:12}}>
-        <div style={{fontSize:13.5,color:"var(--text2)",lineHeight:1.6,marginBottom:4}}>
-          Choose a test to assess your Arabic vocabulary. Cards are shown in random order — no peeking!
-        </div>
-        <div className="test-option" onClick={()=>startTest("all")}>
-          <div style={{width:40,height:40,borderRadius:12,background:"var(--accent-bg)",display:"flex",alignItems:"center",justifyContent:"center"}}><Brain size={18} color="var(--accent)"/></div>
-          <div style={{flex:1}}><div style={{fontWeight:600,fontSize:14}}>Full Vocabulary Test</div><div style={{fontSize:12,color:"var(--text3)",marginTop:2}}>Random selection from all {allCards.length} cards</div></div>
-        </div>
-        {weakCards.length>0&&(
-          <div className="test-option" onClick={()=>startTest("weak")}>
-            <div style={{width:40,height:40,borderRadius:12,background:"var(--weak-bg)",display:"flex",alignItems:"center",justifyContent:"center"}}><Target size={18} color="var(--weak)"/></div>
-            <div style={{flex:1}}><div style={{fontWeight:600,fontSize:14}}>Weak Cards Test</div><div style={{fontSize:12,color:"var(--text3)",marginTop:2}}>{weakCards.length} weak cards to practice</div></div>
-          </div>
-        )}
-        {dueCards.length>0&&(
-          <div className="test-option" onClick={()=>startTest("due")}>
-            <div style={{width:40,height:40,borderRadius:12,background:"var(--info-bg)",display:"flex",alignItems:"center",justifyContent:"center"}}><Clock size={18} color="var(--info)"/></div>
-            <div style={{flex:1}}><div style={{fontWeight:600,fontSize:14}}>Due Cards Test</div><div style={{fontSize:12,color:"var(--text3)",marginTop:2}}>{dueCards.length} cards due for review</div></div>
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-// ─────────────────────────────────────────────────────────────
 // SRS SETTINGS PANEL (used in Settings screen)
 // ─────────────────────────────────────────────────────────────
 const DEFAULT_SRS_SETTINGS = {
@@ -3675,7 +3535,6 @@ export default function App() {
     masterSpeaking:<ConversationScreen {...commonProps} master={true} masterPool={masterPool} onBack={()=>go("masterReview")} onFinish={()=>{go("home");setSessionRating({module:"speaking",master:true});}} onLogStudy={logStudy} onAddToFlashcard={addToFlashcard}/>,
     conversation:<ConversationScreen {...commonProps} onBack={()=>go("home")} onFinish={()=>{go("home");setSessionRating({module:"speaking"});}} onLogStudy={logStudy} onAddToFlashcard={addToFlashcard}/>,
     progress:<ProgressScreen cardStates={cardStates} studyLog={studyLog} onBack={()=>go("home")} onLogManual={(e)=>logStudy(e)}/>,
-    test:<TestScreen decks={decks} cardStates={cardStates} onBack={()=>go("home")} trackUsage={trackUsage} studyLog={studyLog} onLogStudy={logStudy}/>,
     masterReview:<MasterReviewScreen decks={decks} cardStates={cardStates} onBack={()=>go("home")} onSwipeCard={handleMasterSwipe} trackUsage={trackUsage} onAddToFlashcard={addToFlashcard} studyLog={studyLog} onLogStudy={logStudy}
       onMasterReading={(pool)=>{setMasterPool(pool);go("masterReading");}}
       onMasterListening={(pool)=>{setMasterPool(pool);go("masterListening");}}
