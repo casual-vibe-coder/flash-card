@@ -7,7 +7,8 @@ import {
   RefreshCw, Check, Sparkles, Plus, Edit3, Trash2, Layers, Save, Eye,
   EyeOff, Headphones, FileText, Play, Pause, SkipBack, Sliders, Globe,
   PlusCircle, Mic, Info, Image as ImageIcon, MoreVertical, Pencil,
-  DollarSign, Zap, ChevronDown, ChevronUp, SquareCheck, Square
+  DollarSign, Zap, ChevronDown, ChevronUp, SquareCheck, Square,
+  Moon, Sun, Download, Upload
 } from "lucide-react";
 
 // ─────────────────────────────────────────────────────────────
@@ -47,6 +48,107 @@ function hasSufficientTashkeel(obj, threshold = 0.5) {
     return Object.values(obj).every(v => hasSufficientTashkeel(v, threshold));
   }
   return true;
+}
+
+// ─────────────────────────────────────────────────────────────
+// TOAST NOTIFICATION SYSTEM
+// ─────────────────────────────────────────────────────────────
+let _toastListeners = [];
+let _toastId = 0;
+
+function showToast(message, type = "info", duration = 3000) {
+  const toast = { id: ++_toastId, message, type, duration };
+  _toastListeners.forEach(fn => fn(toast));
+}
+
+function ToastContainer() {
+  const [toasts, setToasts] = useState([]);
+  useEffect(() => {
+    const handler = (toast) => {
+      setToasts(prev => [...prev, toast]);
+      setTimeout(() => setToasts(prev => prev.filter(t => t.id !== toast.id)), toast.duration);
+    };
+    _toastListeners.push(handler);
+    return () => { _toastListeners = _toastListeners.filter(fn => fn !== handler); };
+  }, []);
+  if (!toasts.length) return null;
+  return (
+    <div className="toast-container">
+      {toasts.map(t => (
+        <div key={t.id} className={`toast toast-${t.type}`}>{t.message}</div>
+      ))}
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────
+// SPACED REPETITION (SM-2 Lite)
+// ─────────────────────────────────────────────────────────────
+/**
+ * Calculate next review date using simplified SM-2 algorithm.
+ * quality: "known" (good recall) or "weak" (poor recall)
+ * Returns updated SRS fields to merge into the card.
+ */
+function calculateSRS(card, quality) {
+  const now = Date.now();
+  const prev = {
+    interval: card.srsInterval || 0,     // days
+    ease: card.srsEase || 2.5,           // ease factor
+    streak: card.srsStreak || 0,         // consecutive correct
+    reviews: card.srsReviews || 0,
+  };
+
+  let interval, ease, streak;
+
+  if (quality === "known") {
+    streak = prev.streak + 1;
+    ease = Math.max(1.3, prev.ease + 0.1);
+    if (streak === 1) interval = 1;
+    else if (streak === 2) interval = 3;
+    else interval = Math.round(prev.interval * ease);
+  } else {
+    // weak — reset streak, reduce ease, review soon
+    streak = 0;
+    ease = Math.max(1.3, prev.ease - 0.2);
+    interval = 0; // review again today/next session
+  }
+
+  return {
+    srsInterval: interval,
+    srsEase: ease,
+    srsStreak: streak,
+    srsReviews: prev.reviews + 1,
+    srsNextReview: now + interval * 86400000, // ms
+    srsLastReview: now,
+  };
+}
+
+/**
+ * Sort cards for study: due cards first (by due date), then new cards.
+ */
+function sortByDueDate(cards) {
+  const now = Date.now();
+  return [...cards].sort((a, b) => {
+    const aDue = a.srsNextReview || 0;
+    const bDue = b.srsNextReview || 0;
+    const aIsDue = aDue <= now;
+    const bIsDue = bDue <= now;
+    // Due cards first
+    if (aIsDue && !bIsDue) return -1;
+    if (!aIsDue && bIsDue) return 1;
+    // Among due cards, most overdue first
+    if (aIsDue && bIsDue) return aDue - bDue;
+    // Among not-due cards, soonest first
+    return aDue - bDue;
+  });
+}
+
+/**
+ * Get count of cards due for review right now.
+ */
+function getDueCount(cards) {
+  const now = Date.now();
+  return cards.filter(c => !c.srsNextReview || c.srsNextReview <= now).length;
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -145,8 +247,25 @@ const CSS = `
   --harf:#6B4A1A;--harf-bg:#FDF5E6;--harf-border:#E8D4A0;
   --r:14px;--rs:10px;--rxs:8px;
 }
+[data-theme="dark"]{
+  --bg:#1A1816;--surface:#252220;--surface2:#302C28;
+  --border:#3D3832;
+  --text:#E8E2D8;--text2:#A09889;--text3:#6E645A;
+  --accent:#E8733A;--accent2:#F08A52;--accent-bg:#3A2518;--accent-border:#5C3A22;
+  --know:#38B07A;--know-bg:#1A2E24;--know-border:#285C40;
+  --weak:#E84C4C;--weak-bg:#2E1A1A;--weak-border:#5C2828;
+  --read:#5A9CE8;--read-bg:#1A2430;--read-border:#2A4060;
+  --listen:#A06CE8;--listen-bg:#241A30;--listen-border:#3C2860;
+  --info:#38B0B0;--info-bg:#1A2E2E;--info-border:#285C5C;
+  --harf:#D4A852;--harf-bg:#2E2818;--harf-border:#5C4E28;
+}
+@media(prefers-reduced-motion:reduce){
+  .card-appear,.gen-appear,.pop-appear,.screen,.spin,.overlay,.drawer{animation:none!important;transition:none!important}
+}
 html,body,#root{height:100%;background:var(--bg);font-family:'Outfit',sans-serif;color:var(--text);-webkit-font-smoothing:antialiased}
-.app{max-width:430px;margin:0 auto;min-height:100vh}
+.app{max-width:520px;margin:0 auto;min-height:100vh}
+@media(min-width:768px){.app{max-width:600px}}
+@media(min-width:1024px){.app{max-width:680px}}
 .screen{animation:sIn .22s ease;padding-bottom:48px;min-height:100vh}
 @keyframes sIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
 .card-appear{animation:cIn .3s cubic-bezier(.2,0,.2,1)}
@@ -196,7 +315,7 @@ textarea.input{resize:vertical;min-height:110px;line-height:1.7}
 @keyframes popIn{from{opacity:0;transform:scale(.88)}to{opacity:1;transform:scale(1)}}
 .overlay{position:fixed;inset:0;background:rgba(0,0,0,.44);z-index:100;display:flex;align-items:flex-end;justify-content:center;animation:ovIn .2s ease}
 @keyframes ovIn{from{opacity:0}to{opacity:1}}
-.drawer{background:var(--surface);border-radius:20px 20px 0 0;width:100%;max-width:430px;padding:22px 20px 36px;animation:drIn .25s cubic-bezier(.2,0,.2,1)}
+.drawer{background:var(--surface);border-radius:20px 20px 0 0;width:100%;max-width:680px;padding:22px 20px 36px;animation:drIn .25s cubic-bezier(.2,0,.2,1)}
 @keyframes drIn{from{transform:translateY(40px);opacity:0}to{transform:translateY(0);opacity:1}}
 .seg{display:flex;background:var(--surface2);border-radius:var(--rs);padding:3px;gap:2px}
 .seg-opt{flex:1;text-align:center;padding:7px 4px;font-size:12px;font-weight:500;border-radius:8px;cursor:pointer;transition:all .15s;color:var(--text2);border:none;background:transparent;font-family:'Outfit',sans-serif}
@@ -208,6 +327,16 @@ textarea.input{resize:vertical;min-height:110px;line-height:1.7}
 .scene-stars{position:absolute;inset:0;background-image:radial-gradient(circle,rgba(255,255,255,.15) 1px,transparent 1px);background-size:20px 20px;opacity:.4}
 .usage-dot{width:8px;height:8px;border-radius:50%;display:inline-block;margin-left:4px}
 ::-webkit-scrollbar{width:3px}::-webkit-scrollbar-track{background:transparent}::-webkit-scrollbar-thumb{background:var(--border);border-radius:4px}
+.toast-container{position:fixed;top:16px;left:50%;transform:translateX(-50%);z-index:200;display:flex;flex-direction:column;gap:8px;max-width:400px;width:calc(100% - 32px);pointer-events:none}
+.toast{padding:12px 16px;border-radius:var(--rs);font-size:13px;font-weight:500;pointer-events:auto;animation:toastIn .3s ease;box-shadow:0 4px 16px rgba(0,0,0,.15);display:flex;align-items:center;gap:8px}
+.toast-success{background:var(--know-bg);color:var(--know);border:1px solid var(--know-border)}
+.toast-error{background:var(--weak-bg);color:var(--weak);border:1px solid var(--weak-border)}
+.toast-info{background:var(--info-bg);color:var(--info);border:1px solid var(--info-border)}
+@keyframes toastIn{from{opacity:0;transform:translateY(-10px)}to{opacity:1;transform:translateY(0)}}
+.kbd{display:inline-flex;align-items:center;justify-content:center;min-width:22px;height:20px;padding:0 5px;background:var(--surface2);border:1px solid var(--border);border-radius:4px;font-size:10px;font-weight:600;color:var(--text3);font-family:'Outfit',sans-serif}
+.search-input{width:100%;border:1.5px solid var(--border);border-radius:var(--rs);padding:9px 13px 9px 36px;font-family:'Outfit',sans-serif;font-size:13.5px;color:var(--text);background:var(--surface);outline:none;transition:border-color .15s}
+.search-input:focus{border-color:var(--accent)}
+.search-input::placeholder{color:var(--text3)}
 `;
 
 // ─────────────────────────────────────────────────────────────
@@ -546,8 +675,30 @@ function UsageMeter({usage}) {
 // ─────────────────────────────────────────────────────────────
 // HOME
 // ─────────────────────────────────────────────────────────────
-function HomeScreen({decks,cardStates,onOpenDeck,onSettings,onCreateDeck,onReading,onListening}) {
+function HomeScreen({decks,cardStates,onOpenDeck,onSettings,onCreateDeck,onReading,onListening,darkMode,onToggleDark}) {
   const sorted=[...decks].sort((a,b)=>b.createdAt-a.createdAt);
+  const importRef=useRef(null);
+  const handleImport=(e)=>{
+    const file=e.target.files?.[0];
+    if(!file) return;
+    const reader=new FileReader();
+    reader.onload=(ev)=>{
+      try {
+        const data=JSON.parse(ev.target.result);
+        if(data.deck&&data.cards){
+          // Rekey to avoid ID collisions
+          const newDeckId=`d${Date.now()}`;
+          const newCards=data.cards.map((c,i)=>({...c,id:`c${Date.now()+i+1}`}));
+          // Dispatch via custom event — handled in App
+          window.dispatchEvent(new CustomEvent("importDeck",{detail:{deck:{...data.deck,id:newDeckId,createdAt:Date.now()},cards:newCards}}));
+          showToast(`Imported "${data.deck.title}" with ${newCards.length} cards`,"success");
+        } else { showToast("Invalid deck file format","error"); }
+      } catch { showToast("Failed to parse file","error"); }
+    };
+    reader.readAsText(file);
+    e.target.value=""; // reset for re-import
+  };
+  const totalDue=Object.values(cardStates).flat().filter(c=>!c.srsNextReview||c.srsNextReview<=Date.now()).length;
   return (
     <div className="screen">
       <div style={{padding:"26px 20px 0",display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
@@ -556,8 +707,19 @@ function HomeScreen({decks,cardStates,onOpenDeck,onSettings,onCreateDeck,onReadi
           <div style={{fontFamily:"Lora,serif",fontSize:26,fontWeight:600}}>My Decks</div>
           <div className="ar" style={{fontSize:15,color:"var(--text3)",marginTop:4}}>بِسْمِ اللهِ</div>
         </div>
-        <button className="btn btn-ghost" onClick={onSettings} style={{width:36,height:36}}><Settings size={17}/></button>
+        <div style={{display:"flex",gap:6}}>
+          <button className="btn btn-ghost" onClick={onToggleDark} style={{width:36,height:36}} title={darkMode?"Light mode":"Dark mode"}>{darkMode?<Sun size={16}/>:<Moon size={16}/>}</button>
+          <button className="btn btn-ghost" onClick={onSettings} style={{width:36,height:36}}><Settings size={17}/></button>
+        </div>
       </div>
+      {totalDue>0&&(
+        <div style={{padding:"12px 20px 0"}}>
+          <div style={{background:"var(--info-bg)",border:"1.5px solid var(--info-border)",borderRadius:"var(--rs)",padding:"10px 14px",display:"flex",alignItems:"center",gap:10}}>
+            <Zap size={16} color="var(--info)"/>
+            <div style={{flex:1,fontSize:13.5,color:"var(--info)",fontWeight:600}}>{totalDue} card{totalDue!==1?"s":""} due for review</div>
+          </div>
+        </div>
+      )}
       <div style={{padding:"20px 20px 0"}}>
         <div className="sec">Practice Modules</div>
         <div style={{display:"flex",flexDirection:"column",gap:9,marginBottom:22}}>
@@ -573,9 +735,15 @@ function HomeScreen({decks,cardStates,onOpenDeck,onSettings,onCreateDeck,onReadi
           </div>
         </div>
         <div className="sec">Flashcard Decks</div>
-        <button className="btn btn-primary" onClick={onCreateDeck} style={{width:"100%",padding:"13px",borderRadius:"var(--r)",fontSize:14,marginBottom:12}}>
-          <Plus size={15}/> Create New Deck
-        </button>
+        <div style={{display:"flex",gap:8,marginBottom:12}}>
+          <button className="btn btn-primary" onClick={onCreateDeck} style={{flex:1,padding:"13px",borderRadius:"var(--r)",fontSize:14}}>
+            <Plus size={15}/> Create New Deck
+          </button>
+          <button className="btn" onClick={()=>importRef.current?.click()} style={{padding:"13px 16px",borderRadius:"var(--r)",fontSize:14,background:"var(--surface)",border:"1.5px solid var(--border)",color:"var(--text2)",fontWeight:600}}>
+            <Upload size={14}/>
+          </button>
+          <input ref={importRef} type="file" accept=".json" onChange={handleImport} style={{display:"none"}}/>
+        </div>
         {sorted.length===0&&<div style={{textAlign:"center",color:"var(--text3)",fontSize:14,padding:"36px 0"}}><Layers size={28} style={{opacity:.3,marginBottom:8}}/><br/>No decks yet.</div>}
         <div style={{display:"flex",flexDirection:"column",gap:9}}>
           {sorted.map(deck=>{
@@ -919,10 +1087,22 @@ function DeckScreen({deck,cards,onStartStudy,onBack,onAddCards,onEditCard,onDele
   const [renaming,setRenaming]=useState(false);
   const [newTitle,setNewTitle]=useState(deck.title);
   const [confirmDelete,setConfirmDelete]=useState(false);
+  const [search,setSearch]=useState("");
+  const [statusFilter,setStatusFilter]=useState("all"); // all, new, weak, known, due
 
   const weak=cards.filter(c=>c.status==="weak").length;
   const known=cards.filter(c=>c.status==="known").length;
+  const dueCount=getDueCount(cards);
   const pct=cards.length>0?Math.round((known/cards.length)*100):0;
+
+  const filteredCards=cards.filter(c=>{
+    if(statusFilter==="due"&&c.srsNextReview&&c.srsNextReview>Date.now()) return false;
+    if(statusFilter!=="all"&&statusFilter!=="due"&&c.status!==statusFilter) return false;
+    if(!search.trim()) return true;
+    const q=search.toLowerCase();
+    return c.english.toLowerCase().includes(q)||c.arabicBase.includes(search)||
+      Object.values(c.forms||{}).some(v=>v&&(v.includes(search)||v.toLowerCase().includes(q)));
+  });
 
   const doRename=()=>{if(newTitle.trim()&&newTitle.trim()!==deck.title){onRenameDeck(deck.id,newTitle.trim());}setRenaming(false);setDeckMenu(false);};
 
@@ -959,20 +1139,42 @@ function DeckScreen({deck,cards,onStartStudy,onBack,onAddCards,onEditCard,onDele
             <button className="btn btn-primary" onClick={()=>onStartStudy("all",true)} style={{width:"100%",padding:"13px",borderRadius:"var(--r)",fontSize:14,...(savedIdx>0&&savedIdx<cards.length?{background:"transparent",color:"var(--accent)",border:"1.5px solid var(--accent)"}:{})}}>
               <BookOpen size={16}/> {savedIdx>0&&savedIdx<cards.length?"Restart from Beginning":"Study All"} ({cards.length})
             </button>
+            {dueCount>0&&<button className="btn" onClick={()=>onStartStudy("due")} style={{width:"100%",padding:"12px",borderRadius:"var(--r)",fontSize:14,fontWeight:600,background:"var(--info-bg)",color:"var(--info)",border:"1.5px solid var(--info-border)"}}>
+              <Zap size={15}/> Study Due Cards ({dueCount})
+            </button>}
             {weak>0&&<button className="btn" onClick={()=>onStartStudy("weak")} style={{width:"100%",padding:"12px",borderRadius:"var(--r)",fontSize:14,fontWeight:600,background:"var(--weak-bg)",color:"var(--weak)",border:"1.5px solid var(--weak-border)"}}>
               <RotateCcw size={15}/> Practice Weak ({weak})
             </button>}
           </div>
         )}
-        <div className="sec">{cards.length>0?`All Cards (${cards.length})`:"No cards yet"}</div>
+        {cards.length>0&&(
+          <div style={{marginBottom:12}}>
+            <div style={{position:"relative",marginBottom:10}}>
+              <svg style={{position:"absolute",left:12,top:"50%",transform:"translateY(-50%)",opacity:.4}} width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+              <input className="search-input" placeholder="Search cards…" value={search} onChange={e=>setSearch(e.target.value)}/>
+            </div>
+            <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+              {[["all",`All (${cards.length})`],["new","New"],["weak","Weak"],["known","Known"],["due",`Due (${dueCount})`]].map(([k,label])=>(
+                <button key={k} className={`chip ${statusFilter===k?"chip-on":""}`} onClick={()=>setStatusFilter(k)} style={{padding:"5px 11px",fontSize:12}}>{label}</button>
+              ))}
+            </div>
+          </div>
+        )}
+        <div className="sec">{cards.length>0?`${filteredCards.length===cards.length?"All Cards":filteredCards.length+" matching"} (${cards.length} total)`:"No cards yet"}</div>
         {cards.length===0&&<div style={{textAlign:"center",padding:"36px 0",color:"var(--text3)",fontSize:14}}><Layers size={28} style={{opacity:.3,marginBottom:8}}/><br/>Tap "Add Cards" to generate flashcards</div>}
         <div style={{display:"flex",flexDirection:"column",gap:9}}>
-          {cards.map(c=>(
+          {filteredCards.map(c=>(
             <div key={c.id} className="card-row">
               <div style={{flex:1,minWidth:0}}>
                 <div style={{display:"flex",alignItems:"center",gap:7,marginBottom:3}}>
                   <span style={{fontWeight:600,fontSize:14}}>{c.english}</span>
                   <span className={`tag tag-${c.status}`}>{c.status}</span>
+                  {c.srsNextReview&&(
+                    <span style={{fontSize:10,color:c.srsNextReview<=Date.now()?"var(--info)":"var(--text3)"}}>
+                      {c.srsNextReview<=Date.now()?"Due now":
+                        `Next: ${new Date(c.srsNextReview).toLocaleDateString(undefined,{month:"short",day:"numeric"})}`}
+                    </span>
+                  )}
                 </div>
                 <div className="ar" style={{fontSize:20,color:"var(--accent)",marginBottom:4}}>{c.arabicBase}</div>
                 <div style={{display:"flex",flexWrap:"wrap",gap:4}}>
@@ -1011,6 +1213,19 @@ function DeckScreen({deck,cards,onStartStudy,onBack,onAddCards,onEditCard,onDele
                 <button className="btn" onClick={()=>setRenaming(true)}
                   style={{background:"var(--surface2)",color:"var(--text)",padding:"13px 16px",borderRadius:"var(--rs)",justifyContent:"flex-start",gap:12,fontSize:14}}>
                   <Pencil size={15} color="var(--text2)"/> Rename Deck
+                </button>
+                <button className="btn" onClick={()=>{
+                  const data=JSON.stringify({deck,cards},null,2);
+                  const blob=new Blob([data],{type:"application/json"});
+                  const url=URL.createObjectURL(blob);
+                  const a=document.createElement("a");
+                  a.href=url;a.download=`${deck.title.replace(/[^a-zA-Z0-9]/g,"_")}_flashcards.json`;
+                  a.click();URL.revokeObjectURL(url);
+                  showToast(`Exported ${cards.length} cards`,"success");
+                  setDeckMenu(false);
+                }}
+                  style={{background:"var(--surface2)",color:"var(--text)",padding:"13px 16px",borderRadius:"var(--rs)",justifyContent:"flex-start",gap:12,fontSize:14}}>
+                  <Download size={15} color="var(--text2)"/> Export Deck (JSON)
                 </button>
                 <button className="btn" onClick={()=>setConfirmDelete(true)}
                   style={{background:"var(--weak-bg)",color:"var(--weak)",padding:"13px 16px",borderRadius:"var(--rs)",justifyContent:"flex-start",gap:12,fontSize:14,border:"1px solid var(--weak-border)"}}>
@@ -1210,6 +1425,19 @@ Return ONLY valid JSON: {"sentence":"...","translation":"...","imagePrompt":"...
     }
   };
 
+  // Keyboard shortcuts for study
+  useEffect(()=>{
+    const handler=(e)=>{
+      if(e.target.tagName==="INPUT"||e.target.tagName==="TEXTAREA") return;
+      if(e.key===" "||e.key==="Enter"){e.preventDefault();if(!flipped) setFlipped(true);}
+      if(flipped&&e.key==="ArrowLeft"){e.preventDefault();onSwipe("left",card.id);}
+      if(flipped&&e.key==="ArrowRight"){e.preventDefault();onSwipe("right",card.id);}
+      if(e.key==="ArrowUp"&&currentIndex>0){e.preventDefault();onBack();}
+    };
+    window.addEventListener("keydown",handler);
+    return ()=>window.removeEventListener("keydown",handler);
+  },[flipped,card?.id,currentIndex]);
+
   // Stop audio on unmount or screen change
   useEffect(()=>()=>{if(window.speechSynthesis) window.speechSynthesis.cancel();},[]);
 
@@ -1251,6 +1479,11 @@ Return ONLY valid JSON: {"sentence":"...","translation":"...","imagePrompt":"...
               <div className="sec" style={{margin:0,marginBottom:5}}>Arabic · <span style={{textTransform:"capitalize"}}>{card.wordType}</span></div>
               <div className="ar" style={{fontSize:42,color:"var(--text)"}}>{card.arabicBase}</div>
               <div style={{fontSize:13,color:"var(--text3)"}}>{card.english}</div>
+              {card.srsStreak>0&&(
+                <div style={{display:"inline-flex",alignItems:"center",gap:4,marginTop:5,fontSize:11,color:"var(--know)"}}>
+                  {"🔥".repeat(Math.min(card.srsStreak,5))} {card.srsStreak} streak
+                </div>
+              )}
               {/* Harf badge */}
               {card.forms.harf&&(
                 <div style={{display:"inline-flex",alignItems:"center",gap:5,marginTop:7,background:"var(--harf-bg)",border:"1px solid var(--harf-border)",borderRadius:100,padding:"3px 11px"}}>
@@ -1315,7 +1548,14 @@ Return ONLY valid JSON: {"sentence":"...","translation":"...","imagePrompt":"...
             <button className="btn" onClick={()=>onSwipe("right",card.id)} style={{flex:1,padding:"14px 8px",borderRadius:"var(--r)",background:"var(--know-bg)",color:"var(--know)",border:"1.5px solid var(--know-border)",fontWeight:600,fontSize:13.5}}>Know It →</button>
           </div>
         )}
-        {!flipped&&<div style={{textAlign:"center",color:"var(--text3)",fontSize:12.5,marginTop:"auto"}}>Tap the card to reveal Arabic</div>}
+        {!flipped&&<div style={{textAlign:"center",color:"var(--text3)",fontSize:12.5,marginTop:"auto"}}>Tap the card to reveal Arabic · <span className="kbd">Space</span></div>}
+        {flipped&&(
+          <div style={{textAlign:"center",color:"var(--text3)",fontSize:11,marginTop:4,display:"flex",justifyContent:"center",gap:12}}>
+            <span><span className="kbd">←</span> Weak</span>
+            <span><span className="kbd">→</span> Know</span>
+            <span><span className="kbd">↑</span> Back</span>
+          </div>
+        )}
       </div>
       {wordPopup&&<WordPopup word={wordPopup.word} context={wordPopup.context} decks={decks||[]} cardStates={cardStates||{}} onClose={()=>setWordPopup(null)} onAddToFlashcard={onAddToFlashcard} trackUsage={trackUsage}/>}
     </div>
@@ -1326,15 +1566,31 @@ Return ONLY valid JSON: {"sentence":"...","translation":"...","imagePrompt":"...
 // COMPLETE
 // ─────────────────────────────────────────────────────────────
 function CompleteScreen({known,weak,onBack}) {
+  const total=known+weak;
+  const pct=total>0?Math.round((known/total)*100):0;
   return (
     <div className="screen" style={{display:"flex",alignItems:"center",justifyContent:"center",minHeight:"100vh",padding:28,textAlign:"center"}}>
-      <div className="pop-appear">
-        <div style={{fontSize:52,marginBottom:14}}>✦</div>
+      <div className="pop-appear" style={{width:"100%",maxWidth:340}}>
+        <div style={{fontSize:52,marginBottom:14}}>{pct>=80?"🌟":pct>=50?"✦":"💪"}</div>
         <div style={{fontFamily:"Lora,serif",fontSize:26,fontWeight:600,marginBottom:8}}>Session Complete</div>
-        <div style={{fontSize:14,color:"var(--text2)",marginBottom:32}}>
+        <div style={{fontSize:14,color:"var(--text2)",marginBottom:16}}>
           <span style={{color:"var(--know)",fontWeight:700}}>{known} known</span> · <span style={{color:"var(--weak)",fontWeight:700}}>{weak} need practice</span>
         </div>
-        <button className="btn btn-primary" onClick={onBack} style={{padding:"14px 28px",borderRadius:"var(--r)",fontSize:15}}>Back to Deck</button>
+        {/* Accuracy bar */}
+        <div style={{marginBottom:24}}>
+          <div style={{display:"flex",justifyContent:"space-between",fontSize:12,color:"var(--text3)",marginBottom:4}}>
+            <span>Accuracy</span><span style={{fontWeight:700,color:pct>=70?"var(--know)":"var(--weak)"}}>{pct}%</span>
+          </div>
+          <div className="progress-track" style={{height:6}}>
+            <div className="progress-fill" style={{width:`${pct}%`,background:pct>=70?"var(--know)":"var(--weak)"}}/>
+          </div>
+        </div>
+        <div style={{fontSize:12.5,color:"var(--text3)",marginBottom:24,lineHeight:1.6}}>
+          {pct>=80?"Excellent recall! Cards will be spaced further apart."
+           :pct>=50?"Good progress. Weak cards will appear sooner in your next session."
+           :"Keep practicing! Weak cards are scheduled for immediate review."}
+        </div>
+        <button className="btn btn-primary" onClick={onBack} style={{width:"100%",padding:"14px 28px",borderRadius:"var(--r)",fontSize:15}}>Back to Deck</button>
       </div>
     </div>
   );
@@ -1822,6 +2078,15 @@ export default function App() {
   const [currentIdx,setCurrentIdx]=useState(0);
   const [usage,setUsage]=useState(initUsage);
   const sessionRes=useRef({known:0,weak:0});
+  const [darkMode,setDarkMode]=useState(()=>{
+    const saved=localStorage.getItem("arabic_fc_dark");
+    if(saved!==null) return saved==="true";
+    return window.matchMedia?.("(prefers-color-scheme:dark)").matches||false;
+  });
+  useEffect(()=>{
+    document.documentElement.setAttribute("data-theme",darkMode?"dark":"light");
+    localStorage.setItem("arabic_fc_dark",darkMode);
+  },[darkMode]);
 
   // Firebase auth state listener
   useEffect(()=>{
@@ -1877,6 +2142,17 @@ export default function App() {
     setScreen("home");
   };
 
+  // Handle deck import from HomeScreen
+  useEffect(()=>{
+    const handler=(e)=>{
+      const {deck:d,cards:c}=e.detail;
+      setDecks(p=>[d,...p]);
+      setCardStates(p=>({...p,[d.id]:c}));
+    };
+    window.addEventListener("importDeck",handler);
+    return ()=>window.removeEventListener("importDeck",handler);
+  },[]);
+
   // Keep module-level refs in sync — picked up automatically by callClaude / generateDalleImage
   useEffect(()=>{ _activeModel = settings.model; _orKey = settings.orKey||""; _oaKey = settings.oaKey||""; },[settings.model,settings.orKey,settings.oaKey]);
   const go=s=>setScreen(s);
@@ -1909,7 +2185,10 @@ export default function App() {
   const savedIdx=useRef({});
   const startStudy=(mode,restart=false)=>{
     const dc=cardStates[activeDeck.id]||[];
-    const toStudy=mode==="weak"?dc.filter(c=>c.status==="weak"):[...dc];
+    const now=Date.now();
+    const toStudy=mode==="weak"?dc.filter(c=>c.status==="weak")
+      :mode==="due"?dc.filter(c=>!c.srsNextReview||c.srsNextReview<=now)
+      :sortByDueDate(dc);
     if(!toStudy.length) return;
     sessionRes.current={known:0,weak:0};setSessionCards(toStudy);
     const key=activeDeck.id+"_"+mode;
@@ -1920,7 +2199,11 @@ export default function App() {
   const handleSwipe=(dir,cardId)=>{
     const ns=dir==="right"?"known":"weak";
     sessionRes.current[ns==="known"?"known":"weak"]++;
-    setCardStates(p=>({...p,[activeDeck.id]:p[activeDeck.id].map(c=>c.id===cardId?{...c,status:ns}:c)}));
+    setCardStates(p=>({...p,[activeDeck.id]:p[activeDeck.id].map(c=>{
+      if(c.id!==cardId) return c;
+      const srs=calculateSRS(c,ns);
+      return {...c,status:ns,...srs};
+    })}));
     if(currentIdx<sessionCards.length-1){
       const nextIdx=currentIdx+1;
       setCurrentIdx(nextIdx);
@@ -1946,7 +2229,7 @@ export default function App() {
   const commonProps={decks,cardStates,trackUsage};
 
   const screens={
-    home:<HomeScreen {...commonProps} onOpenDeck={openDeck} onSettings={()=>go("settings")} onCreateDeck={()=>go("createDeck")} onReading={()=>go("reading")} onListening={()=>go("listening")}/>,
+    home:<HomeScreen {...commonProps} onOpenDeck={openDeck} onSettings={()=>go("settings")} onCreateDeck={()=>go("createDeck")} onReading={()=>go("reading")} onListening={()=>go("listening")} darkMode={darkMode} onToggleDark={()=>setDarkMode(d=>!d)}/>,
     settings:<SettingsScreen settings={settings} setSettings={setSettings} onBack={()=>go("home")} usage={usage} user={user} onSignOut={handleSignOut}/>,
     createDeck:<CreateDeckScreen onBack={()=>go("home")} onCreate={createDeck}/>,
     addCards:activeDeck&&<AddCardsScreen deck={activeDeck} onBack={()=>go("deck")} onSave={saveCards} trackUsage={trackUsage}/>,
@@ -1972,5 +2255,5 @@ export default function App() {
     <div className="app"><LoginScreen onLogin={handleSignIn} loading={authLoading} error={authError}/></div></>
   );
 
-  return (<><style>{CSS}</style><div className="app">{screens[screen]}</div></>);
+  return (<><style>{CSS}</style><ToastContainer/><div className="app">{screens[screen]}</div></>);
 }
