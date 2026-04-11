@@ -785,7 +785,7 @@ function UsageMeter({usage}) {
 // ─────────────────────────────────────────────────────────────
 // HOME
 // ─────────────────────────────────────────────────────────────
-function HomeScreen({decks,cardStates,onOpenDeck,onSettings,onCreateDeck,onReading,onListening,onConversation,onSearch,onProgress,onTest,darkMode,onToggleDark,studyLog}) {
+function HomeScreen({decks,cardStates,onOpenDeck,onSettings,onCreateDeck,onReading,onListening,onConversation,onSearch,onProgress,onTest,onMasterReview,darkMode,onToggleDark,studyLog}) {
   const sorted=[...decks].sort((a,b)=>b.createdAt-a.createdAt);
   const importRef=useRef(null);
   const handleImport=(e)=>{
@@ -856,6 +856,18 @@ function HomeScreen({decks,cardStates,onOpenDeck,onSettings,onCreateDeck,onReadi
       )}
 
       <div style={{padding:"16px 20px 0"}}>
+        {/* Master Review — prominent */}
+        {totalCards>0&&(
+          <div style={{marginBottom:16}}>
+            <button className="btn btn-primary" onClick={onMasterReview} style={{width:"100%",padding:"16px",borderRadius:"var(--r)",fontSize:15,display:"flex",alignItems:"center",justifyContent:"center",gap:10}}>
+              <BookOpen size={18}/> Master Review
+              <span style={{fontSize:12,opacity:.8,marginLeft:4}}>
+                {dueCount>0?`${dueCount} due`:weakCount>0?`${weakCount} weak`:`${totalCards} cards`}
+              </span>
+            </button>
+          </div>
+        )}
+
         <div className="sec">Practice Modules</div>
         <div style={{display:"flex",flexDirection:"column",gap:9,marginBottom:22}}>
           <div className="module-card" style={{borderColor:"var(--read-border)",background:"var(--read-bg)"}} onClick={onReading}>
@@ -1038,21 +1050,21 @@ function SettingsScreen({settings,setSettings,onBack,usage,user,onSignOut,onRepl
           <div style={{display:"flex",flexDirection:"column",gap:14}}>
             <div>
               <label className="lbl">Daily Target (minutes)</label>
-              <div style={{display:"flex",gap:6}}>
-                {[15,30,45,60,90].map(n=>(
+              <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+                {[15,30,45,60,90,120,180].map(n=>(
                   <button key={n} className={`chip ${(studyLog?.targets?.dailyMinutes||30)===n?"chip-on":""}`}
                     onClick={()=>onUpdateTargets({...(studyLog?.targets||{}),dailyMinutes:n})}
-                    style={{flex:1,justifyContent:"center",padding:"8px 0",fontSize:12}}>{n}</button>
+                    style={{flex:1,justifyContent:"center",padding:"8px 0",fontSize:12,minWidth:42}}>{n>=60?`${n/60}h`:n}</button>
                 ))}
               </div>
             </div>
             <div>
-              <label className="lbl">Weekly Target (minutes)</label>
-              <div style={{display:"flex",gap:6}}>
-                {[60,150,210,300,420].map(n=>(
+              <label className="lbl">Weekly Target (hours)</label>
+              <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+                {[60,150,210,300,420,600,840].map(n=>(
                   <button key={n} className={`chip ${(studyLog?.targets?.weeklyMinutes||150)===n?"chip-on":""}`}
                     onClick={()=>onUpdateTargets({...(studyLog?.targets||{}),weeklyMinutes:n})}
-                    style={{flex:1,justifyContent:"center",padding:"8px 0",fontSize:12}}>{n>=60?`${Math.round(n/60)}h`:n}</button>
+                    style={{flex:1,justifyContent:"center",padding:"8px 0",fontSize:12,minWidth:42}}>{n>=60?`${Math.round(n/60*10)/10}h`:n+"m"}</button>
                 ))}
               </div>
             </div>
@@ -1315,17 +1327,9 @@ function DeckScreen({deck,cards,onStartStudy,onBack,onAddCards,onEditCard,onDele
         </div>
         {cards.length>0&&(
           <div style={{display:"flex",flexDirection:"column",gap:8,marginBottom:20}}>
-            {savedIdx>0&&savedIdx<cards.length&&(
-              <button className="btn btn-primary" onClick={()=>onStartStudy("all",false)} style={{width:"100%",padding:"13px",borderRadius:"var(--r)",fontSize:14}}>
-                <BookOpen size={16}/> Resume (Card {savedIdx+1}/{cards.length})
-              </button>
-            )}
-            <button className="btn btn-primary" onClick={()=>onStartStudy("all",true)} style={{width:"100%",padding:"13px",borderRadius:"var(--r)",fontSize:14,...(savedIdx>0&&savedIdx<cards.length?{background:"transparent",color:"var(--accent)",border:"1.5px solid var(--accent)"}:{})}}>
-              <BookOpen size={16}/> {savedIdx>0&&savedIdx<cards.length?"Restart from Beginning":"Study All"} ({cards.length})
+            <button className="btn btn-primary" onClick={()=>onStartStudy("all",true)} style={{width:"100%",padding:"13px",borderRadius:"var(--r)",fontSize:14}}>
+              <BookOpen size={16}/> Study All ({cards.length})
             </button>
-            {dueCount>0&&<button className="btn" onClick={()=>onStartStudy("due")} style={{width:"100%",padding:"12px",borderRadius:"var(--r)",fontSize:14,fontWeight:600,background:"var(--info-bg)",color:"var(--info)",border:"1.5px solid var(--info-border)"}}>
-              <Zap size={15}/> Study Due Cards ({dueCount})
-            </button>}
             {weak>0&&<button className="btn" onClick={()=>onStartStudy("weak")} style={{width:"100%",padding:"12px",borderRadius:"var(--r)",fontSize:14,fontWeight:600,background:"var(--weak-bg)",color:"var(--weak)",border:"1.5px solid var(--weak-border)"}}>
               <RotateCcw size={15}/> Practice Weak ({weak})
             </button>}
@@ -2611,6 +2615,237 @@ Return plain text, NOT JSON.`,
 }
 
 // ─────────────────────────────────────────────────────────────
+// MASTER REVIEW — Anki-style across all decks
+// ─────────────────────────────────────────────────────────────
+function MasterReviewScreen({decks,cardStates,onBack,onSwipeCard,trackUsage,onAddToFlashcard,studyLog,onLogStudy}) {
+  const [started,setStarted]=useState(false);
+  const [mode,setMode]=useState("smart"); // smart, due, weak, new, all
+  const [limit,setLimit]=useState(50);
+  const [sessionCards,setSessionCards]=useState([]);
+  const [idx,setIdx]=useState(0);
+  const [results,setResults]=useState({known:0,weak:0});
+  const [flipped,setFlipped]=useState(false);
+  const [selForm,setSelForm]=useState(null);
+  const [wordPopup,setWordPopup]=useState(null);
+  const startRef=useRef(null);
+
+  const allCards=Object.values(cardStates).flat();
+  const now=Date.now();
+  const dueCards=allCards.filter(c=>c.srsLastReview&&c.srsNextReview&&c.srsNextReview<=now);
+  const weakCards=allCards.filter(c=>c.status==="weak");
+  const newCards=allCards.filter(c=>c.status==="new"||!c.status);
+  const knownCards=allCards.filter(c=>c.status==="known");
+
+  const start=(m)=>{
+    const startMode=m||mode;
+    let pool=[];
+    if(startMode==="smart"){
+      // Anki-style: due first, then weak, then new
+      pool=[...sortByDueDate(dueCards),...weakCards.filter(c=>!dueCards.includes(c)),...newCards];
+    } else if(startMode==="due") pool=[...sortByDueDate(dueCards)];
+    else if(startMode==="weak") pool=[...weakCards];
+    else if(startMode==="new") pool=[...newCards];
+    else pool=[...sortByDueDate(allCards)];
+    pool=pool.slice(0,limit);
+    if(!pool.length){showToast("No cards available for this mode","error");return;}
+    // Tag each card with its deckId for proper state updates
+    const tagged=[];
+    for(const deck of decks){
+      const deckCards=new Set((cardStates[deck.id]||[]).map(c=>c.id));
+      pool.forEach(c=>{if(deckCards.has(c.id)&&!tagged.find(t=>t.id===c.id)) tagged.push({...c,_deckId:deck.id});});
+    }
+    setSessionCards(tagged);setIdx(0);setResults({known:0,weak:0});setFlipped(false);setStarted(true);
+    startRef.current=Date.now();
+  };
+
+  const handleSwipe=(dir)=>{
+    const card=sessionCards[idx];
+    const ns=dir==="right"?"known":"weak";
+    setResults(p=>({...p,[ns]:p[ns]+1}));
+    onSwipeCard(card._deckId,card.id,ns,selForm);
+    if(idx<sessionCards.length-1){
+      setIdx(i=>i+1);setFlipped(false);setSelForm(null);
+    } else {
+      if(startRef.current){
+        const mins=Math.max(1,Math.round((Date.now()-startRef.current)/60000));
+        onLogStudy({type:"app",module:"vocab",minutes:mins,subtype:"master-review"});
+      }
+      setStarted(false);setMode("done");
+    }
+  };
+
+  // Keyboard shortcuts
+  useEffect(()=>{
+    if(!started) return;
+    const handler=(e)=>{
+      if(e.target.tagName==="INPUT"||e.target.tagName==="TEXTAREA") return;
+      if((e.key===" "||e.key==="Enter")&&!flipped){e.preventDefault();setFlipped(true);}
+      if(flipped&&e.key==="ArrowLeft"){e.preventDefault();handleSwipe("left");}
+      if(flipped&&e.key==="ArrowRight"){e.preventDefault();handleSwipe("right");}
+    };
+    window.addEventListener("keydown",handler);
+    return ()=>window.removeEventListener("keydown",handler);
+  },[started,flipped,idx,selForm]);
+
+  const card=sessionCards[idx];
+
+  // Results screen
+  if(mode==="done"){
+    const total=results.known+results.weak;
+    const pct=total?Math.round(results.known/total*100):0;
+    return (
+      <div className="screen" style={{display:"flex",alignItems:"center",justifyContent:"center",minHeight:"100vh",padding:28,textAlign:"center"}}>
+        <div className="pop-appear" style={{width:"100%",maxWidth:340}}>
+          <div style={{fontSize:52,marginBottom:14}}>{pct>=80?"🌟":pct>=50?"✦":"💪"}</div>
+          <div style={{fontFamily:"Lora,serif",fontSize:24,fontWeight:600,marginBottom:8}}>Master Review Complete</div>
+          <div style={{fontSize:14,color:"var(--text2)",marginBottom:16}}>
+            <span style={{color:"var(--know)",fontWeight:700}}>{results.known} known</span> · <span style={{color:"var(--weak)",fontWeight:700}}>{results.weak} weak</span>
+          </div>
+          <div className="progress-track" style={{height:6,marginBottom:24}}>
+            <div className="progress-fill" style={{width:`${pct}%`,background:pct>=70?"var(--know)":"var(--weak)"}}/>
+          </div>
+          <div style={{display:"flex",gap:8}}>
+            <button className="btn" onClick={()=>{setMode("smart");}} style={{flex:1,background:"var(--surface2)",color:"var(--text2)",padding:"13px",borderRadius:"var(--rs)",fontWeight:600}}>Review Again</button>
+            <button className="btn btn-primary" onClick={onBack} style={{flex:1,padding:"13px",borderRadius:"var(--rs)"}}> Home</button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // Active study
+  if(started&&card){
+    const availForms=Object.entries(card.forms||{}).filter(([,v])=>v);
+    if(!selForm&&availForms.length){
+      const weakForms=card.weakForms||[];
+      const def=weakForms.find(f=>availForms.some(([k])=>k===f))||availForms[0]?.[0]||null;
+      setTimeout(()=>setSelForm(def),0);
+    }
+    return (
+      <div className="screen" style={{display:"flex",flexDirection:"column",padding:"18px 18px 20px"}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
+          <button className="btn btn-ghost" onClick={()=>{setStarted(false);setMode("smart");}} style={{width:32,height:32}}><X size={14}/></button>
+          <span style={{fontSize:13,color:"var(--text2)",fontWeight:600}}>{idx+1} / {sessionCards.length}</span>
+          <span style={{fontSize:12,color:"var(--text3)"}}><span style={{color:"var(--know)"}}>{results.known}✓</span> <span style={{color:"var(--weak)"}}>{results.weak}✗</span></span>
+        </div>
+        <div className="progress-track" style={{marginBottom:16}}><div className="progress-fill" style={{width:`${((idx+1)/sessionCards.length)*100}%`,background:"var(--accent)"}}/></div>
+
+        <div style={{flex:1,display:"flex",flexDirection:"column",gap:13,overflowY:"auto"}}>
+          {!flipped?(
+            <div className="card-appear" onClick={()=>setFlipped(true)}
+              style={{background:"var(--surface)",border:"1.5px solid var(--border)",borderRadius:"var(--r)",padding:"44px 24px",cursor:"pointer",textAlign:"center",boxShadow:"0 5px 24px rgba(0,0,0,0.08)",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",minHeight:188}}>
+              <div className="sec" style={{margin:0,marginBottom:16}}>English</div>
+              <div style={{fontFamily:"Lora,serif",fontSize:36,fontWeight:600,lineHeight:1.2}}>{card.english}</div>
+              <div style={{fontSize:12,color:"var(--text3)",marginTop:20}}>Tap to reveal · <span className="kbd">Space</span></div>
+            </div>
+          ):(
+            <div className="card-appear" style={{background:"var(--surface)",border:"1.5px solid var(--border)",borderRadius:"var(--r)",padding:"18px 17px",boxShadow:"0 5px 24px rgba(0,0,0,0.08)"}}>
+              <div style={{textAlign:"center",paddingBottom:14,borderBottom:"1px solid var(--border)",marginBottom:14}}>
+                <div className="sec" style={{margin:0,marginBottom:5}}>Arabic · <span style={{textTransform:"capitalize"}}>{card.wordType}</span></div>
+                <div className="ar" style={{fontSize:40,color:"var(--text)"}}>{card.arabicBase}</div>
+                <div style={{fontSize:13,color:"var(--text3)"}}>{card.english}</div>
+                {card.srsStreak>0&&<div style={{display:"inline-flex",alignItems:"center",gap:4,marginTop:5,fontSize:11,color:"var(--know)"}}>{"🔥".repeat(Math.min(card.srsStreak,5))} {card.srsStreak} streak</div>}
+                {card.forms?.harf&&<div style={{display:"inline-flex",alignItems:"center",gap:5,marginTop:7,background:"var(--harf-bg)",border:"1px solid var(--harf-border)",borderRadius:100,padding:"3px 11px"}}><span className="ar" style={{fontSize:17,color:"var(--harf)",fontWeight:600}}>{card.forms.harf}</span></div>}
+              </div>
+              <div style={{display:"flex",flexWrap:"wrap",gap:7,marginBottom:12}}>
+                {availForms.filter(([k])=>k!=="harf").map(([key,val])=>(
+                  <button key={key} className={`chip ${selForm===key?"chip-on":""}`} onClick={()=>setSelForm(key)}>
+                    {(card.weakForms||[]).includes(key)&&<span style={{color:selForm===key?"rgba(255,200,200,.9)":"var(--weak)",fontSize:10}}>●</span>}
+                    {FORM_LABELS[key]||key}<span className="ar" style={{fontSize:13,color:selForm===key?"rgba(255,255,255,.75)":"var(--text3)"}}>· {val}</span>
+                  </button>
+                ))}
+              </div>
+              {selForm&&card.forms[selForm]&&(
+                <div style={{textAlign:"center",background:"var(--accent-bg)",borderRadius:"var(--rxs)",padding:"9px 13px",marginBottom:12}}>
+                  <div style={{fontSize:11,color:"var(--text3)",marginBottom:3}}>{FORM_LABELS[selForm]}</div>
+                  <div className="ar" style={{fontSize:28,color:"var(--accent)",fontWeight:500}}>{card.forms[selForm]}</div>
+                </div>
+              )}
+            </div>
+          )}
+          {flipped&&(
+            <div style={{display:"flex",gap:10}}>
+              <button className="btn" onClick={()=>handleSwipe("left")} style={{flex:1,padding:"14px 8px",borderRadius:"var(--r)",background:"var(--weak-bg)",color:"var(--weak)",border:"1.5px solid var(--weak-border)",fontWeight:600,fontSize:13.5}}>← Weak</button>
+              <button className="btn" onClick={()=>handleSwipe("right")} style={{flex:1,padding:"14px 8px",borderRadius:"var(--r)",background:"var(--know-bg)",color:"var(--know)",border:"1.5px solid var(--know-border)",fontWeight:600,fontSize:13.5}}>Know It →</button>
+            </div>
+          )}
+          {flipped&&<div style={{textAlign:"center",color:"var(--text3)",fontSize:11,marginTop:4,display:"flex",justifyContent:"center",gap:12}}>
+            <span><span className="kbd">←</span> Weak</span><span><span className="kbd">→</span> Know</span>
+          </div>}
+        </div>
+      </div>
+    );
+  }
+
+  // Mode picker
+  return (
+    <div className="screen">
+      <Hdr title="Master Review" sub="All Decks" onBack={onBack}/>
+      <div style={{padding:"18px 20px 0",display:"flex",flexDirection:"column",gap:14}}>
+        <div style={{fontSize:13.5,color:"var(--text2)",lineHeight:1.6}}>
+          Review cards from all your decks in one session. Like Anki — due cards first, then weak, then new.
+        </div>
+
+        {/* Card limit */}
+        <div>
+          <div className="sec">Cards Per Session</div>
+          <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+            {[20,50,100,150,200,999].map(n=>(
+              <button key={n} className={`chip ${limit===n?"chip-on":""}`} onClick={()=>setLimit(n)} style={{flex:1,justifyContent:"center",padding:"8px 0",fontSize:12,minWidth:48}}>
+                {n>=999?"All":n}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Mode selection */}
+        <div className="sec">Review Mode</div>
+        <div className="test-option" onClick={()=>{setMode("smart");start("smart");}}>
+          <div style={{width:40,height:40,borderRadius:12,background:"var(--accent-bg)",display:"flex",alignItems:"center",justifyContent:"center"}}><Zap size={18} color="var(--accent)"/></div>
+          <div style={{flex:1}}>
+            <div style={{fontWeight:600,fontSize:14}}>Smart Review</div>
+            <div style={{fontSize:12,color:"var(--text3)",marginTop:2}}>Due ({dueCards.length}) → Weak ({weakCards.length}) → New ({newCards.length})</div>
+          </div>
+        </div>
+        {dueCards.length>0&&(
+          <div className="test-option" onClick={()=>{setMode("due");start("due");}}>
+            <div style={{width:40,height:40,borderRadius:12,background:"var(--info-bg)",display:"flex",alignItems:"center",justifyContent:"center"}}><Clock size={18} color="var(--info)"/></div>
+            <div style={{flex:1}}><div style={{fontWeight:600,fontSize:14}}>Due Cards Only</div><div style={{fontSize:12,color:"var(--text3)",marginTop:2}}>{dueCards.length} cards past their review date</div></div>
+          </div>
+        )}
+        {weakCards.length>0&&(
+          <div className="test-option" onClick={()=>{setMode("weak");start("weak");}}>
+            <div style={{width:40,height:40,borderRadius:12,background:"var(--weak-bg)",display:"flex",alignItems:"center",justifyContent:"center"}}><Target size={18} color="var(--weak)"/></div>
+            <div style={{flex:1}}><div style={{fontWeight:600,fontSize:14}}>Weak Cards Only</div><div style={{fontSize:12,color:"var(--text3)",marginTop:2}}>{weakCards.length} cards marked weak</div></div>
+          </div>
+        )}
+        {newCards.length>0&&(
+          <div className="test-option" onClick={()=>{setMode("new");start("new");}}>
+            <div style={{width:40,height:40,borderRadius:12,background:"var(--surface2)",display:"flex",alignItems:"center",justifyContent:"center"}}><Plus size={18} color="var(--text3)"/></div>
+            <div style={{flex:1}}><div style={{fontWeight:600,fontSize:14}}>New Cards Only</div><div style={{fontSize:12,color:"var(--text3)",marginTop:2}}>{newCards.length} unreviewed cards</div></div>
+          </div>
+        )}
+        <div className="test-option" onClick={()=>{setMode("all");start("all");}}>
+          <div style={{width:40,height:40,borderRadius:12,background:"var(--surface2)",display:"flex",alignItems:"center",justifyContent:"center"}}><Layers size={18} color="var(--text2)"/></div>
+          <div style={{flex:1}}><div style={{fontWeight:600,fontSize:14}}>All Cards</div><div style={{fontSize:12,color:"var(--text3)",marginTop:2}}>{allCards.length} total across all decks</div></div>
+        </div>
+
+        {/* Queue breakdown */}
+        <div style={{background:"var(--surface)",border:"1.5px solid var(--border)",borderRadius:"var(--rs)",padding:"12px 14px"}}>
+          <div className="sec">Queue Breakdown</div>
+          <div style={{display:"flex",gap:16,fontSize:13}}>
+            <div><span style={{fontWeight:700,color:"var(--info)"}}>{dueCards.length}</span> <span style={{color:"var(--text3)"}}>due</span></div>
+            <div><span style={{fontWeight:700,color:"var(--weak)"}}>{weakCards.length}</span> <span style={{color:"var(--text3)"}}>weak</span></div>
+            <div><span style={{fontWeight:700,color:"var(--text3)"}}>{newCards.length}</span> <span style={{color:"var(--text3)"}}>new</span></div>
+            <div><span style={{fontWeight:700,color:"var(--know)"}}>{knownCards.length}</span> <span style={{color:"var(--text3)"}}>known</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────
 // SESSION RATING (shown after reading/listening/conversation)
 // ─────────────────────────────────────────────────────────────
 function SessionRating({module,onSubmit,onSkip}) {
@@ -2997,10 +3232,10 @@ function SRSSettingsPanel({srsSettings,onChange}) {
         </div>
         <div>
           <label className="lbl">New Cards Per Session</label>
-          <div style={{display:"flex",gap:6}}>
-            {[5,10,20,50].map(n=>(
-              <button key={n} className={`chip ${s.newCardsPerDay===n?"chip-on":""}`} onClick={()=>set("newCardsPerDay",n)} style={{flex:1,justifyContent:"center",padding:"8px 0",fontSize:12}}>
-                {n}
+          <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+            {[5,10,20,50,100,999].map(n=>(
+              <button key={n} className={`chip ${s.newCardsPerDay===n?"chip-on":""}`} onClick={()=>set("newCardsPerDay",n)} style={{flex:1,justifyContent:"center",padding:"8px 0",fontSize:12,minWidth:48}}>
+                {n>=999?"All":n}
               </button>
             ))}
           </div>
@@ -3234,6 +3469,18 @@ export default function App() {
 
   const logStudy=(entry)=>setStudyLog(prev=>addStudyEntry(prev,entry));
 
+  // Master review swipe — updates the correct deck's card
+  const handleMasterSwipe=(deckId,cardId,status,activeForm)=>{
+    setCardStates(p=>({...p,[deckId]:(p[deckId]||[]).map(c=>{
+      if(c.id!==cardId) return c;
+      const srs=calculateSRS(c,status);
+      let weakForms=c.weakForms?[...c.weakForms]:[];
+      if(status==="weak"&&activeForm){if(!weakForms.includes(activeForm)) weakForms.push(activeForm);}
+      else if(status==="known"&&activeForm){weakForms=weakForms.filter(f=>f!==activeForm);}
+      return {...c,status,weakForms,...srs};
+    })}));
+  };
+
   const completeOnboarding=()=>{
     setShowOnboarding(false);
     if(user) setDoc(doc(db,"users",user.uid),{onboardingDone:true},{merge:true}).catch(()=>{});
@@ -3249,7 +3496,7 @@ export default function App() {
   const commonProps={decks,cardStates,trackUsage};
 
   const screens={
-    home:<HomeScreen {...commonProps} onOpenDeck={openDeck} onSettings={()=>go("settings")} onCreateDeck={()=>go("createDeck")} onReading={()=>go("reading")} onListening={()=>go("listening")} onConversation={()=>go("conversation")} onSearch={()=>setShowSearch(true)} onProgress={()=>go("progress")} onTest={()=>go("test")} darkMode={darkMode} onToggleDark={()=>setDarkMode(d=>!d)} studyLog={studyLog}/>,
+    home:<HomeScreen {...commonProps} onOpenDeck={openDeck} onSettings={()=>go("settings")} onCreateDeck={()=>go("createDeck")} onReading={()=>go("reading")} onListening={()=>go("listening")} onConversation={()=>go("conversation")} onSearch={()=>setShowSearch(true)} onProgress={()=>go("progress")} onTest={()=>go("test")} onMasterReview={()=>go("masterReview")} darkMode={darkMode} onToggleDark={()=>setDarkMode(d=>!d)} studyLog={studyLog}/>,
     settings:<SettingsScreen settings={settings} setSettings={setSettings} onBack={()=>go("home")} usage={usage} user={user} onSignOut={handleSignOut} onReplayOnboarding={()=>setShowOnboarding(true)} studyLog={studyLog} onUpdateTargets={(t)=>setStudyLog(sl=>({...sl,targets:t}))}/>,
     createDeck:<CreateDeckScreen onBack={()=>go("home")} onCreate={createDeck}/>,
     addCards:activeDeck&&<AddCardsScreen deck={activeDeck} onBack={()=>go("deck")} onSave={saveCards} trackUsage={trackUsage}/>,
@@ -3262,6 +3509,7 @@ export default function App() {
     conversation:<ConversationScreen {...commonProps} onBack={()=>{go("home");setSessionRating({module:"speaking"});}} onLogStudy={logStudy} onAddToFlashcard={addToFlashcard}/>,
     progress:<ProgressScreen cardStates={cardStates} studyLog={studyLog} onBack={()=>go("home")} onLogManual={(e)=>logStudy(e)}/>,
     test:<TestScreen decks={decks} cardStates={cardStates} onBack={()=>go("home")} trackUsage={trackUsage} studyLog={studyLog} onLogStudy={logStudy}/>,
+    masterReview:<MasterReviewScreen decks={decks} cardStates={cardStates} onBack={()=>{go("home");setSessionRating({module:"vocab"});}} onSwipeCard={handleMasterSwipe} trackUsage={trackUsage} onAddToFlashcard={addToFlashcard} studyLog={studyLog} onLogStudy={logStudy}/>,
   };
 
   // Show loading spinner while Firebase checks auth state
