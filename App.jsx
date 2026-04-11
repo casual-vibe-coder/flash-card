@@ -146,25 +146,34 @@ function sortByDueDate(cards) {
 
 /**
  * Get count of cards due for review right now.
+ * Only counts previously-reviewed cards whose interval has passed — not new/unreviewed cards.
  */
 function getDueCount(cards) {
   const now = Date.now();
-  return cards.filter(c => !c.srsNextReview || c.srsNextReview <= now).length;
+  return cards.filter(c => c.srsLastReview && c.srsNextReview && c.srsNextReview <= now).length;
 }
 
 /**
- * Count total word instances across all cards (each non-empty form counts as one).
+ * Count total unique word instances across all cards.
+ * - Does NOT count arabicBase separately (it's the same as singular/past)
+ * - Counts each non-empty form value (singular, plural, synonym, etc.)
+ * - Deduplicates harfs — common prepositions like فِي only count once globally
  */
 function countWordInstances(cardStates) {
   let count = 0;
+  const seenHarfs = new Set();
   for (const cards of Object.values(cardStates)) {
     for (const c of cards) {
-      // Count arabicBase as 1, plus each non-empty form value
-      count++; // the base word itself
-      if (c.forms) {
-        for (const v of Object.values(c.forms)) {
-          if (v && v.trim()) count++;
+      if (!c.forms) continue;
+      for (const [key, v] of Object.entries(c.forms)) {
+        if (!v || !v.trim()) continue;
+        if (key === "harf") {
+          // Deduplicate harfs — strip tashkeel for comparison
+          const stripped = v.replace(/[\u064B-\u065F\u0670]/g, "").trim();
+          if (seenHarfs.has(stripped)) continue;
+          seenHarfs.add(stripped);
         }
+        count++;
       }
     }
   }
@@ -2568,8 +2577,18 @@ export default function App() {
           if(snap.exists()){
             const d=snap.data();
             try {
-              if(d.decks?.length) setDecks(d.decks);
-              if(d.cardStates&&Object.keys(d.cardStates).length) setCardStates(d.cardStates);
+              if(d.decks?.length) {
+                setDecks(d.decks);
+                // Clean orphaned cardStates — only keep keys matching existing decks
+                if(d.cardStates){
+                  const deckIds=new Set(d.decks.map(dk=>dk.id));
+                  const cleaned={};
+                  for(const [k,v] of Object.entries(d.cardStates)){
+                    if(deckIds.has(k)) cleaned[k]=v;
+                  }
+                  setCardStates(cleaned);
+                }
+              }
               if(d.settings) setSettings(s=>({...s,...d.settings}));
               if(d.usage?.byTag) setUsage(d.usage);
             } catch(e){ console.error("Data parse error:",e); }
@@ -2657,7 +2676,7 @@ export default function App() {
     const dc=cardStates[activeDeck.id]||[];
     const now=Date.now();
     const toStudy=mode==="weak"?dc.filter(c=>c.status==="weak")
-      :mode==="due"?dc.filter(c=>!c.srsNextReview||c.srsNextReview<=now)
+      :mode==="due"?dc.filter(c=>c.srsLastReview&&c.srsNextReview&&c.srsNextReview<=now)
       :sortByDueDate(dc);
     if(!toStudy.length) return;
     sessionRes.current={known:0,weak:0};setSessionCards(toStudy);
