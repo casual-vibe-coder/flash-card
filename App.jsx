@@ -9,7 +9,8 @@ import {
   PlusCircle, Mic, Info, Image as ImageIcon, MoreVertical, Pencil,
   DollarSign, Zap, ChevronDown, ChevronUp, SquareCheck, Square,
   Moon, Sun, Download, Upload, Search, MessageCircle, HelpCircle,
-  Send, Clock, Target, BarChart3, Hash
+  Send, Clock, Target, BarChart3, Hash, TrendingUp, Calendar,
+  Award, Star, PenLine, Timer, Activity, Brain, CheckCircle2
 } from "lucide-react";
 
 // ─────────────────────────────────────────────────────────────
@@ -178,6 +179,85 @@ function countWordInstances(cardStates) {
     }
   }
   return count;
+}
+
+// ─────────────────────────────────────────────────────────────
+// STUDY TRACKING & ANALYTICS UTILITIES
+// ─────────────────────────────────────────────────────────────
+const TODAY_KEY=()=>new Date().toISOString().slice(0,10); // "2026-04-11"
+
+function initStudyLog(){return {entries:[],targets:{dailyMinutes:30,weeklyMinutes:150}};}
+
+function addStudyEntry(log,entry){
+  return {...log,entries:[...log.entries,{id:Date.now(),date:TODAY_KEY(),ts:Date.now(),...entry}]};
+}
+
+function getEntriesForDate(log,dateKey){return (log.entries||[]).filter(e=>e.date===dateKey);}
+
+function getEntriesForWeek(log){
+  const now=new Date();const weekAgo=new Date(now);weekAgo.setDate(now.getDate()-7);
+  const cutoff=weekAgo.toISOString().slice(0,10);
+  return (log.entries||[]).filter(e=>e.date>=cutoff);
+}
+
+function getEntriesForDays(log,days){
+  const now=new Date();const ago=new Date(now);ago.setDate(now.getDate()-days);
+  const cutoff=ago.toISOString().slice(0,10);
+  return (log.entries||[]).filter(e=>e.date>=cutoff);
+}
+
+function sumMinutes(entries){return entries.reduce((s,e)=>s+(e.minutes||0),0);}
+
+function minutesByModule(entries){
+  const m={vocab:0,reading:0,listening:0,speaking:0,manual:0};
+  entries.forEach(e=>{m[e.module||"manual"]=(m[e.module||"manual"]||0)+(e.minutes||0);});
+  return m;
+}
+
+function getLast7DaysData(log){
+  const days=[];
+  for(let i=6;i>=0;i--){
+    const d=new Date();d.setDate(d.getDate()-i);
+    const key=d.toISOString().slice(0,10);
+    const dayEntries=getEntriesForDate(log,key);
+    const app=sumMinutes(dayEntries.filter(e=>e.type==="app"));
+    const manual=sumMinutes(dayEntries.filter(e=>e.type==="manual"));
+    days.push({date:key,label:d.toLocaleDateString(undefined,{weekday:"short"}),app,manual,total:app+manual});
+  }
+  return days;
+}
+
+/** Generate a performance interpretation from card data and study log */
+function getPerformanceInsights(cardStates,studyLog){
+  const allCards=Object.values(cardStates).flat();
+  const total=allCards.length;if(!total) return [];
+  const known=allCards.filter(c=>c.status==="known").length;
+  const weak=allCards.filter(c=>c.status==="weak").length;
+  const newC=allCards.filter(c=>c.status==="new"||!c.status).length;
+  const knownPct=Math.round(known/total*100);
+  const weakPct=Math.round(weak/total*100);
+  const weekEntries=getEntriesForWeek(studyLog);
+  const weekMin=sumMinutes(weekEntries);
+  const byMod=minutesByModule(weekEntries);
+  const insights=[];
+
+  if(knownPct>=70) insights.push({icon:"🌟",text:"Strong vocabulary foundation — "+knownPct+"% of cards known.",type:"success"});
+  else if(knownPct>=40) insights.push({icon:"📈",text:"Improving steadily — "+knownPct+"% known, keep going.",type:"info"});
+  else insights.push({icon:"🌱",text:"Early stage — "+knownPct+"% known. Focus on daily review.",type:"info"});
+
+  if(weakPct>20) insights.push({icon:"⚠️",text:"Weak card load is high ("+weakPct+"%). Prioritize weak card review.",type:"warning"});
+  if(weak>0&&known>weak*3) insights.push({icon:"💪",text:"Good ratio — knowing "+known+" vs "+weak+" weak cards.",type:"success"});
+
+  const maxMod=Object.entries(byMod).filter(([k])=>k!=="manual").sort((a,b)=>b[1]-a[1])[0];
+  const minMod=Object.entries(byMod).filter(([k])=>k!=="manual"&&byMod[k]!==undefined).sort((a,b)=>a[1]-b[1])[0];
+  if(maxMod&&minMod&&maxMod[1]>0&&minMod[1]===0) insights.push({icon:"📊",text:`${maxMod[0]} is your strongest module. Consider more ${minMod[0]} practice.`,type:"info"});
+
+  const target=studyLog?.targets?.weeklyMinutes||150;
+  if(weekMin>=target) insights.push({icon:"✅",text:`On track — ${weekMin} min this week (target: ${target} min).`,type:"success"});
+  else if(weekMin>=target*0.5) insights.push({icon:"🔄",text:`${weekMin} of ${target} min target this week — ${Math.round(weekMin/target*100)}% done.`,type:"info"});
+  else if(weekMin>0) insights.push({icon:"⏰",text:`Behind target — only ${weekMin} of ${target} min this week.`,type:"warning"});
+
+  return insights.slice(0,4);
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -379,6 +459,18 @@ textarea.input{resize:vertical;min-height:110px;line-height:1.7}
 .onboarding-dot{width:8px;height:8px;border-radius:50%;background:var(--border);transition:all .2s}
 .onboarding-dot.active{background:var(--accent);width:20px;border-radius:4px}
 @keyframes pulse{0%,100%{box-shadow:0 0 0 4px var(--weak-bg)}50%{box-shadow:0 0 0 10px var(--weak-bg)}}
+.bar-chart{display:flex;align-items:flex-end;gap:4px;height:80px;padding:4px 0}
+.bar-col{display:flex;flex-direction:column;align-items:center;flex:1;gap:2px}
+.bar-fill{width:100%;border-radius:3px 3px 0 0;min-height:1px;transition:height .3s ease}
+.bar-label{font-size:9px;color:var(--text3);font-weight:500}
+.rating-stars{display:flex;gap:6px;justify-content:center}
+.rating-star{width:36px;height:36px;border-radius:50%;border:2px solid var(--border);background:var(--surface);display:flex;align-items:center;justify-content:center;cursor:pointer;transition:all .15s;font-size:16px}
+.rating-star.on{border-color:var(--accent);background:var(--accent-bg)}
+.insight-card{display:flex;align-items:flex-start;gap:10px;padding:10px 13px;border-radius:var(--rxs);background:var(--surface);border:1px solid var(--border);font-size:13px;line-height:1.5;color:var(--text2)}
+.insight-card.warning{border-color:var(--weak-border);background:var(--weak-bg)}
+.insight-card.success{border-color:var(--know-border);background:var(--know-bg)}
+.test-option{display:flex;align-items:center;gap:12px;padding:14px 16px;background:var(--surface);border:1.5px solid var(--border);border-radius:var(--rs);cursor:pointer;transition:all .15s}
+.test-option:hover{border-color:var(--accent);background:var(--accent-bg)}
 `;
 
 // ─────────────────────────────────────────────────────────────
@@ -693,7 +785,7 @@ function UsageMeter({usage}) {
 // ─────────────────────────────────────────────────────────────
 // HOME
 // ─────────────────────────────────────────────────────────────
-function HomeScreen({decks,cardStates,onOpenDeck,onSettings,onCreateDeck,onReading,onListening,onConversation,onSearch,darkMode,onToggleDark}) {
+function HomeScreen({decks,cardStates,onOpenDeck,onSettings,onCreateDeck,onReading,onListening,onConversation,onSearch,onProgress,onTest,darkMode,onToggleDark,studyLog}) {
   const sorted=[...decks].sort((a,b)=>b.createdAt-a.createdAt);
   const importRef=useRef(null);
   const handleImport=(e)=>{
@@ -781,6 +873,17 @@ function HomeScreen({decks,cardStates,onOpenDeck,onSettings,onCreateDeck,onReadi
             <div style={{flex:1}}><div style={{fontWeight:700,fontSize:14.5,color:"var(--accent)"}}>Conversation</div><div style={{fontSize:12.5,color:"var(--text2)",marginTop:2}}>AI chat practice using your vocabulary</div></div>
             <ChevronRight size={15} color="var(--accent)"/>
           </div>
+          <div style={{display:"flex",gap:9}}>
+            <div className="module-card" style={{flex:1,borderColor:"var(--border)"}} onClick={onTest}>
+              <Brain size={18} color="var(--text2)"/>
+              <div style={{flex:1}}><div style={{fontWeight:700,fontSize:13.5}}>Test</div></div>
+            </div>
+            <div className="module-card" style={{flex:1,borderColor:"var(--border)"}} onClick={onProgress}>
+              <BarChart3 size={18} color="var(--text2)"/>
+              <div style={{flex:1}}><div style={{fontWeight:700,fontSize:13.5}}>Progress</div></div>
+              {studyLog&&(()=>{const t=sumMinutes(getEntriesForDate(studyLog,TODAY_KEY()));return t>0?<span style={{fontSize:11,color:"var(--know)",fontWeight:600}}>{t}m</span>:null;})()}
+            </div>
+          </div>
         </div>
         <div className="sec">Flashcard Decks</div>
         <div style={{display:"flex",gap:8,marginBottom:12}}>
@@ -849,7 +952,7 @@ function LoginScreen({onLogin,loading,error}) {
 // ─────────────────────────────────────────────────────────────
 // SETTINGS
 // ─────────────────────────────────────────────────────────────
-function SettingsScreen({settings,setSettings,onBack,usage,user,onSignOut,onReplayOnboarding}) {
+function SettingsScreen({settings,setSettings,onBack,usage,user,onSignOut,onReplayOnboarding,studyLog,onUpdateTargets}) {
   const [local,setLocal]=useState(settings);
   const [saved,setSaved]=useState(false);
   const set=(k,v)=>setLocal(p=>({...p,[k]:v}));
@@ -925,6 +1028,33 @@ function SettingsScreen({settings,setSettings,onBack,usage,user,onSignOut,onRepl
                 style={{fontSize:12,padding:"7px 10px",fontFamily:"monospace"}}
               />
               <div style={{fontSize:11,color:"var(--text3)",marginTop:3}}>Optional — enables DALL-E image generation on flashcards.</div>
+            </div>
+          </div>
+        </div>
+
+        {/* Study Targets */}
+        <div style={{background:"var(--surface)",border:"1.5px solid var(--border)",borderRadius:"var(--r)",padding:"15px 17px"}}>
+          <div className="sec">Study Targets</div>
+          <div style={{display:"flex",flexDirection:"column",gap:14}}>
+            <div>
+              <label className="lbl">Daily Target (minutes)</label>
+              <div style={{display:"flex",gap:6}}>
+                {[15,30,45,60,90].map(n=>(
+                  <button key={n} className={`chip ${(studyLog?.targets?.dailyMinutes||30)===n?"chip-on":""}`}
+                    onClick={()=>onUpdateTargets({...(studyLog?.targets||{}),dailyMinutes:n})}
+                    style={{flex:1,justifyContent:"center",padding:"8px 0",fontSize:12}}>{n}</button>
+                ))}
+              </div>
+            </div>
+            <div>
+              <label className="lbl">Weekly Target (minutes)</label>
+              <div style={{display:"flex",gap:6}}>
+                {[60,150,210,300,420].map(n=>(
+                  <button key={n} className={`chip ${(studyLog?.targets?.weeklyMinutes||150)===n?"chip-on":""}`}
+                    onClick={()=>onUpdateTargets({...(studyLog?.targets||{}),weeklyMinutes:n})}
+                    style={{flex:1,justifyContent:"center",padding:"8px 0",fontSize:12}}>{n>=60?`${Math.round(n/60)}h`:n}</button>
+                ))}
+              </div>
             </div>
           </div>
         </div>
@@ -1785,7 +1915,12 @@ function MultiDeckCardSelector({decks,cardStates,selDeckIds,setSelDeckIds,selCar
 // ─────────────────────────────────────────────────────────────
 // READING — multi-deck + multi-card pool
 // ─────────────────────────────────────────────────────────────
-function ReadingScreen({decks,cardStates,onBack,onAddToFlashcard,trackUsage}) {
+function ReadingScreen({decks,cardStates,onBack,onAddToFlashcard,trackUsage,onLogStudy}) {
+  const screenStart=useRef(Date.now());
+  useEffect(()=>{screenStart.current=Date.now();return ()=>{
+    const mins=Math.max(1,Math.round((Date.now()-screenStart.current)/60000));
+    if(mins>=1&&onLogStudy) onLogStudy({type:"app",module:"reading",minutes:mins});
+  };},[]);
   const [showSettings,setShowSettings]=useState(false);
   const [settings,setSettings]=useState({length:"medium",difficulty:"intermediate",showTranslation:false,highlightVocab:true});
   const setSetting=(k,v)=>setSettings(p=>({...p,[k]:v}));
@@ -1923,7 +2058,12 @@ Return ONLY valid JSON: {"arabic":"...","translation":"...","vocabUsed":["base f
 // ─────────────────────────────────────────────────────────────
 // LISTENING — multi-deck + multi-card pool
 // ─────────────────────────────────────────────────────────────
-function ListeningScreen({decks,cardStates,onBack,onAddToFlashcard,trackUsage}) {
+function ListeningScreen({decks,cardStates,onBack,onAddToFlashcard,trackUsage,onLogStudy}) {
+  const screenStart=useRef(Date.now());
+  useEffect(()=>{screenStart.current=Date.now();return ()=>{
+    const mins=Math.max(1,Math.round((Date.now()-screenStart.current)/60000));
+    if(mins>=1&&onLogStudy) onLogStudy({type:"app",module:"listening",minutes:mins});
+  };},[]);
   const [showSettings,setShowSettings]=useState(false);
   const [settings,setSettings]=useState({length:"medium",difficulty:"intermediate",speed:0.82,showArabicDefault:false,showEnglishDefault:false,highlightVocab:true});
   const setSetting=(k,v)=>setSettings(p=>({...p,[k]:v}));
@@ -2228,7 +2368,12 @@ function Onboarding({onComplete}) {
 // ─────────────────────────────────────────────────────────────
 // CONVERSATION MODULE
 // ─────────────────────────────────────────────────────────────
-function ConversationScreen({decks,cardStates,onBack,trackUsage}) {
+function ConversationScreen({decks,cardStates,onBack,trackUsage,onLogStudy,onAddToFlashcard}) {
+  const screenStart=useRef(Date.now());
+  useEffect(()=>{screenStart.current=Date.now();return ()=>{
+    const mins=Math.max(1,Math.round((Date.now()-screenStart.current)/60000));
+    if(mins>=1&&onLogStudy) onLogStudy({type:"app",module:"speaking",minutes:mins});
+  };},[]);
   const [selDeckIds,setSelDeckIds]=useState(()=>new Set(decks.map(d=>d.id)));
   const allInitCards=decks.flatMap(d=>(cardStates[d.id]||[]).map(c=>c.id));
   const [selCardIds,setSelCardIds]=useState(()=>new Set(allInitCards));
@@ -2239,6 +2384,7 @@ function ConversationScreen({decks,cardStates,onBack,trackUsage}) {
   const [voiceMode,setVoiceMode]=useState(false);
   const [listening,setListening]=useState(false);
   const [speaking,setSpeaking]=useState(false);
+  const [wordPopup,setWordPopup]=useState(null);
   const chatRef=useRef(null);
   const recognitionRef=useRef(null);
 
@@ -2413,15 +2559,11 @@ Return plain text, NOT JSON.`,
             <div ref={chatRef} style={{flex:1,overflowY:"auto",display:"flex",flexDirection:"column",gap:10,paddingBottom:12}}>
               {messages.map((m,i)=>(
                 <div key={i} className={`chat-bubble chat-${m.role==="ai"?"ai":"user"}`}
-                  onClick={()=>handleBubbleTap(m)} style={m.role==="ai"&&voiceMode?{cursor:"pointer"}:{}}>
+                  style={m.role==="ai"&&voiceMode?{cursor:"pointer"}:{}}>
                   {m.role==="ai"?(
-                    <div>
-                      <div className="ar" style={{fontSize:18,lineHeight:1.8}}>{m.text.split("\n").map((line,j)=>
-                        <span key={j}>{line}{j<m.text.split("\n").length-1&&<br/>}</span>
-                      )}</div>
-                      {voiceMode&&<div style={{fontSize:11,color:"var(--text3)",marginTop:6}}>
-                        {speaking?"🔊 Speaking… tap to stop":"🔈 Tap to hear again"}
-                      </div>}
+                    <div onClick={voiceMode?()=>handleBubbleTap(m):undefined}>
+                      <ClickableArabic text={m.text} onWordClick={(word,ctx)=>setWordPopup({word,context:ctx})} fontSize={18}/>
+                      <div style={{fontSize:11,color:"var(--text3)",marginTop:4}}>💡 Tap any word to look it up{voiceMode&&(speaking?" · 🔊 Speaking…":" · 🔈 Tap to hear")}</div>
                     </div>
                   ):<div>{m.text}</div>}
                 </div>
@@ -2461,6 +2603,365 @@ Return plain text, NOT JSON.`,
               )}
             </div>
           </>
+        )}
+      </div>
+      {wordPopup&&<WordPopup word={wordPopup.word} context={wordPopup.context} decks={decks} cardStates={cardStates} onClose={()=>setWordPopup(null)} onAddToFlashcard={onAddToFlashcard} trackUsage={trackUsage}/>}
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────
+// SESSION RATING (shown after reading/listening/conversation)
+// ─────────────────────────────────────────────────────────────
+function SessionRating({module,onSubmit,onSkip}) {
+  const [rating,setRating]=useState(0);
+  return (
+    <div className="overlay" onClick={e=>{if(e.target===e.currentTarget) onSkip();}}>
+      <div className="drawer" style={{textAlign:"center",padding:"28px 24px 36px"}}>
+        <div style={{fontSize:32,marginBottom:8}}>
+          {module==="reading"?"📖":module==="listening"?"🎧":"💬"}
+        </div>
+        <div style={{fontFamily:"Lora,serif",fontSize:18,fontWeight:600,marginBottom:4}}>How did that session feel?</div>
+        <div style={{fontSize:13,color:"var(--text3)",marginBottom:20}}>Rate your {module} session</div>
+        <div className="rating-stars" style={{marginBottom:20}}>
+          {[1,2,3,4,5].map(n=>(
+            <div key={n} className={`rating-star ${rating>=n?"on":""}`} onClick={()=>setRating(n)}>
+              {n<=2?"😓":n===3?"😐":n===4?"🙂":"🌟"}
+            </div>
+          ))}
+        </div>
+        <div style={{fontSize:12,color:"var(--text3)",marginBottom:16}}>
+          {rating===0?"Tap to rate":rating<=2?"Challenging — that's okay!":rating===3?"Moderate — getting there":rating===4?"Good session!":"Excellent recall!"}
+        </div>
+        <div style={{display:"flex",gap:8}}>
+          <button className="btn" onClick={onSkip} style={{flex:1,background:"var(--surface2)",color:"var(--text2)",padding:"12px",borderRadius:"var(--rs)"}}>Skip</button>
+          <button className="btn btn-primary" onClick={()=>onSubmit(rating)} disabled={!rating} style={{flex:2,padding:"12px",borderRadius:"var(--rs)"}}><Check size={14}/> Save Rating</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────
+// SIMPLE BAR CHART
+// ─────────────────────────────────────────────────────────────
+function BarChart({data,maxVal,color1="var(--accent)",color2="var(--info)"}){
+  const max=maxVal||Math.max(...data.map(d=>d.total),1);
+  return (
+    <div className="bar-chart">
+      {data.map((d,i)=>(
+        <div key={i} className="bar-col">
+          <div style={{width:"100%",display:"flex",flexDirection:"column",justifyContent:"flex-end",height:"100%",gap:1}}>
+            {d.manual>0&&<div className="bar-fill" style={{height:`${(d.manual/max)*100}%`,background:color2,opacity:.6}}/>}
+            <div className="bar-fill" style={{height:`${(d.app/max)*100}%`,background:color1}}/>
+          </div>
+          <div className="bar-label">{d.label}</div>
+          {d.total>0&&<div style={{fontSize:9,color:"var(--text2)",fontWeight:600}}>{d.total}m</div>}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────
+// PROGRESS / ANALYTICS DASHBOARD
+// ─────────────────────────────────────────────────────────────
+function ProgressScreen({cardStates,studyLog,onBack,onLogManual}) {
+  const allCards=Object.values(cardStates).flat();
+  const known=allCards.filter(c=>c.status==="known").length;
+  const weak=allCards.filter(c=>c.status==="weak").length;
+  const newC=allCards.filter(c=>c.status==="new"||!c.status).length;
+  const total=allCards.length;
+  const knownPct=total?Math.round(known/total*100):0;
+
+  const todayEntries=getEntriesForDate(studyLog,TODAY_KEY());
+  const todayMin=sumMinutes(todayEntries);
+  const weekData=getLast7DaysData(studyLog);
+  const weekMin=sumMinutes(getEntriesForWeek(studyLog));
+  const weekByMod=minutesByModule(getEntriesForWeek(studyLog));
+  const dailyTarget=studyLog?.targets?.dailyMinutes||30;
+  const weeklyTarget=studyLog?.targets?.weeklyMinutes||150;
+  const insights=getPerformanceInsights(cardStates,studyLog);
+
+  // Recent ratings
+  const recentRatings=(studyLog.entries||[]).filter(e=>e.rating).slice(-10);
+  const avgRating=recentRatings.length?Math.round(recentRatings.reduce((s,e)=>s+e.rating,0)/recentRatings.length*10)/10:0;
+
+  // Card status trend (simplified — show current snapshot)
+  const [showLog,setShowLog]=useState(false);
+  const [manualMin,setManualMin]=useState("");
+  const [manualNote,setManualNote]=useState("");
+  const [manualModule,setManualModule]=useState("manual");
+
+  const submitManual=()=>{
+    const mins=parseInt(manualMin);
+    if(!mins||mins<=0){showToast("Enter valid minutes","error");return;}
+    onLogManual({type:"manual",module:manualModule,minutes:mins,notes:manualNote||undefined});
+    setManualMin("");setManualNote("");setShowLog(false);
+    showToast(`Logged ${mins} min of outside study`,"success");
+  };
+
+  return (
+    <div className="screen">
+      <Hdr title="Progress" sub="Analytics" onBack={onBack}
+        right={<button className="btn btn-sm" onClick={()=>setShowLog(true)} style={{background:"var(--surface2)",color:"var(--text2)"}}><PenLine size={13}/>Log Study</button>}/>
+      <div style={{padding:"16px 20px 0",display:"flex",flexDirection:"column",gap:16}}>
+        {/* Today summary */}
+        <div style={{display:"flex",gap:8}}>
+          <div className="stat-card" style={{borderColor:todayMin>=dailyTarget?"var(--know-border)":"var(--border)"}}>
+            <div className="stat-num" style={{color:todayMin>=dailyTarget?"var(--know)":"var(--text)"}}>{todayMin}</div>
+            <div className="stat-label">min today</div>
+            <div style={{fontSize:10,color:"var(--text3)",marginTop:2}}>{dailyTarget} min target</div>
+          </div>
+          <div className="stat-card" style={{borderColor:weekMin>=weeklyTarget?"var(--know-border)":"var(--border)"}}>
+            <div className="stat-num" style={{color:weekMin>=weeklyTarget?"var(--know)":"var(--text)"}}>{weekMin}</div>
+            <div className="stat-label">min this week</div>
+            <div style={{fontSize:10,color:"var(--text3)",marginTop:2}}>{weeklyTarget} min target</div>
+          </div>
+          {avgRating>0&&(
+            <div className="stat-card">
+              <div className="stat-num" style={{color:"var(--accent)"}}>{avgRating}</div>
+              <div className="stat-label">avg rating</div>
+              <div style={{fontSize:10,color:"var(--text3)",marginTop:2}}>last {recentRatings.length} sessions</div>
+            </div>
+          )}
+        </div>
+
+        {/* Daily progress bar */}
+        <div style={{background:"var(--surface)",border:"1.5px solid var(--border)",borderRadius:"var(--rs)",padding:"12px 14px"}}>
+          <div style={{display:"flex",justifyContent:"space-between",fontSize:12,marginBottom:6}}>
+            <span style={{color:"var(--text2)",fontWeight:600}}>Today's Progress</span>
+            <span style={{color:todayMin>=dailyTarget?"var(--know)":"var(--text3)",fontWeight:700}}>{Math.min(100,Math.round(todayMin/dailyTarget*100))}%</span>
+          </div>
+          <div className="progress-track" style={{height:6}}>
+            <div className="progress-fill" style={{width:`${Math.min(100,todayMin/dailyTarget*100)}%`,background:todayMin>=dailyTarget?"var(--know)":"var(--accent)"}}/>
+          </div>
+        </div>
+
+        {/* 7-day chart */}
+        <div style={{background:"var(--surface)",border:"1.5px solid var(--border)",borderRadius:"var(--rs)",padding:"14px"}}>
+          <div className="sec">Last 7 Days</div>
+          <BarChart data={weekData}/>
+          <div style={{display:"flex",gap:12,marginTop:8,justifyContent:"center"}}>
+            <div style={{display:"flex",alignItems:"center",gap:4,fontSize:11,color:"var(--text3)"}}><div style={{width:8,height:8,borderRadius:2,background:"var(--accent)"}}/> App</div>
+            <div style={{display:"flex",alignItems:"center",gap:4,fontSize:11,color:"var(--text3)"}}><div style={{width:8,height:8,borderRadius:2,background:"var(--info)",opacity:.6}}/> Outside</div>
+          </div>
+        </div>
+
+        {/* Module breakdown */}
+        <div style={{background:"var(--surface)",border:"1.5px solid var(--border)",borderRadius:"var(--rs)",padding:"14px"}}>
+          <div className="sec">Module Activity (This Week)</div>
+          <div style={{display:"flex",flexDirection:"column",gap:8}}>
+            {[["vocab","Vocabulary",BookOpen,"var(--accent)"],["reading","Reading",FileText,"var(--read)"],["listening","Listening",Headphones,"var(--listen)"],["speaking","Speaking",MessageCircle,"var(--accent)"],["manual","Outside Study",PenLine,"var(--info)"]].map(([key,label,Icon,color])=>{
+              const mins=weekByMod[key]||0;const maxMins=Math.max(...Object.values(weekByMod),1);
+              return (
+                <div key={key} style={{display:"flex",alignItems:"center",gap:10}}>
+                  <Icon size={14} color={color} style={{flexShrink:0}}/>
+                  <div style={{flex:1}}>
+                    <div style={{display:"flex",justifyContent:"space-between",fontSize:12,marginBottom:3}}>
+                      <span style={{color:"var(--text)",fontWeight:500}}>{label}</span>
+                      <span style={{color:"var(--text3)"}}>{mins} min</span>
+                    </div>
+                    <div className="progress-track" style={{height:4}}><div className="progress-fill" style={{width:`${(mins/maxMins)*100}%`,background:color}}/></div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* Card status breakdown */}
+        <div style={{background:"var(--surface)",border:"1.5px solid var(--border)",borderRadius:"var(--rs)",padding:"14px"}}>
+          <div className="sec">Vocabulary Status</div>
+          <div style={{display:"flex",gap:6,marginBottom:10}}>
+            <div style={{flex:known,height:8,borderRadius:4,background:"var(--know)",transition:"flex .5s"}}/>
+            <div style={{flex:weak||0.01,height:8,borderRadius:4,background:"var(--weak)",transition:"flex .5s"}}/>
+            <div style={{flex:newC||0.01,height:8,borderRadius:4,background:"var(--surface2)",transition:"flex .5s"}}/>
+          </div>
+          <div style={{display:"flex",justifyContent:"space-between",fontSize:12}}>
+            <span style={{color:"var(--know)"}}>{known} known ({knownPct}%)</span>
+            <span style={{color:"var(--weak)"}}>{weak} weak</span>
+            <span style={{color:"var(--text3)"}}>{newC} new</span>
+          </div>
+        </div>
+
+        {/* Performance insights */}
+        {insights.length>0&&(
+          <div>
+            <div className="sec">Performance Insights</div>
+            <div style={{display:"flex",flexDirection:"column",gap:8}}>
+              {insights.map((ins,i)=>(
+                <div key={i} className={`insight-card ${ins.type}`}>
+                  <span style={{fontSize:16,flexShrink:0}}>{ins.icon}</span>
+                  <span>{ins.text}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Manual study log drawer */}
+      {showLog&&(
+        <div className="overlay" onClick={e=>{if(e.target===e.currentTarget) setShowLog(false);}}>
+          <div className="drawer">
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
+              <div style={{fontFamily:"Lora,serif",fontSize:17,fontWeight:600}}>Log Outside Study</div>
+              <button className="btn btn-ghost" onClick={()=>setShowLog(false)} style={{width:30,height:30}}><X size={13}/></button>
+            </div>
+            <div style={{display:"flex",flexDirection:"column",gap:14}}>
+              <div>
+                <label className="lbl">Type</label>
+                <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+                  {[["manual","General"],["class","Class"],["homework","Homework"],["immersion","Immersion"]].map(([v,l])=>(
+                    <button key={v} className={`chip ${manualModule===v?"chip-on":""}`} onClick={()=>setManualModule(v)}>{l}</button>
+                  ))}
+                </div>
+              </div>
+              <div>
+                <label className="lbl">Minutes</label>
+                <input className="input" type="number" placeholder="30" value={manualMin} onChange={e=>setManualMin(e.target.value)} min="1"/>
+              </div>
+              <div>
+                <label className="lbl">Notes (optional)</label>
+                <input className="input" placeholder="e.g. Arabic class, Quran study…" value={manualNote} onChange={e=>setManualNote(e.target.value)}/>
+              </div>
+              <button className="btn btn-primary" onClick={submitManual} disabled={!manualMin} style={{width:"100%",padding:13,borderRadius:"var(--rs)"}}><Check size={14}/> Log Study Time</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────
+// TESTING / ASSESSMENT SCREEN
+// ─────────────────────────────────────────────────────────────
+function TestScreen({decks,cardStates,onBack,trackUsage,onSwipe,studyLog,onLogStudy}) {
+  const [mode,setMode]=useState(null); // null=picker, "quiz"=active
+  const [testCards,setTestCards]=useState([]);
+  const [idx,setIdx]=useState(0);
+  const [results,setResults]=useState([]);
+  const [showAnswer,setShowAnswer]=useState(false);
+  const [testType,setTestType]=useState("all"); // all, weak, due
+  const [showRating,setShowRating]=useState(false);
+  const startRef=useRef(null);
+
+  const allCards=Object.values(cardStates).flat();
+  const now=Date.now();
+  const weakCards=allCards.filter(c=>c.status==="weak");
+  const dueCards=allCards.filter(c=>c.srsLastReview&&c.srsNextReview&&c.srsNextReview<=now);
+
+  const startTest=(type)=>{
+    let pool=type==="weak"?weakCards:type==="due"?dueCards:[...allCards];
+    pool=pool.sort(()=>Math.random()-0.5).slice(0,20); // Max 20 cards per test
+    if(!pool.length){showToast("No cards available for this test","error");return;}
+    setTestCards(pool);setIdx(0);setResults([]);setShowAnswer(false);setMode("quiz");setTestType(type);
+    startRef.current=Date.now();
+  };
+
+  const answer=(correct)=>{
+    setResults(p=>[...p,{card:testCards[idx],correct}]);
+    if(idx<testCards.length-1){
+      setIdx(i=>i+1);setShowAnswer(false);
+    } else {
+      setMode("results");
+      // Log time
+      if(startRef.current){
+        const mins=Math.max(1,Math.round((Date.now()-startRef.current)/60000));
+        onLogStudy({type:"app",module:"vocab",minutes:mins,subtype:"test"});
+      }
+      setShowRating(true);
+    }
+  };
+
+  const card=testCards[idx];
+  const score=results.filter(r=>r.correct).length;
+  const total=results.length;
+  const pct=total?Math.round(score/total*100):0;
+
+  if(showRating) return (
+    <SessionRating module="test" onSubmit={(r)=>{onLogStudy({type:"app",module:"vocab",minutes:0,rating:r,subtype:"test-rating"});setShowRating(false);}}
+      onSkip={()=>setShowRating(false)}/>
+  );
+
+  if(mode==="results") return (
+    <div className="screen" style={{display:"flex",alignItems:"center",justifyContent:"center",minHeight:"100vh",padding:28,textAlign:"center"}}>
+      <div className="pop-appear" style={{width:"100%",maxWidth:340}}>
+        <div style={{fontSize:52,marginBottom:14}}>{pct>=80?"🏆":pct>=60?"📈":"💪"}</div>
+        <div style={{fontFamily:"Lora,serif",fontSize:24,fontWeight:600,marginBottom:8}}>Test Complete</div>
+        <div style={{fontSize:28,fontWeight:700,color:pct>=70?"var(--know)":"var(--weak)",marginBottom:8}}>{pct}%</div>
+        <div style={{fontSize:14,color:"var(--text2)",marginBottom:24}}>
+          {score} of {total} correct
+        </div>
+        <div className="progress-track" style={{height:6,marginBottom:24}}>
+          <div className="progress-fill" style={{width:`${pct}%`,background:pct>=70?"var(--know)":"var(--weak)"}}/>
+        </div>
+        <button className="btn btn-primary" onClick={()=>setMode(null)} style={{width:"100%",padding:"14px",borderRadius:"var(--r)",fontSize:15}}>Back to Tests</button>
+      </div>
+    </div>
+  );
+
+  if(mode==="quiz"&&card) return (
+    <div className="screen" style={{display:"flex",flexDirection:"column",padding:"18px 18px 20px"}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
+        <button className="btn btn-ghost" onClick={()=>setMode(null)} style={{width:32,height:32}}><X size={14}/></button>
+        <span style={{fontSize:13,color:"var(--text2)",fontWeight:600}}>{idx+1} / {testCards.length}</span>
+        <span style={{fontSize:13,color:"var(--know)",fontWeight:600}}>{score}✓</span>
+      </div>
+      <div className="progress-track" style={{marginBottom:16}}><div className="progress-fill" style={{width:`${((idx+1)/testCards.length)*100}%`,background:"var(--accent)"}}/></div>
+
+      <div style={{flex:1,display:"flex",flexDirection:"column",gap:14}}>
+        <div className="card-appear" style={{background:"var(--surface)",border:"1.5px solid var(--border)",borderRadius:"var(--r)",padding:"36px 24px",textAlign:"center",boxShadow:"0 5px 24px rgba(0,0,0,0.08)",minHeight:160,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center"}}>
+          <div className="sec" style={{margin:0,marginBottom:12}}>What is this word?</div>
+          <div className="ar" style={{fontSize:40,color:"var(--text)"}}>{card.arabicBase}</div>
+          {card.forms?.harf&&<div className="ar" style={{fontSize:16,color:"var(--harf)",marginTop:8}}>({card.forms.harf})</div>}
+        </div>
+
+        {!showAnswer?(
+          <button className="btn btn-primary" onClick={()=>setShowAnswer(true)} style={{width:"100%",padding:"14px",borderRadius:"var(--r)",fontSize:14}}>
+            <Eye size={15}/> Show Answer
+          </button>
+        ):(
+          <div className="gen-appear" style={{display:"flex",flexDirection:"column",gap:10}}>
+            <div style={{background:"var(--accent-bg)",border:"1px solid var(--accent-border)",borderRadius:"var(--rs)",padding:"14px",textAlign:"center"}}>
+              <div style={{fontFamily:"Lora,serif",fontSize:24,fontWeight:600,marginBottom:4}}>{card.english}</div>
+              <div style={{fontSize:12,color:"var(--text3)",textTransform:"capitalize"}}>{card.wordType}</div>
+            </div>
+            <div style={{display:"flex",gap:10}}>
+              <button className="btn" onClick={()=>answer(false)} style={{flex:1,padding:"14px",borderRadius:"var(--r)",background:"var(--weak-bg)",color:"var(--weak)",border:"1.5px solid var(--weak-border)",fontWeight:600}}>✗ Wrong</button>
+              <button className="btn" onClick={()=>answer(true)} style={{flex:1,padding:"14px",borderRadius:"var(--r)",background:"var(--know-bg)",color:"var(--know)",border:"1.5px solid var(--know-border)",fontWeight:600}}>✓ Correct</button>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+
+  // Test picker
+  return (
+    <div className="screen">
+      <Hdr title="Test Yourself" sub="Assessment" onBack={onBack}/>
+      <div style={{padding:"18px 20px 0",display:"flex",flexDirection:"column",gap:12}}>
+        <div style={{fontSize:13.5,color:"var(--text2)",lineHeight:1.6,marginBottom:4}}>
+          Choose a test to assess your Arabic vocabulary. Cards are shown in random order — no peeking!
+        </div>
+        <div className="test-option" onClick={()=>startTest("all")}>
+          <div style={{width:40,height:40,borderRadius:12,background:"var(--accent-bg)",display:"flex",alignItems:"center",justifyContent:"center"}}><Brain size={18} color="var(--accent)"/></div>
+          <div style={{flex:1}}><div style={{fontWeight:600,fontSize:14}}>Full Vocabulary Test</div><div style={{fontSize:12,color:"var(--text3)",marginTop:2}}>Random selection from all {allCards.length} cards</div></div>
+        </div>
+        {weakCards.length>0&&(
+          <div className="test-option" onClick={()=>startTest("weak")}>
+            <div style={{width:40,height:40,borderRadius:12,background:"var(--weak-bg)",display:"flex",alignItems:"center",justifyContent:"center"}}><Target size={18} color="var(--weak)"/></div>
+            <div style={{flex:1}}><div style={{fontWeight:600,fontSize:14}}>Weak Cards Test</div><div style={{fontSize:12,color:"var(--text3)",marginTop:2}}>{weakCards.length} weak cards to practice</div></div>
+          </div>
+        )}
+        {dueCards.length>0&&(
+          <div className="test-option" onClick={()=>startTest("due")}>
+            <div style={{width:40,height:40,borderRadius:12,background:"var(--info-bg)",display:"flex",alignItems:"center",justifyContent:"center"}}><Clock size={18} color="var(--info)"/></div>
+            <div style={{flex:1}}><div style={{fontWeight:600,fontSize:14}}>Due Cards Test</div><div style={{fontSize:12,color:"var(--text3)",marginTop:2}}>{dueCards.length} cards due for review</div></div>
+          </div>
         )}
       </div>
     </div>
@@ -2552,8 +3053,10 @@ export default function App() {
   const [sessionCards,setSessionCards]=useState([]);
   const [currentIdx,setCurrentIdx]=useState(0);
   const [usage,setUsage]=useState(initUsage);
+  const [studyLog,setStudyLog]=useState(initStudyLog);
   const [showSearch,setShowSearch]=useState(false);
   const [showOnboarding,setShowOnboarding]=useState(false);
+  const [sessionRating,setSessionRating]=useState(null); // {module} when showing rating
   const sessionRes=useRef({known:0,weak:0});
   const [darkMode,setDarkMode]=useState(()=>{
     const saved=localStorage.getItem("arabic_fc_dark");
@@ -2591,6 +3094,7 @@ export default function App() {
               }
               if(d.settings) setSettings(s=>({...s,...d.settings}));
               if(d.usage?.byTag) setUsage(d.usage);
+              if(d.studyLog) setStudyLog(sl=>({...initStudyLog(),...d.studyLog}));
             } catch(e){ console.error("Data parse error:",e); }
           }
           setDataLoaded(true);
@@ -2612,10 +3116,10 @@ export default function App() {
   useEffect(()=>{
     if(!user||!dataLoaded) return;
     const t=setTimeout(()=>{
-      setDoc(doc(db,"users",user.uid),{decks,cardStates,settings,usage},{merge:true}).catch(e=>console.error("Save error:",e));
+      setDoc(doc(db,"users",user.uid),{decks,cardStates,settings,usage,studyLog},{merge:true}).catch(e=>console.error("Save error:",e));
     },1500);
     return ()=>clearTimeout(t);
-  },[decks,cardStates,settings,usage,user,dataLoaded]);
+  },[decks,cardStates,settings,usage,studyLog,user,dataLoaded]);
 
   const handleSignIn=async()=>{
     setAuthLoading(true);setAuthError("");
@@ -2672,6 +3176,7 @@ export default function App() {
     go("home");
   };
   const savedIdx=useRef({});
+  const studyStartRef=useRef(null);
   const startStudy=(mode,restart=false)=>{
     const dc=cardStates[activeDeck.id]||[];
     const now=Date.now();
@@ -2679,6 +3184,7 @@ export default function App() {
       :mode==="due"?dc.filter(c=>c.srsLastReview&&c.srsNextReview&&c.srsNextReview<=now)
       :sortByDueDate(dc);
     if(!toStudy.length) return;
+    studyStartRef.current=Date.now();
     sessionRes.current={known:0,weak:0};setSessionCards(toStudy);
     const key=activeDeck.id+"_"+mode;
     const resumeIdx=(!restart&&savedIdx.current[key])||0;
@@ -2706,8 +3212,12 @@ export default function App() {
       // Save progress for resume
       if(activeDeck) savedIdx.current[activeDeck.id+"_all"]=nextIdx;
     } else {
-      // Reset saved progress on completion
+      // Reset saved progress on completion, log study time
       if(activeDeck){savedIdx.current[activeDeck.id+"_all"]=0;savedIdx.current[activeDeck.id+"_weak"]=0;}
+      if(studyStartRef.current){
+        const mins=Math.max(1,Math.round((Date.now()-studyStartRef.current)/60000));
+        logStudy({type:"app",module:"vocab",minutes:mins});studyStartRef.current=null;
+      }
       go("complete");
     }
   };
@@ -2721,6 +3231,8 @@ export default function App() {
     setCardStates(p=>({...p,[deckId]:[...(p[deckId]||[]),card]}));
     setDecks(p=>p.map(d=>d.id===deckId?{...d,createdAt:Date.now()}:d));
   };
+
+  const logStudy=(entry)=>setStudyLog(prev=>addStudyEntry(prev,entry));
 
   const completeOnboarding=()=>{
     setShowOnboarding(false);
@@ -2737,17 +3249,19 @@ export default function App() {
   const commonProps={decks,cardStates,trackUsage};
 
   const screens={
-    home:<HomeScreen {...commonProps} onOpenDeck={openDeck} onSettings={()=>go("settings")} onCreateDeck={()=>go("createDeck")} onReading={()=>go("reading")} onListening={()=>go("listening")} onConversation={()=>go("conversation")} onSearch={()=>setShowSearch(true)} darkMode={darkMode} onToggleDark={()=>setDarkMode(d=>!d)}/>,
-    settings:<SettingsScreen settings={settings} setSettings={setSettings} onBack={()=>go("home")} usage={usage} user={user} onSignOut={handleSignOut} onReplayOnboarding={()=>setShowOnboarding(true)}/>,
+    home:<HomeScreen {...commonProps} onOpenDeck={openDeck} onSettings={()=>go("settings")} onCreateDeck={()=>go("createDeck")} onReading={()=>go("reading")} onListening={()=>go("listening")} onConversation={()=>go("conversation")} onSearch={()=>setShowSearch(true)} onProgress={()=>go("progress")} onTest={()=>go("test")} darkMode={darkMode} onToggleDark={()=>setDarkMode(d=>!d)} studyLog={studyLog}/>,
+    settings:<SettingsScreen settings={settings} setSettings={setSettings} onBack={()=>go("home")} usage={usage} user={user} onSignOut={handleSignOut} onReplayOnboarding={()=>setShowOnboarding(true)} studyLog={studyLog} onUpdateTargets={(t)=>setStudyLog(sl=>({...sl,targets:t}))}/>,
     createDeck:<CreateDeckScreen onBack={()=>go("home")} onCreate={createDeck}/>,
     addCards:activeDeck&&<AddCardsScreen deck={activeDeck} onBack={()=>go("deck")} onSave={saveCards} trackUsage={trackUsage}/>,
     deck:activeDeck&&<DeckScreen deck={activeDeck} cards={cardStates[activeDeck.id]||[]} onStartStudy={startStudy} onBack={()=>go("home")} onAddCards={()=>go("addCards")} onEditCard={c=>{setActiveCard(c);go("editCard");}} onDeleteCard={deleteCard} onRenameDeck={renameDeck} onDeleteDeck={deleteDeck} savedIdx={savedIdx.current[activeDeck.id+"_all"]||0}/>,
     editCard:activeCard&&activeDeck&&<EditCardScreen card={activeCard} onBack={()=>go("deck")} onSave={saveEditedCard} trackUsage={trackUsage}/>,
     study:activeDeck&&sessionCards.length>0&&<StudyScreen cards={sessionCards} currentIndex={currentIdx} onSwipe={handleSwipe} onBack={()=>{if(currentIdx>0)setCurrentIdx(i=>i-1);}} onExit={()=>go("deck")} trackUsage={trackUsage} decks={decks} cardStates={cardStates} onAddToFlashcard={addToFlashcard}/>,
-    complete:<CompleteScreen known={sessionRes.current.known} weak={sessionRes.current.weak} onBack={()=>go("deck")}/>,
-    reading:<ReadingScreen {...commonProps} onBack={()=>go("home")} onAddToFlashcard={addToFlashcard}/>,
-    listening:<ListeningScreen {...commonProps} onBack={()=>go("home")} onAddToFlashcard={addToFlashcard}/>,
-    conversation:<ConversationScreen {...commonProps} onBack={()=>go("home")}/>,
+    complete:<CompleteScreen known={sessionRes.current.known} weak={sessionRes.current.weak} onBack={()=>{go("deck");setSessionRating({module:"vocab"});}}/>,
+    reading:<ReadingScreen {...commonProps} onBack={()=>{go("home");setSessionRating({module:"reading"});}} onAddToFlashcard={addToFlashcard} onLogStudy={logStudy}/>,
+    listening:<ListeningScreen {...commonProps} onBack={()=>{go("home");setSessionRating({module:"listening"});}} onAddToFlashcard={addToFlashcard} onLogStudy={logStudy}/>,
+    conversation:<ConversationScreen {...commonProps} onBack={()=>{go("home");setSessionRating({module:"speaking"});}} onLogStudy={logStudy} onAddToFlashcard={addToFlashcard}/>,
+    progress:<ProgressScreen cardStates={cardStates} studyLog={studyLog} onBack={()=>go("home")} onLogManual={(e)=>logStudy(e)}/>,
+    test:<TestScreen decks={decks} cardStates={cardStates} onBack={()=>go("home")} trackUsage={trackUsage} studyLog={studyLog} onLogStudy={logStudy}/>,
   };
 
   // Show loading spinner while Firebase checks auth state
@@ -2769,6 +3283,7 @@ export default function App() {
       <ToastContainer/>
       {showSearch&&<GlobalSearch decks={decks} cardStates={cardStates} onClose={()=>setShowSearch(false)} onSelectCard={handleSearchSelect}/>}
       {showOnboarding&&<Onboarding onComplete={completeOnboarding}/>}
+      {sessionRating&&<SessionRating module={sessionRating.module} onSubmit={(r)=>{logStudy({type:"app",module:sessionRating.module,minutes:0,rating:r});setSessionRating(null);}} onSkip={()=>setSessionRating(null)}/>}
       <div className="app">{screens[screen]}</div>
     </>
   );
