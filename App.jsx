@@ -1945,7 +1945,7 @@ function MultiDeckCardSelector({decks,cardStates,selDeckIds,setSelDeckIds,selCar
 // ─────────────────────────────────────────────────────────────
 // READING — multi-deck + multi-card pool
 // ─────────────────────────────────────────────────────────────
-function ReadingScreen({decks,cardStates,onBack,onFinish,onAddToFlashcard,trackUsage,onLogStudy,master}) {
+function ReadingScreen({decks,cardStates,onBack,onFinish,onAddToFlashcard,trackUsage,onLogStudy,master,masterPool}) {
   const screenStart=useRef(Date.now());
   useEffect(()=>{screenStart.current=Date.now();return ()=>{
     const mins=Math.max(1,Math.round((Date.now()-screenStart.current)/60000));
@@ -1965,14 +1965,28 @@ function ReadingScreen({decks,cardStates,onBack,onFinish,onAddToFlashcard,trackU
   const [generating,setGenerating]=useState(false);
   const [showTranslation,setShowTranslation]=useState(false);
   const [wordPopup,setWordPopup]=useState(null);
+  const [showMiniRating,setShowMiniRating]=useState(false);
+
+  const handleNextPassage=()=>{
+    if(passage){setShowMiniRating(true);} else generate();
+  };
+  const submitMiniRating=(rating)=>{
+    if(rating&&onLogStudy) onLogStudy({type:"app",module:"reading",minutes:0,rating,master:!!master});
+    setShowMiniRating(false);generate();
+  };
 
   // Derive selected cards from pool
-  const selectedCards = decks
+  const now=Date.now();
+  const allPooled = decks
     .filter(d=>selDeckIds.has(d.id))
     .flatMap(d=>(cardStates[d.id]||[]))
     .filter(c=>selCardIds.has(c.id));
+  const selectedCards = master&&masterPool&&masterPool!=="all"
+    ? allPooled.filter(c=>masterPool==="weak"?c.status==="weak":masterPool==="due"?(c.srsLastReview&&c.srsNextReview&&c.srsNextReview<=now):true)
+    : allPooled;
 
   const deckNames = decks.filter(d=>selDeckIds.has(d.id)).map(d=>d.title).join(" + ");
+  const poolLabel = master?(masterPool==="weak"?"weak":masterPool==="due"?"due":"all"):"";
 
   const generate=async()=>{
     if(!selectedCards.length){showToast("Select at least one card.","error");return;}
@@ -2040,7 +2054,7 @@ Return ONLY valid JSON: {"arabic":"...","translation":"...","vocabUsed":["base f
           accentVar="--read" accentBgVar="--read-bg" accentBorderVar="--read-border"
           onReset={()=>setPassage(null)}
         />}
-        {master&&<div style={{background:"var(--read-bg)",border:"1px solid var(--read-border)",borderRadius:"var(--rs)",padding:"10px 14px",fontSize:13,color:"var(--read)",fontWeight:500}}>Using all {selectedCards.length} vocabulary words · Master session</div>}
+        {master&&<div style={{background:"var(--read-bg)",border:"1px solid var(--read-border)",borderRadius:"var(--rs)",padding:"10px 14px",fontSize:13,color:"var(--read)",fontWeight:500}}>Using {selectedCards.length} {poolLabel} vocabulary words · Master session</div>}
 
         <button className="btn btn-read" onClick={generate} disabled={generating||!selectedCards.length} style={{width:"100%",padding:"14px",borderRadius:"var(--r)",fontSize:14}}>
           {generating
@@ -2074,7 +2088,7 @@ Return ONLY valid JSON: {"arabic":"...","translation":"...","vocabUsed":["base f
               <button className="btn" onClick={()=>window.scrollTo(0,0)} style={{flex:1,background:"var(--surface2)",color:"var(--text2)",padding:"11px",borderRadius:"var(--rs)",fontSize:13,fontWeight:600}}>
                 <SkipBack size={14}/> Read Again
               </button>
-              <button className="btn btn-read" onClick={generate} style={{flex:2,padding:"11px",borderRadius:"var(--rs)",fontSize:13}}>
+              <button className="btn btn-read" onClick={handleNextPassage} style={{flex:2,padding:"11px",borderRadius:"var(--rs)",fontSize:13}}>
                 <RefreshCw size={14}/> Next Passage
               </button>
             </div>
@@ -2084,6 +2098,18 @@ Return ONLY valid JSON: {"arabic":"...","translation":"...","vocabUsed":["base f
           </div>
         )}
       </div>
+      {showMiniRating&&(
+        <div className="overlay" onClick={e=>{if(e.target===e.currentTarget) submitMiniRating(null);}}>
+          <div className="drawer" style={{textAlign:"center",padding:"24px 20px 32px"}}>
+            <div style={{fontSize:15,fontWeight:600,marginBottom:4}}>How was that passage?</div>
+            <div style={{fontSize:12,color:"var(--text3)",marginBottom:16}}>Quick rate before the next one</div>
+            <div className="rating-stars" style={{marginBottom:16}}>
+              {[1,2,3,4,5].map(n=><div key={n} className="rating-star" onClick={()=>submitMiniRating(n)}>{n<=2?"😓":n===3?"😐":n===4?"🙂":"🌟"}</div>)}
+            </div>
+            <button className="btn" onClick={()=>submitMiniRating(null)} style={{background:"var(--surface2)",color:"var(--text3)",padding:"10px 20px",borderRadius:"var(--rs)",fontSize:13}}>Skip — just give me another</button>
+          </div>
+        </div>
+      )}
       {wordPopup&&<WordPopup word={wordPopup.word} context={wordPopup.context} decks={decks} cardStates={cardStates} onClose={()=>setWordPopup(null)} onAddToFlashcard={onAddToFlashcard} trackUsage={trackUsage}/>}
     </div>
   );
@@ -2092,7 +2118,7 @@ Return ONLY valid JSON: {"arabic":"...","translation":"...","vocabUsed":["base f
 // ─────────────────────────────────────────────────────────────
 // LISTENING — multi-deck + multi-card pool
 // ─────────────────────────────────────────────────────────────
-function ListeningScreen({decks,cardStates,onBack,onFinish,onAddToFlashcard,trackUsage,onLogStudy,master}) {
+function ListeningScreen({decks,cardStates,onBack,onFinish,onAddToFlashcard,trackUsage,onLogStudy,master,masterPool}) {
   const screenStart=useRef(Date.now());
   useEffect(()=>{screenStart.current=Date.now();return ()=>{
     const mins=Math.max(1,Math.round((Date.now()-screenStart.current)/60000));
@@ -2113,13 +2139,24 @@ function ListeningScreen({decks,cardStates,onBack,onFinish,onAddToFlashcard,trac
   const [showEnglish,setShowEnglish]=useState(false);
   const [playing,setPlaying]=useState(false);
   const [wordPopup,setWordPopup]=useState(null);
+  const [showMiniRating,setShowMiniRating]=useState(false);
+
+  const handleNextPassage=()=>{
+    if(content){setShowMiniRating(true);} else generate();
+  };
+  const submitMiniRating=(rating)=>{
+    if(rating&&onLogStudy) onLogStudy({type:"app",module:"listening",minutes:0,rating,master:!!master});
+    setShowMiniRating(false);generate();
+  };
 
   useEffect(()=>()=>{if(window.speechSynthesis) window.speechSynthesis.cancel();},[]);
 
-  const selectedCards = decks
-    .filter(d=>selDeckIds.has(d.id))
-    .flatMap(d=>(cardStates[d.id]||[]))
-    .filter(c=>selCardIds.has(c.id));
+  const now2=Date.now();
+  const allPooled2 = decks.filter(d=>selDeckIds.has(d.id)).flatMap(d=>(cardStates[d.id]||[])).filter(c=>selCardIds.has(c.id));
+  const selectedCards = master&&masterPool&&masterPool!=="all"
+    ? allPooled2.filter(c=>masterPool==="weak"?c.status==="weak":masterPool==="due"?(c.srsLastReview&&c.srsNextReview&&c.srsNextReview<=now2):true)
+    : allPooled2;
+  const poolLabel2 = master?(masterPool==="weak"?"weak":masterPool==="due"?"due":"all"):"";
 
   const deckNames = decks.filter(d=>selDeckIds.has(d.id)).map(d=>d.title).join(" + ");
 
@@ -2215,7 +2252,7 @@ Return ONLY valid JSON: {"arabic":"...","translation":"...","vocabUsed":["base f
           accentVar="--listen" accentBgVar="--listen-bg" accentBorderVar="--listen-border"
           onReset={()=>{setContent(null);if(window.speechSynthesis) window.speechSynthesis.cancel();setPlaying(false);}}
         />}
-        {master&&<div style={{background:"var(--listen-bg)",border:"1px solid var(--listen-border)",borderRadius:"var(--rs)",padding:"10px 14px",fontSize:13,color:"var(--listen)",fontWeight:500}}>Using all {selectedCards.length} vocabulary words · Master session</div>}
+        {master&&<div style={{background:"var(--listen-bg)",border:"1px solid var(--listen-border)",borderRadius:"var(--rs)",padding:"10px 14px",fontSize:13,color:"var(--listen)",fontWeight:500}}>Using {selectedCards.length} {poolLabel2} vocabulary words · Master session</div>}
 
         <button className="btn btn-listen" onClick={generate} disabled={generating||!selectedCards.length} style={{width:"100%",padding:"14px",borderRadius:"var(--r)",fontSize:14}}>
           {generating
@@ -2278,7 +2315,7 @@ Return ONLY valid JSON: {"arabic":"...","translation":"...","vocabUsed":["base f
                 style={{flex:1,background:"var(--surface2)",color:"var(--text2)",padding:"11px",borderRadius:"var(--rs)",fontSize:13,fontWeight:600}}>
                 <SkipBack size={14}/> Listen Again
               </button>
-              <button className="btn btn-listen" onClick={generate} style={{flex:2,padding:"11px",borderRadius:"var(--rs)",fontSize:13}}>
+              <button className="btn btn-listen" onClick={handleNextPassage} style={{flex:2,padding:"11px",borderRadius:"var(--rs)",fontSize:13}}>
                 <RefreshCw size={14}/> Next Passage
               </button>
             </div>
@@ -2288,6 +2325,18 @@ Return ONLY valid JSON: {"arabic":"...","translation":"...","vocabUsed":["base f
           </div>
         )}
       </div>
+      {showMiniRating&&(
+        <div className="overlay" onClick={e=>{if(e.target===e.currentTarget) submitMiniRating(null);}}>
+          <div className="drawer" style={{textAlign:"center",padding:"24px 20px 32px"}}>
+            <div style={{fontSize:15,fontWeight:600,marginBottom:4}}>How was that passage?</div>
+            <div style={{fontSize:12,color:"var(--text3)",marginBottom:16}}>Quick rate before the next one</div>
+            <div className="rating-stars" style={{marginBottom:16}}>
+              {[1,2,3,4,5].map(n=><div key={n} className="rating-star" onClick={()=>submitMiniRating(n)}>{n<=2?"😓":n===3?"😐":n===4?"🙂":"🌟"}</div>)}
+            </div>
+            <button className="btn" onClick={()=>submitMiniRating(null)} style={{background:"var(--surface2)",color:"var(--text3)",padding:"10px 20px",borderRadius:"var(--rs)",fontSize:13}}>Skip — just give me another</button>
+          </div>
+        </div>
+      )}
       {wordPopup&&<WordPopup word={wordPopup.word} context={wordPopup.context} decks={decks} cardStates={cardStates} onClose={()=>setWordPopup(null)} onAddToFlashcard={onAddToFlashcard} trackUsage={trackUsage}/>}
     </div>
   );
@@ -2406,7 +2455,7 @@ function Onboarding({onComplete}) {
 // ─────────────────────────────────────────────────────────────
 // CONVERSATION MODULE
 // ─────────────────────────────────────────────────────────────
-function ConversationScreen({decks,cardStates,onBack,onFinish,trackUsage,onLogStudy,onAddToFlashcard,master}) {
+function ConversationScreen({decks,cardStates,onBack,onFinish,trackUsage,onLogStudy,onAddToFlashcard,master,masterPool}) {
   const screenStart=useRef(Date.now());
   useEffect(()=>{screenStart.current=Date.now();return ()=>{
     const mins=Math.max(1,Math.round((Date.now()-screenStart.current)/60000));
@@ -2430,10 +2479,12 @@ function ConversationScreen({decks,cardStates,onBack,onFinish,trackUsage,onLogSt
   const SpeechRecognition=window.SpeechRecognition||window.webkitSpeechRecognition;
   const hasSpeechRecog=!!SpeechRecognition;
 
-  const selectedCards = decks
-    .filter(d=>selDeckIds.has(d.id))
-    .flatMap(d=>(cardStates[d.id]||[]))
-    .filter(c=>selCardIds.has(c.id));
+  const now3=Date.now();
+  const allPooled3 = decks.filter(d=>selDeckIds.has(d.id)).flatMap(d=>(cardStates[d.id]||[])).filter(c=>selCardIds.has(c.id));
+  const selectedCards = master&&masterPool&&masterPool!=="all"
+    ? allPooled3.filter(c=>masterPool==="weak"?c.status==="weak":masterPool==="due"?(c.srsLastReview&&c.srsNextReview&&c.srsNextReview<=now3):true)
+    : allPooled3;
+  const poolLabel3 = master?(masterPool==="weak"?"weak":masterPool==="due"?"due":"all"):"";
 
   const scrollBottom=()=>setTimeout(()=>chatRef.current?.scrollTo(0,chatRef.current.scrollHeight),50);
 
@@ -2593,7 +2644,7 @@ Return plain text, NOT JSON.`,
               accentVar="--accent" accentBgVar="--accent-bg" accentBorderVar="--accent-border"
               onReset={()=>{}}
             />}
-            {master&&<div style={{background:"var(--accent-bg)",border:"1px solid var(--accent-border)",borderRadius:"var(--rs)",padding:"10px 14px",fontSize:13,color:"var(--accent)",fontWeight:500}}>Using all {selectedCards.length} vocabulary words · Master session</div>}
+            {master&&<div style={{background:"var(--accent-bg)",border:"1px solid var(--accent-border)",borderRadius:"var(--rs)",padding:"10px 14px",fontSize:13,color:"var(--accent)",fontWeight:500}}>Using {selectedCards.length} {poolLabel3} vocabulary words · Master session</div>}
             <button className="btn btn-primary" onClick={startConversation} disabled={loading||!selectedCards.length}
               style={{width:"100%",padding:"14px",borderRadius:"var(--r)",fontSize:14}}>
               {loading?<><RefreshCw size={14} className="spin"/>Starting…</>:<><MessageCircle size={15}/>{master?"Start Master Conversation":`Start Conversation with ${selectedCards.length} words`}</>}
@@ -2662,6 +2713,7 @@ function MasterReviewScreen({decks,cardStates,onBack,onSwipeCard,trackUsage,onAd
   const [started,setStarted]=useState(false);
   const [mode,setMode]=useState("smart"); // smart, due, weak, new, all
   const [limit,setLimit]=useState(50);
+  const [masterModulePool,setMasterModulePool]=useState("all");
   const [sessionCards,setSessionCards]=useState([]);
   const [idx,setIdx]=useState(0);
   const [results,setResults]=useState({known:0,weak:0});
@@ -2882,22 +2934,28 @@ function MasterReviewScreen({decks,cardStates,onBack,onSwipeCard,trackUsage,onAd
           </div>
         </div>
 
-        {/* Master Module Sessions — use ALL vocab for skill scoring */}
-        <div className="sec" style={{marginTop:4}}>Master Practice (All Vocab)</div>
+        {/* Master Module Sessions */}
+        <div className="sec" style={{marginTop:4}}>Master Practice Sessions</div>
         <div style={{fontSize:12,color:"var(--text3)",marginBottom:8,lineHeight:1.5}}>
-          These sessions use your entire vocabulary and count toward your skill scores.
+          These sessions count toward your skill scores. Choose a card pool:
         </div>
-        <div className="test-option" onClick={onMasterReading}>
+        {/* Card pool selector for modules */}
+        <div style={{display:"flex",gap:6,marginBottom:10,flexWrap:"wrap"}}>
+          {[["all",`All (${allCards.length})`],["weak",`Weak (${weakCards.length})`],["due",`Due (${dueCards.length})`]].map(([k,label])=>(
+            <button key={k} className={`chip ${masterModulePool===k?"chip-on":""}`} onClick={()=>setMasterModulePool(k)} style={{flex:1,justifyContent:"center",padding:"7px 0",fontSize:12}}>{label}</button>
+          ))}
+        </div>
+        <div className="test-option" onClick={()=>onMasterReading(masterModulePool)}>
           <div style={{width:40,height:40,borderRadius:12,background:"var(--read)",display:"flex",alignItems:"center",justifyContent:"center"}}><FileText size={18} color="white"/></div>
-          <div style={{flex:1}}><div style={{fontWeight:600,fontSize:14,color:"var(--read)"}}>Master Reading</div><div style={{fontSize:12,color:"var(--text3)",marginTop:2}}>AI passage using all {allCards.length} vocab words</div></div>
+          <div style={{flex:1}}><div style={{fontWeight:600,fontSize:14,color:"var(--read)"}}>Master Reading</div><div style={{fontSize:12,color:"var(--text3)",marginTop:2}}>AI passage from {masterModulePool==="all"?"all":masterModulePool} cards</div></div>
         </div>
-        <div className="test-option" onClick={onMasterListening}>
+        <div className="test-option" onClick={()=>onMasterListening(masterModulePool)}>
           <div style={{width:40,height:40,borderRadius:12,background:"var(--listen)",display:"flex",alignItems:"center",justifyContent:"center"}}><Headphones size={18} color="white"/></div>
-          <div style={{flex:1}}><div style={{fontWeight:600,fontSize:14,color:"var(--listen)"}}>Master Listening</div><div style={{fontSize:12,color:"var(--text3)",marginTop:2}}>Audio practice using all vocabulary</div></div>
+          <div style={{flex:1}}><div style={{fontWeight:600,fontSize:14,color:"var(--listen)"}}>Master Listening</div><div style={{fontSize:12,color:"var(--text3)",marginTop:2}}>Audio from {masterModulePool==="all"?"all":masterModulePool} cards</div></div>
         </div>
-        <div className="test-option" onClick={onMasterSpeaking}>
+        <div className="test-option" onClick={()=>onMasterSpeaking(masterModulePool)}>
           <div style={{width:40,height:40,borderRadius:12,background:"var(--accent)",display:"flex",alignItems:"center",justifyContent:"center"}}><MessageCircle size={18} color="white"/></div>
-          <div style={{flex:1}}><div style={{fontWeight:600,fontSize:14,color:"var(--accent)"}}>Master Speaking</div><div style={{fontSize:12,color:"var(--text3)",marginTop:2}}>Conversation using all vocabulary</div></div>
+          <div style={{flex:1}}><div style={{fontWeight:600,fontSize:14,color:"var(--accent)"}}>Master Speaking</div><div style={{fontSize:12,color:"var(--text3)",marginTop:2}}>Conversation from {masterModulePool==="all"?"all":masterModulePool} cards</div></div>
         </div>
       </div>
     </div>
@@ -3396,7 +3454,8 @@ export default function App() {
   const [studyLog,setStudyLog]=useState(initStudyLog);
   const [showSearch,setShowSearch]=useState(false);
   const [showOnboarding,setShowOnboarding]=useState(false);
-  const [sessionRating,setSessionRating]=useState(null); // {module} when showing rating
+  const [sessionRating,setSessionRating]=useState(null);
+  const [masterPool,setMasterPool]=useState("all"); // all, weak, due
   const sessionRes=useRef({known:0,weak:0});
   const [darkMode,setDarkMode]=useState(()=>{
     const saved=localStorage.getItem("arabic_fc_dark");
@@ -3611,13 +3670,16 @@ export default function App() {
     complete:<CompleteScreen known={sessionRes.current.known} weak={sessionRes.current.weak} onBack={()=>go("deck")}/>,
     reading:<ReadingScreen {...commonProps} onBack={()=>go("home")} onFinish={()=>{go("home");setSessionRating({module:"reading"});}} onAddToFlashcard={addToFlashcard} onLogStudy={logStudy}/>,
     listening:<ListeningScreen {...commonProps} onBack={()=>go("home")} onFinish={()=>{go("home");setSessionRating({module:"listening"});}} onAddToFlashcard={addToFlashcard} onLogStudy={logStudy}/>,
-    masterReading:<ReadingScreen {...commonProps} master={true} onBack={()=>go("masterReview")} onFinish={()=>{go("home");setSessionRating({module:"reading",master:true});}} onAddToFlashcard={addToFlashcard} onLogStudy={logStudy}/>,
-    masterListening:<ListeningScreen {...commonProps} master={true} onBack={()=>go("masterReview")} onFinish={()=>{go("home");setSessionRating({module:"listening",master:true});}} onAddToFlashcard={addToFlashcard} onLogStudy={logStudy}/>,
-    masterSpeaking:<ConversationScreen {...commonProps} master={true} onBack={()=>go("masterReview")} onFinish={()=>{go("home");setSessionRating({module:"speaking",master:true});}} onLogStudy={logStudy} onAddToFlashcard={addToFlashcard}/>,
+    masterReading:<ReadingScreen {...commonProps} master={true} masterPool={masterPool} onBack={()=>go("masterReview")} onFinish={()=>{go("home");setSessionRating({module:"reading",master:true});}} onAddToFlashcard={addToFlashcard} onLogStudy={logStudy}/>,
+    masterListening:<ListeningScreen {...commonProps} master={true} masterPool={masterPool} onBack={()=>go("masterReview")} onFinish={()=>{go("home");setSessionRating({module:"listening",master:true});}} onAddToFlashcard={addToFlashcard} onLogStudy={logStudy}/>,
+    masterSpeaking:<ConversationScreen {...commonProps} master={true} masterPool={masterPool} onBack={()=>go("masterReview")} onFinish={()=>{go("home");setSessionRating({module:"speaking",master:true});}} onLogStudy={logStudy} onAddToFlashcard={addToFlashcard}/>,
     conversation:<ConversationScreen {...commonProps} onBack={()=>go("home")} onFinish={()=>{go("home");setSessionRating({module:"speaking"});}} onLogStudy={logStudy} onAddToFlashcard={addToFlashcard}/>,
     progress:<ProgressScreen cardStates={cardStates} studyLog={studyLog} onBack={()=>go("home")} onLogManual={(e)=>logStudy(e)}/>,
     test:<TestScreen decks={decks} cardStates={cardStates} onBack={()=>go("home")} trackUsage={trackUsage} studyLog={studyLog} onLogStudy={logStudy}/>,
-    masterReview:<MasterReviewScreen decks={decks} cardStates={cardStates} onBack={()=>go("home")} onSwipeCard={handleMasterSwipe} trackUsage={trackUsage} onAddToFlashcard={addToFlashcard} studyLog={studyLog} onLogStudy={logStudy} onMasterReading={()=>go("masterReading")} onMasterListening={()=>go("masterListening")} onMasterSpeaking={()=>go("masterSpeaking")}/>,
+    masterReview:<MasterReviewScreen decks={decks} cardStates={cardStates} onBack={()=>go("home")} onSwipeCard={handleMasterSwipe} trackUsage={trackUsage} onAddToFlashcard={addToFlashcard} studyLog={studyLog} onLogStudy={logStudy}
+      onMasterReading={(pool)=>{setMasterPool(pool);go("masterReading");}}
+      onMasterListening={(pool)=>{setMasterPool(pool);go("masterListening");}}
+      onMasterSpeaking={(pool)=>{setMasterPool(pool);go("masterSpeaking");}}/>,
   };
 
   // Show loading spinner while Firebase checks auth state
