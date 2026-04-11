@@ -11,6 +11,45 @@ import {
 } from "lucide-react";
 
 // ─────────────────────────────────────────────────────────────
+// TASHKEEL VALIDATION
+// ─────────────────────────────────────────────────────────────
+// Arabic letter range (excluding diacritics, tatweel, and non-joining chars)
+const ARABIC_LETTER = /[\u0621-\u063A\u0641-\u064A]/g;
+// Tashkeel marks: fatha, damma, kasra, sukun, shadda, tanwin, superscript alef, etc.
+const TASHKEEL_MARK = /[\u064B-\u0652\u0670]/;
+
+/**
+ * Returns the ratio (0-1) of Arabic letters that are followed by a tashkeel mark.
+ * A well-vowelized text typically scores > 0.7.
+ */
+function tashkeelRatio(text) {
+  if (!text) return 1;
+  let total = 0, vowelized = 0;
+  for (let i = 0; i < text.length; i++) {
+    if (ARABIC_LETTER.test(text[i])) {
+      ARABIC_LETTER.lastIndex = 0; // reset regex state
+      total++;
+      // Check if next char is a tashkeel mark
+      if (i + 1 < text.length && TASHKEEL_MARK.test(text[i + 1])) vowelized++;
+    }
+  }
+  return total === 0 ? 1 : vowelized / total;
+}
+
+/**
+ * Check all Arabic string values in a parsed JSON object.
+ * Returns true if every Arabic string has tashkeel ratio >= threshold.
+ */
+function hasSufficientTashkeel(obj, threshold = 0.5) {
+  if (typeof obj === "string") return tashkeelRatio(obj) >= threshold;
+  if (Array.isArray(obj)) return obj.every(v => hasSufficientTashkeel(v, threshold));
+  if (obj && typeof obj === "object") {
+    return Object.values(obj).every(v => hasSufficientTashkeel(v, threshold));
+  }
+  return true;
+}
+
+// ─────────────────────────────────────────────────────────────
 // CONSTANTS
 // ─────────────────────────────────────────────────────────────
 const FORM_LABELS = {
@@ -209,6 +248,27 @@ async function callClaude(prompt, maxTokens=1500, tag="other", trackFn=null) {
   return outputText;
 }
 
+/**
+ * Calls the LLM expecting JSON back, validates tashkeel on Arabic text,
+ * and retries once with a stronger prompt if tashkeel is insufficient.
+ */
+async function callClaudeWithTashkeel(prompt, maxTokens=1500, tag="other", trackFn=null) {
+  const raw = await callClaude(prompt, maxTokens, tag, trackFn);
+  let parsed;
+  try { parsed = extractJSON(raw); } catch { return raw; } // not JSON, return as-is
+
+  if (hasSufficientTashkeel(parsed, 0.5)) return raw;
+
+  // Retry with reinforced tashkeel instruction
+  const retryPrompt = prompt + `
+
+⚠️ YOUR PREVIOUS RESPONSE HAD MISSING TASHKEEL. THIS IS A RETRY.
+You MUST add full tashkeel (حَرَكَات) to EVERY Arabic letter: fatha فَتْحَة, damma ضَمَّة, kasra كَسْرَة, sukun سُكُون, shadda شَدَّة, tanween تَنْوِين.
+NO bare Arabic letters are acceptable. Every ب must be بَ بُ بِ بْ etc.
+Example: الْكِتَابُ الْكَبِيرُ not الكتاب الكبير.`;
+  return callClaude(retryPrompt, maxTokens, tag, trackFn);
+}
+
 // Robust JSON extractor — handles LLM responses that wrap JSON in markdown or extra text
 function extractJSON(raw) {
   const clean = raw.replace(/```json|```/g,"").trim();
@@ -356,7 +416,7 @@ function WordPopup({word,context,decks,cardStates,onClose,onAddToFlashcard,track
     if(!word) return;
     (async()=>{
       try {
-        const raw=await callClaude(
+        const raw=await callClaudeWithTashkeel(
           `Arabic language expert. Learner clicked word: "${word}" in: "${context}"
 Return ONLY valid JSON no markdown. Include full tashkeel on all Arabic text:
 {"word":"${word}","root":"3-letter Arabic root with tashkeel like كَتَبَ or empty","rootMeaning":"short root meaning or empty","meaning":"English meaning","partOfSpeech":"noun/verb/adjective/etc","note":"one short helpful tip or empty"}`,
@@ -712,7 +772,7 @@ function AddCardsScreen({deck,onBack,onSave,trackUsage}) {
       const chunk=chunks[ci];
       setGenProgress(`Batch ${ci+1}/${chunks.length} (${allCards.length} cards done)…`);
       try {
-        const raw=await callClaude(
+        const raw=await callClaudeWithTashkeel(
           `Expert Arabic linguist creating flashcards.
 Input: ${isEn?"English":"Arabic"} | Type: ${wordType} | Words: ${chunk.join(", ")}
 Required forms: ${formsDesc}
@@ -1013,7 +1073,7 @@ function EditCardScreen({card,onBack,onSave,trackUsage}) {
     const forms=FORMS_BY_TYPE[local.wordType]||[];
     const formsDesc=forms.map(f=>`"${f}" (${FORM_LABELS[f]})`).join(", ");
     try {
-      const raw=await callClaude(
+      const raw=await callClaudeWithTashkeel(
         `Arabic linguist. This is a ${local.wordType}: "${local.english}" / "${local.arabicBase}"
 Generate all relevant Arabic forms. Return ONLY valid JSON object (just the forms, no wrapper):
 {${forms.map(f=>`"${f}":"Arabic with diacritics or empty string"`).join(",")}}
@@ -1124,7 +1184,7 @@ function StudyScreen({cards,currentIndex,onSwipe,onBack,onExit,trackUsage,decks,
     setGenLoading(true);setGen(null);
     try {
       const avoidClause=prevSentence?`\nDo NOT reuse or closely resemble this previous sentence: "${prevSentence}"`:"";
-      const raw=await callClaude(
+      const raw=await callClaudeWithTashkeel(
         `Arabic teacher creating flashcard learning aid.
 Word: "${card.english}" · Arabic form "${arabicForm}" (${formLabel})
 Generate: 1) Short natural Arabic sentence (6-10w) using EXACTLY: ${arabicForm}  2) English translation  3) Vivid DALL-E scene (2-3 sentences, real everyday Arabic life, no Arabic text in scene)${avoidClause}
@@ -1447,7 +1507,7 @@ function ReadingScreen({decks,cardStates,onBack,onAddToFlashcard,trackUsage}) {
     const targetLen=scaleLen(baseLenMap[settings.length]||"110-140");
     const maxTok=Math.min(4000,Math.max(1500,vocabCards.length*100));
     try {
-      const raw=await callClaude(
+      const raw=await callClaudeWithTashkeel(
         `Expert Arabic language teacher creating reading practice.
 Deck: ${deckNames}
 Arabic vocabulary (MUST use every word): ${vocabCards.map(c=>c.arabicBase).join("، ")}
@@ -1588,7 +1648,7 @@ function ListeningScreen({decks,cardStates,onBack,onAddToFlashcard,trackUsage}) 
     const targetLen=scaleLen(baseLenMap[settings.length]||"90-120");
     const maxTok=Math.min(4000,Math.max(1200,vocabCards.length*100));
     try {
-      const raw=await callClaude(
+      const raw=await callClaudeWithTashkeel(
         `Arabic teacher creating listening practice.
 Deck: ${deckNames}
 Arabic vocabulary (MUST use every word): ${vocabCards.map(c=>c.arabicBase).join("، ")}
