@@ -8,7 +8,8 @@ import {
   EyeOff, Headphones, FileText, Play, Pause, SkipBack, Sliders, Globe,
   PlusCircle, Mic, Info, Image as ImageIcon, MoreVertical, Pencil,
   DollarSign, Zap, ChevronDown, ChevronUp, SquareCheck, Square,
-  Moon, Sun, Download, Upload
+  Moon, Sun, Download, Upload, Search, MessageCircle, HelpCircle,
+  Send, Clock, Target, BarChart3, Hash
 } from "lucide-react";
 
 // ─────────────────────────────────────────────────────────────
@@ -151,6 +152,25 @@ function getDueCount(cards) {
   return cards.filter(c => !c.srsNextReview || c.srsNextReview <= now).length;
 }
 
+/**
+ * Count total word instances across all cards (each non-empty form counts as one).
+ */
+function countWordInstances(cardStates) {
+  let count = 0;
+  for (const cards of Object.values(cardStates)) {
+    for (const c of cards) {
+      // Count arabicBase as 1, plus each non-empty form value
+      count++; // the base word itself
+      if (c.forms) {
+        for (const v of Object.values(c.forms)) {
+          if (v && v.trim()) count++;
+        }
+      }
+    }
+  }
+  return count;
+}
+
 // ─────────────────────────────────────────────────────────────
 // CONSTANTS
 // ─────────────────────────────────────────────────────────────
@@ -193,10 +213,6 @@ const OR_MODELS = [
   // Meta
   {id:"meta-llama/llama-3.3-70b-instruct",label:"Llama 3.3 70B  · Open source"},
 ];
-
-// Cost estimate: Claude Sonnet ~$3/MTok input, $15/MTok output
-const INPUT_COST_PER_CHAR  = 3  / 1_000_000 / 4;
-const OUTPUT_COST_PER_CHAR = 15 / 1_000_000 / 4;
 
 const USAGE_LABELS = {
   flashcard:"Flashcard Generation", sentence:"Sentence / Learning Aid",
@@ -337,6 +353,22 @@ textarea.input{resize:vertical;min-height:110px;line-height:1.7}
 .search-input{width:100%;border:1.5px solid var(--border);border-radius:var(--rs);padding:9px 13px 9px 36px;font-family:'Outfit',sans-serif;font-size:13.5px;color:var(--text);background:var(--surface);outline:none;transition:border-color .15s}
 .search-input:focus{border-color:var(--accent)}
 .search-input::placeholder{color:var(--text3)}
+.search-overlay{position:fixed;inset:0;z-index:150;background:var(--bg);animation:sIn .15s ease;display:flex;flex-direction:column}
+.search-overlay .search-header{padding:16px 20px;display:flex;align-items:center;gap:10;border-bottom:1px solid var(--border)}
+.search-overlay .search-results{flex:1;overflow-y:auto;padding:8px 20px}
+.search-result{display:flex;align-items:center;gap:12;padding:12px 14px;border-radius:var(--rs);cursor:pointer;transition:background .12s;border:1px solid transparent}
+.search-result:hover{background:var(--surface);border-color:var(--border)}
+.chat-bubble{padding:12px 15px;border-radius:16px;max-width:85%;line-height:1.6;font-size:14px;animation:gIn .2s ease}
+.chat-ai{background:var(--surface);border:1px solid var(--border);border-bottom-left-radius:4px;align-self:flex-start}
+.chat-user{background:var(--accent);color:#fff;border-bottom-right-radius:4px;align-self:flex-end}
+.stat-card{background:var(--surface);border:1.5px solid var(--border);border-radius:var(--rs);padding:12px 14px;text-align:center;flex:1;min-width:0}
+.stat-num{font-size:22px;font-weight:700;line-height:1}
+.stat-label{font-size:10.5px;color:var(--text3);margin-top:4px;font-weight:500;text-transform:uppercase;letter-spacing:.05em}
+.onboarding-overlay{position:fixed;inset:0;z-index:200;background:rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center;animation:ovIn .3s ease}
+.onboarding-card{background:var(--surface);border-radius:20px;padding:32px 24px;max-width:400px;width:calc(100% - 40px);animation:popIn .4s cubic-bezier(.34,1.56,.64,1);text-align:center}
+.onboarding-dots{display:flex;justify-content:center;gap:6px;margin:20px 0}
+.onboarding-dot{width:8px;height:8px;border-radius:50%;background:var(--border);transition:all .2s}
+.onboarding-dot.active{background:var(--accent);width:20px;border-radius:4px}
 `;
 
 // ─────────────────────────────────────────────────────────────
@@ -508,30 +540,6 @@ function ClickableArabic({text,highlightWords=[],onWordClick,fontSize=20}) {
 }
 
 // ─────────────────────────────────────────────────────────────
-// DECK SELECTOR (used in Reading/Listening)
-// ─────────────────────────────────────────────────────────────
-function DeckSelector({decks,cardStates,selectedDeckId,onChange}) {
-  return (
-    <div>
-      <div className="sec">Study Deck</div>
-      <div style={{display:"flex",flexDirection:"column",gap:7}}>
-        {decks.map(d=>{
-          const count=(cardStates[d.id]||[]).length;
-          const on=selectedDeckId===d.id;
-          return (
-            <button key={d.id} className="btn" onClick={()=>onChange(d.id)}
-              style={{background:on?"var(--accent-bg)":"var(--surface)",border:`1.5px solid ${on?"var(--accent)":"var(--border)"}`,borderRadius:"var(--rs)",padding:"11px 14px",textAlign:"left",width:"100%",justifyContent:"space-between"}}>
-              <span style={{fontWeight:600,fontSize:14,color:on?"var(--accent)":"var(--text)"}}>{d.title}</span>
-              <span style={{fontSize:12,color:"var(--text3)"}}>{count} cards</span>
-            </button>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
-// ─────────────────────────────────────────────────────────────
 // WORD POPUP
 // ─────────────────────────────────────────────────────────────
 function WordPopup({word,context,decks,cardStates,onClose,onAddToFlashcard,trackUsage}) {
@@ -675,7 +683,7 @@ function UsageMeter({usage}) {
 // ─────────────────────────────────────────────────────────────
 // HOME
 // ─────────────────────────────────────────────────────────────
-function HomeScreen({decks,cardStates,onOpenDeck,onSettings,onCreateDeck,onReading,onListening,darkMode,onToggleDark}) {
+function HomeScreen({decks,cardStates,onOpenDeck,onSettings,onCreateDeck,onReading,onListening,onConversation,onSearch,darkMode,onToggleDark}) {
   const sorted=[...decks].sort((a,b)=>b.createdAt-a.createdAt);
   const importRef=useRef(null);
   const handleImport=(e)=>{
@@ -686,19 +694,26 @@ function HomeScreen({decks,cardStates,onOpenDeck,onSettings,onCreateDeck,onReadi
       try {
         const data=JSON.parse(ev.target.result);
         if(data.deck&&data.cards){
-          // Rekey to avoid ID collisions
           const newDeckId=`d${Date.now()}`;
           const newCards=data.cards.map((c,i)=>({...c,id:`c${Date.now()+i+1}`}));
-          // Dispatch via custom event — handled in App
           window.dispatchEvent(new CustomEvent("importDeck",{detail:{deck:{...data.deck,id:newDeckId,createdAt:Date.now()},cards:newCards}}));
           showToast(`Imported "${data.deck.title}" with ${newCards.length} cards`,"success");
         } else { showToast("Invalid deck file format","error"); }
       } catch { showToast("Failed to parse file","error"); }
     };
     reader.readAsText(file);
-    e.target.value=""; // reset for re-import
+    e.target.value="";
   };
-  const totalDue=Object.values(cardStates).flat().filter(c=>!c.srsNextReview||c.srsNextReview<=Date.now()).length;
+
+  // Dashboard stats
+  const allCards=Object.values(cardStates).flat();
+  const totalCards=allCards.length;
+  const knownCount=allCards.filter(c=>c.status==="known").length;
+  const weakCount=allCards.filter(c=>c.status==="weak").length;
+  const newCount=allCards.filter(c=>c.status==="new"||!c.status).length;
+  const totalInstances=countWordInstances(cardStates);
+  const dueCount=getDueCount(allCards);
+
   return (
     <div className="screen">
       <div style={{padding:"26px 20px 0",display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
@@ -708,19 +723,37 @@ function HomeScreen({decks,cardStates,onOpenDeck,onSettings,onCreateDeck,onReadi
           <div className="ar" style={{fontSize:15,color:"var(--text3)",marginTop:4}}>بِسْمِ اللهِ</div>
         </div>
         <div style={{display:"flex",gap:6}}>
+          <button className="btn btn-ghost" onClick={onSearch} style={{width:36,height:36}} title="Search all cards"><Search size={16}/></button>
           <button className="btn btn-ghost" onClick={onToggleDark} style={{width:36,height:36}} title={darkMode?"Light mode":"Dark mode"}>{darkMode?<Sun size={16}/>:<Moon size={16}/>}</button>
           <button className="btn btn-ghost" onClick={onSettings} style={{width:36,height:36}}><Settings size={17}/></button>
         </div>
       </div>
-      {totalDue>0&&(
-        <div style={{padding:"12px 20px 0"}}>
-          <div style={{background:"var(--info-bg)",border:"1.5px solid var(--info-border)",borderRadius:"var(--rs)",padding:"10px 14px",display:"flex",alignItems:"center",gap:10}}>
-            <Zap size={16} color="var(--info)"/>
-            <div style={{flex:1,fontSize:13.5,color:"var(--info)",fontWeight:600}}>{totalDue} card{totalDue!==1?"s":""} due for review</div>
+
+      {/* Dashboard Stats */}
+      {totalCards>0&&(
+        <div style={{padding:"16px 20px 0"}}>
+          <div style={{display:"flex",gap:8,marginBottom:8}}>
+            <div className="stat-card"><div className="stat-num" style={{color:"var(--text)"}}>{totalCards}</div><div className="stat-label">Cards</div></div>
+            <div className="stat-card"><div className="stat-num" style={{color:"var(--know)"}}>{knownCount}</div><div className="stat-label">Known</div></div>
+            <div className="stat-card"><div className="stat-num" style={{color:"var(--weak)"}}>{weakCount}</div><div className="stat-label">Weak</div></div>
+            <div className="stat-card"><div className="stat-num" style={{color:"var(--text3)"}}>{newCount}</div><div className="stat-label">New</div></div>
+          </div>
+          <div style={{display:"flex",gap:8}}>
+            <div className="stat-card" style={{display:"flex",alignItems:"center",gap:8,textAlign:"left"}}>
+              <Hash size={14} color="var(--accent)"/>
+              <div><div style={{fontSize:14,fontWeight:700,color:"var(--accent)"}}>{totalInstances}</div><div className="stat-label" style={{marginTop:1}}>Word instances</div></div>
+            </div>
+            {dueCount>0&&(
+              <div className="stat-card" style={{display:"flex",alignItems:"center",gap:8,textAlign:"left",borderColor:"var(--info-border)",background:"var(--info-bg)"}}>
+                <Clock size={14} color="var(--info)"/>
+                <div><div style={{fontSize:14,fontWeight:700,color:"var(--info)"}}>{dueCount}</div><div className="stat-label" style={{marginTop:1,color:"var(--info)"}}>Due now</div></div>
+              </div>
+            )}
           </div>
         </div>
       )}
-      <div style={{padding:"20px 20px 0"}}>
+
+      <div style={{padding:"16px 20px 0"}}>
         <div className="sec">Practice Modules</div>
         <div style={{display:"flex",flexDirection:"column",gap:9,marginBottom:22}}>
           <div className="module-card" style={{borderColor:"var(--read-border)",background:"var(--read-bg)"}} onClick={onReading}>
@@ -732,6 +765,11 @@ function HomeScreen({decks,cardStates,onOpenDeck,onSettings,onCreateDeck,onReadi
             <div style={{width:40,height:40,borderRadius:12,background:"var(--listen)",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}><Headphones size={19} color="white"/></div>
             <div style={{flex:1}}><div style={{fontWeight:700,fontSize:14.5,color:"var(--listen)"}}>Listening</div><div style={{fontSize:12.5,color:"var(--text2)",marginTop:2}}>Audio practice from your vocabulary</div></div>
             <ChevronRight size={15} color="var(--listen)"/>
+          </div>
+          <div className="module-card" style={{borderColor:"var(--accent-border)",background:"var(--accent-bg)"}} onClick={onConversation}>
+            <div style={{width:40,height:40,borderRadius:12,background:"var(--accent)",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}><MessageCircle size={19} color="white"/></div>
+            <div style={{flex:1}}><div style={{fontWeight:700,fontSize:14.5,color:"var(--accent)"}}>Conversation</div><div style={{fontSize:12.5,color:"var(--text2)",marginTop:2}}>AI chat practice using your vocabulary</div></div>
+            <ChevronRight size={15} color="var(--accent)"/>
           </div>
         </div>
         <div className="sec">Flashcard Decks</div>
@@ -801,14 +839,14 @@ function LoginScreen({onLogin,loading,error}) {
 // ─────────────────────────────────────────────────────────────
 // SETTINGS
 // ─────────────────────────────────────────────────────────────
-function SettingsScreen({settings,setSettings,onBack,usage,user,onSignOut}) {
+function SettingsScreen({settings,setSettings,onBack,usage,user,onSignOut,onReplayOnboarding}) {
   const [local,setLocal]=useState(settings);
   const [saved,setSaved]=useState(false);
   const set=(k,v)=>setLocal(p=>({...p,[k]:v}));
   const save=()=>{
     setSettings(local);
-    localStorage.setItem("arabic_fc_settings",JSON.stringify(local));
     setSaved(true);setTimeout(()=>setSaved(false),2500);
+    showToast("Settings saved","success");
   };
   return (
     <div className="screen">
@@ -881,8 +919,14 @@ function SettingsScreen({settings,setSettings,onBack,usage,user,onSignOut}) {
           </div>
         </div>
 
+        <SRSSettingsPanel srsSettings={local.srs} onChange={srs=>set("srs",srs)}/>
+
         <button className="btn btn-primary" onClick={save} style={{width:"100%",padding:14,borderRadius:"var(--r)",fontSize:15}}>
           {saved?<><Check size={16}/>Saved</>:<><Save size={15}/>Save Settings</>}
+        </button>
+
+        <button className="btn" onClick={onReplayOnboarding} style={{width:"100%",padding:12,borderRadius:"var(--r)",fontSize:13,background:"var(--surface2)",color:"var(--text2)"}}>
+          <HelpCircle size={14}/> Replay Onboarding Guide
         </button>
       </div>
     </div>
@@ -1372,7 +1416,7 @@ CRITICAL: Every Arabic word MUST have full tashkeel (فَتْحَة ضَمَّة
 // ─────────────────────────────────────────────────────────────
 // STUDY SCREEN
 // ─────────────────────────────────────────────────────────────
-function StudyScreen({cards,currentIndex,onSwipe,onBack,onExit,trackUsage,decks,cardStates,onAddToFlashcard}) {
+function StudyScreen({cards,currentIndex,onSwipe,onBack,onExit,trackUsage,decks,cardStates,onAddToFlashcard,activeFormOverride}) {
   const [flipped,setFlipped]=useState(false);
   const [selForm,setSelForm]=useState(null);
   const [gen,setGen]=useState(null);
@@ -1386,7 +1430,10 @@ function StudyScreen({cards,currentIndex,onSwipe,onBack,onExit,trackUsage,decks,
 
   useEffect(()=>{
     genRef.current++;
-    setFlipped(false);setSelForm(availForms[0]?.[0]??null);setGen(null);setGenLoading(false);setImgLoading(false);
+    // Default to weak form if card has weakForms tracked
+    const weakForms=card.weakForms||[];
+    const defaultForm=weakForms.find(f=>availForms.some(([k])=>k===f))||availForms[0]?.[0]||null;
+    setFlipped(false);setSelForm(defaultForm);setGen(null);setGenLoading(false);setImgLoading(false);
     if(window.speechSynthesis) window.speechSynthesis.cancel();
     setPlaying(false);
   },[currentIndex]);
@@ -1430,13 +1477,13 @@ Return ONLY valid JSON: {"sentence":"...","translation":"...","imagePrompt":"...
     const handler=(e)=>{
       if(e.target.tagName==="INPUT"||e.target.tagName==="TEXTAREA") return;
       if(e.key===" "||e.key==="Enter"){e.preventDefault();if(!flipped) setFlipped(true);}
-      if(flipped&&e.key==="ArrowLeft"){e.preventDefault();onSwipe("left",card.id);}
-      if(flipped&&e.key==="ArrowRight"){e.preventDefault();onSwipe("right",card.id);}
+      if(flipped&&e.key==="ArrowLeft"){e.preventDefault();onSwipe("left",card.id,selForm);}
+      if(flipped&&e.key==="ArrowRight"){e.preventDefault();onSwipe("right",card.id,selForm);}
       if(e.key==="ArrowUp"&&currentIndex>0){e.preventDefault();onBack();}
     };
     window.addEventListener("keydown",handler);
     return ()=>window.removeEventListener("keydown",handler);
-  },[flipped,card?.id,currentIndex]);
+  },[flipped,card?.id,currentIndex,selForm]);
 
   // Stop audio on unmount or screen change
   useEffect(()=>()=>{if(window.speechSynthesis) window.speechSynthesis.cancel();},[]);
@@ -1502,6 +1549,7 @@ Return ONLY valid JSON: {"sentence":"...","translation":"...","imagePrompt":"...
                 })
                 .map(([key,val])=>(
                 <button key={key} className={`chip ${selForm===key?"chip-on":""}`} onClick={()=>{setSelForm(key);setGen(null);}}>
+                  {(card.weakForms||[]).includes(key)&&<span style={{color:selForm===key?"rgba(255,200,200,.9)":"var(--weak)",fontSize:10}}>●</span>}
                   {FORM_LABELS[key]}<span className="ar" style={{fontSize:13,color:selForm===key?"rgba(255,255,255,.75)":"var(--text3)"}}>· {val}</span>
                 </button>
               ))}
@@ -1544,8 +1592,8 @@ Return ONLY valid JSON: {"sentence":"...","translation":"...","imagePrompt":"...
         )}
         {flipped&&(
           <div style={{display:"flex",gap:10}}>
-            <button className="btn" onClick={()=>onSwipe("left",card.id)} style={{flex:1,padding:"14px 8px",borderRadius:"var(--r)",background:"var(--weak-bg)",color:"var(--weak)",border:"1.5px solid var(--weak-border)",fontWeight:600,fontSize:13.5}}>← Needs Practice</button>
-            <button className="btn" onClick={()=>onSwipe("right",card.id)} style={{flex:1,padding:"14px 8px",borderRadius:"var(--r)",background:"var(--know-bg)",color:"var(--know)",border:"1.5px solid var(--know-border)",fontWeight:600,fontSize:13.5}}>Know It →</button>
+            <button className="btn" onClick={()=>onSwipe("left",card.id,selForm)} style={{flex:1,padding:"14px 8px",borderRadius:"var(--r)",background:"var(--weak-bg)",color:"var(--weak)",border:"1.5px solid var(--weak-border)",fontWeight:600,fontSize:13.5}}>← Needs Practice</button>
+            <button className="btn" onClick={()=>onSwipe("right",card.id,selForm)} style={{flex:1,padding:"14px 8px",borderRadius:"var(--r)",background:"var(--know-bg)",color:"var(--know)",border:"1.5px solid var(--know-border)",fontWeight:600,fontSize:13.5}}>Know It →</button>
           </div>
         )}
         {!flipped&&<div style={{textAlign:"center",color:"var(--text3)",fontSize:12.5,marginTop:"auto"}}>Tap the card to reveal Arabic · <span className="kbd">Space</span></div>}
@@ -1631,8 +1679,10 @@ function MultiDeckCardSelector({decks,cardStates,selDeckIds,setSelDeckIds,selCar
   const toggleCard=(id)=>setSelCardIds(p=>{const n=new Set(p);n.has(id)?n.delete(id):n.add(id);onReset&&onReset();return n;});
   const selectAllCards=()=>{setSelCardIds(new Set(pooledCards.map(c=>c.id)));onReset&&onReset();};
   const clearAllCards=()=>{setSelCardIds(new Set());onReset&&onReset();};
-  const selectWeakOnly=()=>{setSelCardIds(new Set(pooledCards.filter(c=>c.status==="weak").map(c=>c.id)));onReset&&onReset();};
+  const selectByStatus=(status)=>{setSelCardIds(new Set(pooledCards.filter(c=>status==="new"?(c.status==="new"||!c.status):c.status===status).map(c=>c.id)));onReset&&onReset();};
   const weakCount=pooledCards.filter(c=>c.status==="weak").length;
+  const knownCount=pooledCards.filter(c=>c.status==="known").length;
+  const newCount=pooledCards.filter(c=>c.status==="new"||!c.status).length;
 
   return (
     <div style={{display:"flex",flexDirection:"column",gap:10}}>
@@ -1683,9 +1733,11 @@ function MultiDeckCardSelector({decks,cardStates,selDeckIds,setSelDeckIds,selCar
           {showCardPicker&&(
             <div style={{padding:"10px 14px"}}>
               <div style={{display:"flex",gap:6,marginBottom:10,flexWrap:"wrap"}}>
-                <button className="btn btn-sm" onClick={selectAllCards} style={{background:"var(--know-bg)",color:"var(--know)",border:"1px solid var(--know-border)"}}>Select All</button>
-                {weakCount>0&&<button className="btn btn-sm" onClick={selectWeakOnly} style={{background:"var(--weak-bg)",color:"var(--weak)",border:"1px solid var(--weak-border)"}}>Weak Only ({weakCount})</button>}
-                <button className="btn btn-sm" onClick={clearAllCards} style={{background:"var(--surface2)",color:"var(--text2)"}}>Clear All</button>
+                <button className="btn btn-sm" onClick={selectAllCards} style={{background:`var(${accentBgVar})`,color:`var(${accentVar})`,border:`1px solid var(${accentBorderVar})`}}>All ({pooledCards.length})</button>
+                {weakCount>0&&<button className="btn btn-sm" onClick={()=>selectByStatus("weak")} style={{background:"var(--weak-bg)",color:"var(--weak)",border:"1px solid var(--weak-border)"}}>Weak ({weakCount})</button>}
+                {knownCount>0&&<button className="btn btn-sm" onClick={()=>selectByStatus("known")} style={{background:"var(--know-bg)",color:"var(--know)",border:"1px solid var(--know-border)"}}>Known ({knownCount})</button>}
+                {newCount>0&&<button className="btn btn-sm" onClick={()=>selectByStatus("new")} style={{background:"var(--surface2)",color:"var(--text3)",border:"1px solid var(--border)"}}>New ({newCount})</button>}
+                <button className="btn btn-sm" onClick={clearAllCards} style={{background:"var(--surface2)",color:"var(--text2)"}}>Clear</button>
               </div>
               <div style={{display:"flex",flexDirection:"column",gap:6,maxHeight:260,overflowY:"auto"}}>
                 {/* Group by deck */}
@@ -1748,7 +1800,7 @@ function ReadingScreen({decks,cardStates,onBack,onAddToFlashcard,trackUsage}) {
   const deckNames = decks.filter(d=>selDeckIds.has(d.id)).map(d=>d.title).join(" + ");
 
   const generate=async()=>{
-    if(!selectedCards.length){alert("Select at least one card.");return;}
+    if(!selectedCards.length){showToast("Select at least one card.","error");return;}
     setGenerating(true);setPassage(null);setShowTranslation(settings.showTranslation);
     const baseLenMap={short:"60-80",medium:"110-140",long:"180-220"};
     // Scale passage length with word count — more words need longer passages
@@ -1890,7 +1942,7 @@ function ListeningScreen({decks,cardStates,onBack,onAddToFlashcard,trackUsage}) 
   const generate=async()=>{
     if(window.speechSynthesis) window.speechSynthesis.cancel();
     setPlaying(false);
-    if(!selectedCards.length){alert("Select at least one card.");return;}
+    if(!selectedCards.length){showToast("Select at least one card.","error");return;}
     setGenerating(true);setContent(null);
     setShowArabic(settings.showArabicDefault);setShowEnglish(settings.showEnglishDefault);
     const baseLenMap={short:"50-70",medium:"90-120",long:"160-200"};
@@ -2054,6 +2106,298 @@ Return ONLY valid JSON: {"arabic":"...","translation":"...","vocabUsed":["base f
 }
 
 // ─────────────────────────────────────────────────────────────
+// GLOBAL SEARCH
+// ─────────────────────────────────────────────────────────────
+function GlobalSearch({decks,cardStates,onClose,onSelectCard}) {
+  const [query,setQuery]=useState("");
+  const inputRef=useRef(null);
+  useEffect(()=>{inputRef.current?.focus();},[]);
+  useEffect(()=>{
+    const handler=(e)=>{if(e.key==="Escape") onClose();};
+    window.addEventListener("keydown",handler);
+    return ()=>window.removeEventListener("keydown",handler);
+  },[onClose]);
+
+  const results=[];
+  if(query.trim().length>=1){
+    const q=query.toLowerCase();
+    for(const deck of decks){
+      for(const card of (cardStates[deck.id]||[])){
+        const matchFields=[];
+        if(card.english.toLowerCase().includes(q)) matchFields.push("english");
+        if(card.arabicBase.includes(query)) matchFields.push("arabicBase");
+        if(card.forms){
+          for(const [k,v] of Object.entries(card.forms)){
+            if(v&&(v.includes(query)||v.toLowerCase().includes(q))) matchFields.push(k);
+          }
+        }
+        if(matchFields.length) results.push({card,deck,matchFields});
+        if(results.length>=30) break;
+      }
+      if(results.length>=30) break;
+    }
+  }
+
+  return (
+    <div className="search-overlay">
+      <div className="search-header">
+        <Search size={18} color="var(--text3)"/>
+        <input ref={inputRef} className="input" placeholder="Search all cards (English or Arabic)…" value={query} onChange={e=>setQuery(e.target.value)}
+          style={{border:"none",padding:"8px 0",fontSize:16,background:"transparent",flex:1}}/>
+        <button className="btn btn-ghost" onClick={onClose} style={{width:32,height:32}}><X size={14}/></button>
+      </div>
+      <div className="search-results">
+        {query.trim().length<1&&(
+          <div style={{textAlign:"center",padding:"48px 20px",color:"var(--text3)"}}>
+            <Search size={32} style={{opacity:.3,marginBottom:10}}/><br/>
+            <div style={{fontSize:14}}>Type to search across all decks</div>
+            <div style={{fontSize:12,marginTop:4}}>Search by English, Arabic, forms, synonyms, antonyms…</div>
+          </div>
+        )}
+        {query.trim().length>=1&&results.length===0&&(
+          <div style={{textAlign:"center",padding:"48px 20px",color:"var(--text3)",fontSize:14}}>No cards match "{query}"</div>
+        )}
+        {results.map(({card,deck,matchFields})=>(
+          <div key={card.id} className="search-result" onClick={()=>onSelectCard(card,deck)}>
+            <div style={{flex:1,minWidth:0}}>
+              <div style={{display:"flex",alignItems:"center",gap:7,marginBottom:2}}>
+                <span style={{fontWeight:600,fontSize:14}}>{card.english}</span>
+                <span className={`tag tag-${card.status}`} style={{fontSize:10}}>{card.status}</span>
+              </div>
+              <div className="ar" style={{fontSize:18,color:"var(--accent)"}}>{card.arabicBase}</div>
+              <div style={{fontSize:11,color:"var(--text3)",marginTop:2}}>
+                {deck.title} · matched: {matchFields.map(f=>FORM_LABELS[f]||f).join(", ")}
+              </div>
+            </div>
+            <ChevronRight size={14} color="var(--text3)"/>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────
+// ONBOARDING
+// ─────────────────────────────────────────────────────────────
+const ONBOARDING_STEPS=[
+  {icon:"🗂️",title:"Welcome to Arabic Flashcards",body:"Learn Arabic vocabulary with AI-powered flashcards, spaced repetition, reading, listening, and conversation practice."},
+  {icon:"📇",title:"Flashcard Decks",body:"Create decks and add words. The AI generates all Arabic forms (singular, plural, synonyms, antonyms, verb conjugations) with full tashkeel automatically."},
+  {icon:"🔁",title:"Spaced Repetition",body:"Cards are scheduled based on how well you know them. \"Known\" cards appear less often, \"Weak\" cards come back sooner. Due cards are prioritized each session."},
+  {icon:"📖",title:"Practice Modules",body:"Reading generates passages, Listening creates audio exercises, and Conversation lets you chat — all using vocabulary from your selected decks."},
+  {icon:"🔍",title:"Search & Track Progress",body:"Use global search to find any word instantly. Your dashboard shows total cards, known/weak/new counts, and word instances across all forms."},
+  {icon:"🚀",title:"Ready to Start!",body:"Create your first deck, add some words, and start studying. The AI handles Arabic forms and tashkeel — you focus on learning."},
+];
+
+function Onboarding({onComplete}) {
+  const [step,setStep]=useState(0);
+  const s=ONBOARDING_STEPS[step];
+  return (
+    <div className="onboarding-overlay" onClick={e=>{if(e.target===e.currentTarget&&step===ONBOARDING_STEPS.length-1) onComplete();}}>
+      <div className="onboarding-card">
+        <div style={{fontSize:48,marginBottom:16}}>{s.icon}</div>
+        <div style={{fontFamily:"Lora,serif",fontSize:22,fontWeight:600,marginBottom:10}}>{s.title}</div>
+        <div style={{fontSize:14,color:"var(--text2)",lineHeight:1.7,marginBottom:8}}>{s.body}</div>
+        <div className="onboarding-dots">
+          {ONBOARDING_STEPS.map((_,i)=><div key={i} className={`onboarding-dot ${i===step?"active":""}`}/>)}
+        </div>
+        <div style={{display:"flex",gap:8,marginTop:8}}>
+          {step>0&&<button className="btn" onClick={()=>setStep(s=>s-1)} style={{flex:1,background:"var(--surface2)",color:"var(--text2)",padding:"12px",borderRadius:"var(--rs)",fontSize:14}}>Back</button>}
+          {step<ONBOARDING_STEPS.length-1?(
+            <button className="btn btn-primary" onClick={()=>setStep(s=>s+1)} style={{flex:2,padding:"12px",borderRadius:"var(--rs)",fontSize:14}}>Next</button>
+          ):(
+            <button className="btn btn-primary" onClick={onComplete} style={{flex:2,padding:"12px",borderRadius:"var(--rs)",fontSize:14}}>Get Started</button>
+          )}
+        </div>
+        <button onClick={onComplete} style={{background:"none",border:"none",color:"var(--text3)",fontSize:12,cursor:"pointer",marginTop:12}}>Skip onboarding</button>
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────
+// CONVERSATION MODULE
+// ─────────────────────────────────────────────────────────────
+function ConversationScreen({decks,cardStates,onBack,trackUsage}) {
+  const [selDeckIds,setSelDeckIds]=useState(()=>new Set(decks.map(d=>d.id)));
+  const allInitCards=decks.flatMap(d=>(cardStates[d.id]||[]).map(c=>c.id));
+  const [selCardIds,setSelCardIds]=useState(()=>new Set(allInitCards));
+  const [messages,setMessages]=useState([]);
+  const [input,setInput]=useState("");
+  const [loading,setLoading]=useState(false);
+  const [started,setStarted]=useState(false);
+  const chatRef=useRef(null);
+
+  const selectedCards = decks
+    .filter(d=>selDeckIds.has(d.id))
+    .flatMap(d=>(cardStates[d.id]||[]))
+    .filter(c=>selCardIds.has(c.id));
+
+  const scrollBottom=()=>setTimeout(()=>chatRef.current?.scrollTo(0,chatRef.current.scrollHeight),50);
+
+  const startConversation=async()=>{
+    if(!selectedCards.length){showToast("Select at least one card.","error");return;}
+    setStarted(true);setLoading(true);setMessages([]);
+    const vocabList=selectedCards.slice(0,20).map(c=>`${c.english} (${c.arabicBase})`).join(", ");
+    try {
+      const raw=await callClaudeWithTashkeel(
+        `You are a friendly Arabic conversation partner for a language learner.
+Vocabulary to practice: ${vocabList}
+
+Start a simple, natural conversation in Arabic that uses 2-3 of these vocabulary words.
+Write 2-3 short sentences as your opening message. Keep it beginner-friendly.
+After your Arabic text, add a line break and an English hint in parentheses.
+
+CRITICAL: Every Arabic word MUST have full tashkeel. Example: مَرْحَبًا، كَيْفَ حَالُكَ؟
+Return plain text, NOT JSON.`,
+        400,"other",trackUsage
+      );
+      setMessages([{role:"ai",text:raw}]);
+    } catch {
+      setMessages([{role:"ai",text:"مَرْحَبًا! كَيْفَ حَالُكَ الْيَوْمَ؟\n\n(Hello! How are you today?)"}]);
+    } finally { setLoading(false);scrollBottom(); }
+  };
+
+  const sendMessage=async()=>{
+    if(!input.trim()||loading) return;
+    const userMsg=input.trim();
+    setInput("");
+    setMessages(p=>[...p,{role:"user",text:userMsg}]);
+    setLoading(true);scrollBottom();
+
+    const vocabList=selectedCards.slice(0,15).map(c=>`${c.english} (${c.arabicBase})`).join(", ");
+    const history=messages.slice(-6).map(m=>`${m.role==="ai"?"Assistant":"User"}: ${m.text}`).join("\n");
+    try {
+      const raw=await callClaudeWithTashkeel(
+        `You are a friendly Arabic conversation partner for a language learner.
+Vocabulary to incorporate: ${vocabList}
+
+Conversation so far:
+${history}
+User: ${userMsg}
+
+Reply naturally in Arabic (2-3 short sentences). Try to use vocabulary from the list above.
+If the user makes a mistake, gently correct it. Add an English hint in parentheses at the end.
+CRITICAL: Every Arabic word MUST have full tashkeel.
+Return plain text, NOT JSON.`,
+        400,"other",trackUsage
+      );
+      setMessages(p=>[...p,{role:"ai",text:raw}]);
+    } catch {
+      setMessages(p=>[...p,{role:"ai",text:"عُذْرًا، حَدَثَ خَطَأٌ. حَاوِلْ مَرَّةً أُخْرَى.\n\n(Sorry, an error occurred. Try again.)"}]);
+    } finally { setLoading(false);scrollBottom(); }
+  };
+
+  return (
+    <div className="screen" style={{display:"flex",flexDirection:"column",paddingBottom:0}}>
+      <Hdr title="Conversation" sub="Practice" onBack={onBack}/>
+      <div style={{flex:1,display:"flex",flexDirection:"column",padding:"12px 20px 0",overflow:"hidden"}}>
+        {!started?(
+          <div style={{display:"flex",flexDirection:"column",gap:14,flex:1,overflowY:"auto"}}>
+            <div style={{fontSize:13.5,color:"var(--text2)",lineHeight:1.6}}>
+              Practice Arabic conversation using vocabulary from your selected decks. The AI will guide the conversation and use your flashcard words.
+            </div>
+            <MultiDeckCardSelector
+              decks={decks} cardStates={cardStates}
+              selDeckIds={selDeckIds} setSelDeckIds={setSelDeckIds}
+              selCardIds={selCardIds} setSelCardIds={setSelCardIds}
+              accentVar="--accent" accentBgVar="--accent-bg" accentBorderVar="--accent-border"
+              onReset={()=>{}}
+            />
+            <button className="btn btn-primary" onClick={startConversation} disabled={loading||!selectedCards.length}
+              style={{width:"100%",padding:"14px",borderRadius:"var(--r)",fontSize:14}}>
+              {loading?<><RefreshCw size={14} className="spin"/>Starting…</>:<><MessageCircle size={15}/>Start Conversation with {selectedCards.length} words</>}
+            </button>
+          </div>
+        ):(
+          <>
+            <div ref={chatRef} style={{flex:1,overflowY:"auto",display:"flex",flexDirection:"column",gap:10,paddingBottom:12}}>
+              {messages.map((m,i)=>(
+                <div key={i} className={`chat-bubble chat-${m.role==="ai"?"ai":"user"}`}>
+                  {m.role==="ai"?<div className="ar" style={{fontSize:18,lineHeight:1.8}}>{m.text.split("\n").map((line,j)=>
+                    <span key={j}>{line}{j<m.text.split("\n").length-1&&<br/>}</span>
+                  )}</div>:<div>{m.text}</div>}
+                </div>
+              ))}
+              {loading&&<div style={{alignSelf:"flex-start",padding:"8px 12px",color:"var(--text3)",fontSize:13}}><RefreshCw size={13} className="spin" style={{marginRight:6}}/>Thinking…</div>}
+            </div>
+            <div style={{padding:"10px 0 16px",display:"flex",gap:8,borderTop:"1px solid var(--border)"}}>
+              <input className="input" value={input} onChange={e=>setInput(e.target.value)} placeholder="Type in Arabic or English…"
+                onKeyDown={e=>e.key==="Enter"&&sendMessage()} style={{flex:1,fontSize:15,padding:"12px 14px"}}
+                dir={/[\u0600-\u06FF]/.test(input)?"rtl":"ltr"}/>
+              <button className="btn btn-primary" onClick={sendMessage} disabled={loading||!input.trim()} style={{padding:"12px 16px",borderRadius:"var(--rs)"}}>
+                <Send size={16}/>
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────
+// SRS SETTINGS PANEL (used in Settings screen)
+// ─────────────────────────────────────────────────────────────
+const DEFAULT_SRS_SETTINGS = {
+  dailyLimit: 50,
+  newCardsPerDay: 10,
+  weakPriority: true,
+  overduePriority: true,
+};
+
+function SRSSettingsPanel({srsSettings,onChange}) {
+  const s={...DEFAULT_SRS_SETTINGS,...srsSettings};
+  const set=(k,v)=>onChange({...s,[k]:v});
+  return (
+    <div style={{background:"var(--surface)",border:"1.5px solid var(--border)",borderRadius:"var(--r)",padding:"15px 17px"}}>
+      <div className="sec">Spaced Repetition Settings</div>
+      <div style={{display:"flex",flexDirection:"column",gap:14}}>
+        <div>
+          <label className="lbl">Daily Review Limit</label>
+          <div style={{display:"flex",gap:6}}>
+            {[20,50,100,999].map(n=>(
+              <button key={n} className={`chip ${s.dailyLimit===n?"chip-on":""}`} onClick={()=>set("dailyLimit",n)} style={{flex:1,justifyContent:"center",padding:"8px 0",fontSize:12}}>
+                {n>=999?"No limit":n}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div>
+          <label className="lbl">New Cards Per Session</label>
+          <div style={{display:"flex",gap:6}}>
+            {[5,10,20,50].map(n=>(
+              <button key={n} className={`chip ${s.newCardsPerDay===n?"chip-on":""}`} onClick={()=>set("newCardsPerDay",n)} style={{flex:1,justifyContent:"center",padding:"8px 0",fontSize:12}}>
+                {n}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+          <div><span style={{fontSize:13.5,color:"var(--text2)"}}>Prioritize weak cards</span><div style={{fontSize:11,color:"var(--text3)"}}>Weak cards appear before new ones</div></div>
+          <div className={`chk ${s.weakPriority?"on":""}`} onClick={()=>set("weakPriority",!s.weakPriority)}>{s.weakPriority&&<Check size={11} color="white"/>}</div>
+        </div>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+          <div><span style={{fontSize:13.5,color:"var(--text2)"}}>Prioritize overdue cards</span><div style={{fontSize:11,color:"var(--text3)"}}>Most overdue cards first in queue</div></div>
+          <div className={`chk ${s.overduePriority?"on":""}`} onClick={()=>set("overduePriority",!s.overduePriority)}>{s.overduePriority&&<Check size={11} color="white"/>}</div>
+        </div>
+      </div>
+      <div className="divider"/>
+      <div style={{background:"var(--info-bg)",border:"1px solid var(--info-border)",borderRadius:"var(--rxs)",padding:"12px 14px"}}>
+        <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:8}}><HelpCircle size={13} color="var(--info)"/><span style={{fontSize:12,fontWeight:700,color:"var(--info)"}}>How Review Works</span></div>
+        <div style={{fontSize:12,color:"var(--text2)",lineHeight:1.7}}>
+          <strong>New</strong> — Cards you haven't reviewed yet. Shown after due cards.<br/>
+          <strong>Weak</strong> — You marked "Needs Practice." Comes back in the same or next session.<br/>
+          <strong>Known</strong> — You marked "Know It." Interval increases each time (1d → 3d → 7d → …).<br/>
+          <strong>Due</strong> — Known cards whose review interval has passed. Prioritized first.<br/><br/>
+          Each correct recall increases the interval. Each "weak" mark resets it. This is SM-2 spaced repetition — the more you know a card, the less often you see it.
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────
 // ROOT
 // ─────────────────────────────────────────────────────────────
 function initUsage() {
@@ -2077,6 +2421,8 @@ export default function App() {
   const [sessionCards,setSessionCards]=useState([]);
   const [currentIdx,setCurrentIdx]=useState(0);
   const [usage,setUsage]=useState(initUsage);
+  const [showSearch,setShowSearch]=useState(false);
+  const [showOnboarding,setShowOnboarding]=useState(false);
   const sessionRes=useRef({known:0,weak:0});
   const [darkMode,setDarkMode]=useState(()=>{
     const saved=localStorage.getItem("arabic_fc_dark");
@@ -2107,6 +2453,8 @@ export default function App() {
             } catch(e){ console.error("Data parse error:",e); }
           }
           setDataLoaded(true);
+          // Show onboarding for first-time users
+          if(!snap.exists()||!snap.data()?.onboardingDone) setShowOnboarding(true);
         }).catch(e=>{
           console.error("Firestore load error:",e);
           if(mounted) setDataLoaded(true);
@@ -2196,13 +2544,20 @@ export default function App() {
     setCurrentIdx(Math.min(resumeIdx,toStudy.length-1));
     go("study");
   };
-  const handleSwipe=(dir,cardId)=>{
+  const handleSwipe=(dir,cardId,activeForm)=>{
     const ns=dir==="right"?"known":"weak";
     sessionRes.current[ns==="known"?"known":"weak"]++;
     setCardStates(p=>({...p,[activeDeck.id]:p[activeDeck.id].map(c=>{
       if(c.id!==cardId) return c;
       const srs=calculateSRS(c,ns);
-      return {...c,status:ns,...srs};
+      // Per-instance weakness tracking
+      let weakForms=c.weakForms?[...c.weakForms]:[];
+      if(ns==="weak"&&activeForm){
+        if(!weakForms.includes(activeForm)) weakForms.push(activeForm);
+      } else if(ns==="known"&&activeForm){
+        weakForms=weakForms.filter(f=>f!==activeForm);
+      }
+      return {...c,status:ns,weakForms,...srs};
     })}));
     if(currentIdx<sessionCards.length-1){
       const nextIdx=currentIdx+1;
@@ -2226,11 +2581,23 @@ export default function App() {
     setDecks(p=>p.map(d=>d.id===deckId?{...d,createdAt:Date.now()}:d));
   };
 
+  const completeOnboarding=()=>{
+    setShowOnboarding(false);
+    if(user) setDoc(doc(db,"users",user.uid),{onboardingDone:true},{merge:true}).catch(()=>{});
+  };
+
+  const handleSearchSelect=(card,deck)=>{
+    setShowSearch(false);
+    setActiveDeck(deck);
+    setActiveCard(card);
+    go("editCard");
+  };
+
   const commonProps={decks,cardStates,trackUsage};
 
   const screens={
-    home:<HomeScreen {...commonProps} onOpenDeck={openDeck} onSettings={()=>go("settings")} onCreateDeck={()=>go("createDeck")} onReading={()=>go("reading")} onListening={()=>go("listening")} darkMode={darkMode} onToggleDark={()=>setDarkMode(d=>!d)}/>,
-    settings:<SettingsScreen settings={settings} setSettings={setSettings} onBack={()=>go("home")} usage={usage} user={user} onSignOut={handleSignOut}/>,
+    home:<HomeScreen {...commonProps} onOpenDeck={openDeck} onSettings={()=>go("settings")} onCreateDeck={()=>go("createDeck")} onReading={()=>go("reading")} onListening={()=>go("listening")} onConversation={()=>go("conversation")} onSearch={()=>setShowSearch(true)} darkMode={darkMode} onToggleDark={()=>setDarkMode(d=>!d)}/>,
+    settings:<SettingsScreen settings={settings} setSettings={setSettings} onBack={()=>go("home")} usage={usage} user={user} onSignOut={handleSignOut} onReplayOnboarding={()=>setShowOnboarding(true)}/>,
     createDeck:<CreateDeckScreen onBack={()=>go("home")} onCreate={createDeck}/>,
     addCards:activeDeck&&<AddCardsScreen deck={activeDeck} onBack={()=>go("deck")} onSave={saveCards} trackUsage={trackUsage}/>,
     deck:activeDeck&&<DeckScreen deck={activeDeck} cards={cardStates[activeDeck.id]||[]} onStartStudy={startStudy} onBack={()=>go("home")} onAddCards={()=>go("addCards")} onEditCard={c=>{setActiveCard(c);go("editCard");}} onDeleteCard={deleteCard} onRenameDeck={renameDeck} onDeleteDeck={deleteDeck} savedIdx={savedIdx.current[activeDeck.id+"_all"]||0}/>,
@@ -2239,6 +2606,7 @@ export default function App() {
     complete:<CompleteScreen known={sessionRes.current.known} weak={sessionRes.current.weak} onBack={()=>go("deck")}/>,
     reading:<ReadingScreen {...commonProps} onBack={()=>go("home")} onAddToFlashcard={addToFlashcard}/>,
     listening:<ListeningScreen {...commonProps} onBack={()=>go("home")} onAddToFlashcard={addToFlashcard}/>,
+    conversation:<ConversationScreen {...commonProps} onBack={()=>go("home")}/>,
   };
 
   // Show loading spinner while Firebase checks auth state
@@ -2255,5 +2623,12 @@ export default function App() {
     <div className="app"><LoginScreen onLogin={handleSignIn} loading={authLoading} error={authError}/></div></>
   );
 
-  return (<><style>{CSS}</style><ToastContainer/><div className="app">{screens[screen]}</div></>);
+  return (
+    <><style>{CSS}</style>
+      <ToastContainer/>
+      {showSearch&&<GlobalSearch decks={decks} cardStates={cardStates} onClose={()=>setShowSearch(false)} onSelectCard={handleSearchSelect}/>}
+      {showOnboarding&&<Onboarding onComplete={completeOnboarding}/>}
+      <div className="app">{screens[screen]}</div>
+    </>
+  );
 }
