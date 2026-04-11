@@ -369,6 +369,7 @@ textarea.input{resize:vertical;min-height:110px;line-height:1.7}
 .onboarding-dots{display:flex;justify-content:center;gap:6px;margin:20px 0}
 .onboarding-dot{width:8px;height:8px;border-radius:50%;background:var(--border);transition:all .2s}
 .onboarding-dot.active{background:var(--accent);width:20px;border-radius:4px}
+@keyframes pulse{0%,100%{box-shadow:0 0 0 4px var(--weak-bg)}50%{box-shadow:0 0 0 10px var(--weak-bg)}}
 `;
 
 // ─────────────────────────────────────────────────────────────
@@ -2226,7 +2227,15 @@ function ConversationScreen({decks,cardStates,onBack,trackUsage}) {
   const [input,setInput]=useState("");
   const [loading,setLoading]=useState(false);
   const [started,setStarted]=useState(false);
+  const [voiceMode,setVoiceMode]=useState(false);
+  const [listening,setListening]=useState(false);
+  const [speaking,setSpeaking]=useState(false);
   const chatRef=useRef(null);
+  const recognitionRef=useRef(null);
+
+  // Check browser support for speech recognition
+  const SpeechRecognition=window.SpeechRecognition||window.webkitSpeechRecognition;
+  const hasSpeechRecog=!!SpeechRecognition;
 
   const selectedCards = decks
     .filter(d=>selDeckIds.has(d.id))
@@ -2234,6 +2243,63 @@ function ConversationScreen({decks,cardStates,onBack,trackUsage}) {
     .filter(c=>selCardIds.has(c.id));
 
   const scrollBottom=()=>setTimeout(()=>chatRef.current?.scrollTo(0,chatRef.current.scrollHeight),50);
+
+  // Text-to-speech: speak Arabic text
+  const speakArabic=(text)=>{
+    if(!window.speechSynthesis||!text) return;
+    // Strip English hint in parentheses for cleaner audio
+    const arabicOnly=text.replace(/\n?\n?\(.*?\)\s*$/s,"").trim();
+    if(!arabicOnly) return;
+    window.speechSynthesis.cancel();
+    const utt=new SpeechSynthesisUtterance(arabicOnly);
+    utt.lang="ar-SA";utt.rate=0.82;
+    const v=window.speechSynthesis.getVoices().find(v=>v.lang.startsWith("ar"));
+    if(v) utt.voice=v;
+    utt.onstart=()=>setSpeaking(true);
+    utt.onend=()=>setSpeaking(false);
+    utt.onerror=()=>setSpeaking(false);
+    setSpeaking(true);
+    window.speechSynthesis.speak(utt);
+  };
+
+  // Speech-to-text: listen via mic
+  const startListening=()=>{
+    if(!SpeechRecognition){showToast("Speech recognition not supported in this browser","error");return;}
+    if(listening){
+      recognitionRef.current?.stop();
+      setListening(false);
+      return;
+    }
+    const recognition=new SpeechRecognition();
+    recognitionRef.current=recognition;
+    recognition.lang="ar-SA";
+    recognition.interimResults=true;
+    recognition.continuous=false;
+    recognition.maxAlternatives=1;
+
+    recognition.onstart=()=>setListening(true);
+    recognition.onresult=(e)=>{
+      const transcript=Array.from(e.results).map(r=>r[0].transcript).join("");
+      setInput(transcript);
+      // If final result, auto-send
+      if(e.results[e.results.length-1].isFinal){
+        setListening(false);
+      }
+    };
+    recognition.onerror=(e)=>{
+      setListening(false);
+      if(e.error==="no-speech") showToast("No speech detected — try again","info");
+      else if(e.error!=="aborted") showToast(`Mic error: ${e.error}`,"error");
+    };
+    recognition.onend=()=>setListening(false);
+    recognition.start();
+  };
+
+  // Cleanup speech on unmount
+  useEffect(()=>()=>{
+    if(window.speechSynthesis) window.speechSynthesis.cancel();
+    recognitionRef.current?.stop();
+  },[]);
 
   const startConversation=async()=>{
     if(!selectedCards.length){showToast("Select at least one card.","error");return;}
@@ -2253,14 +2319,15 @@ Return plain text, NOT JSON.`,
         400,"other",trackUsage
       );
       setMessages([{role:"ai",text:raw}]);
+      if(voiceMode) speakArabic(raw);
     } catch {
       setMessages([{role:"ai",text:"مَرْحَبًا! كَيْفَ حَالُكَ الْيَوْمَ؟\n\n(Hello! How are you today?)"}]);
     } finally { setLoading(false);scrollBottom(); }
   };
 
-  const sendMessage=async()=>{
-    if(!input.trim()||loading) return;
-    const userMsg=input.trim();
+  const sendMessage=async(overrideText)=>{
+    const userMsg=(overrideText||input).trim();
+    if(!userMsg||loading) return;
     setInput("");
     setMessages(p=>[...p,{role:"user",text:userMsg}]);
     setLoading(true);scrollBottom();
@@ -2283,19 +2350,42 @@ Return plain text, NOT JSON.`,
         400,"other",trackUsage
       );
       setMessages(p=>[...p,{role:"ai",text:raw}]);
+      if(voiceMode) speakArabic(raw);
     } catch {
       setMessages(p=>[...p,{role:"ai",text:"عُذْرًا، حَدَثَ خَطَأٌ. حَاوِلْ مَرَّةً أُخْرَى.\n\n(Sorry, an error occurred. Try again.)"}]);
     } finally { setLoading(false);scrollBottom(); }
   };
 
+  // Tap-to-speak on any AI bubble in voice mode
+  const handleBubbleTap=(msg)=>{
+    if(msg.role==="ai"&&!speaking) speakArabic(msg.text);
+    else if(speaking) {window.speechSynthesis.cancel();setSpeaking(false);}
+  };
+
   return (
     <div className="screen" style={{display:"flex",flexDirection:"column",paddingBottom:0}}>
-      <Hdr title="Conversation" sub="Practice" onBack={onBack}/>
+      <Hdr title="Conversation" sub="Practice" onBack={()=>{if(window.speechSynthesis) window.speechSynthesis.cancel();recognitionRef.current?.stop();onBack();}}
+        right={started&&(
+          <button className={`btn btn-sm ${voiceMode?"btn-primary":""}`} onClick={()=>{setVoiceMode(v=>!v);if(window.speechSynthesis) window.speechSynthesis.cancel();setSpeaking(false);}}
+            style={voiceMode?{}:{background:"var(--surface2)",color:"var(--text2)"}}>
+            {voiceMode?<><Volume2 size={13}/>Voice On</>:<><Mic size={13}/>Voice Off</>}
+          </button>
+        )}/>
       <div style={{flex:1,display:"flex",flexDirection:"column",padding:"12px 20px 0",overflow:"hidden"}}>
         {!started?(
           <div style={{display:"flex",flexDirection:"column",gap:14,flex:1,overflowY:"auto"}}>
             <div style={{fontSize:13.5,color:"var(--text2)",lineHeight:1.6}}>
               Practice Arabic conversation using vocabulary from your selected decks. The AI will guide the conversation and use your flashcard words.
+            </div>
+            {/* Voice mode toggle before starting */}
+            <div style={{background:"var(--surface)",border:"1.5px solid var(--border)",borderRadius:"var(--rs)",padding:"12px 14px",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+              <div>
+                <div style={{fontSize:13.5,fontWeight:600,color:"var(--text)"}}>Voice Mode</div>
+                <div style={{fontSize:12,color:"var(--text3)",marginTop:2}}>
+                  {hasSpeechRecog?"Speak into mic, AI reads back aloud":"Text-to-speech only (mic not supported in this browser)"}
+                </div>
+              </div>
+              <div className={`chk ${voiceMode?"on":""}`} onClick={()=>setVoiceMode(v=>!v)}>{voiceMode&&<Check size={11} color="white"/>}</div>
             </div>
             <MultiDeckCardSelector
               decks={decks} cardStates={cardStates}
@@ -2313,21 +2403,53 @@ Return plain text, NOT JSON.`,
           <>
             <div ref={chatRef} style={{flex:1,overflowY:"auto",display:"flex",flexDirection:"column",gap:10,paddingBottom:12}}>
               {messages.map((m,i)=>(
-                <div key={i} className={`chat-bubble chat-${m.role==="ai"?"ai":"user"}`}>
-                  {m.role==="ai"?<div className="ar" style={{fontSize:18,lineHeight:1.8}}>{m.text.split("\n").map((line,j)=>
-                    <span key={j}>{line}{j<m.text.split("\n").length-1&&<br/>}</span>
-                  )}</div>:<div>{m.text}</div>}
+                <div key={i} className={`chat-bubble chat-${m.role==="ai"?"ai":"user"}`}
+                  onClick={()=>handleBubbleTap(m)} style={m.role==="ai"&&voiceMode?{cursor:"pointer"}:{}}>
+                  {m.role==="ai"?(
+                    <div>
+                      <div className="ar" style={{fontSize:18,lineHeight:1.8}}>{m.text.split("\n").map((line,j)=>
+                        <span key={j}>{line}{j<m.text.split("\n").length-1&&<br/>}</span>
+                      )}</div>
+                      {voiceMode&&<div style={{fontSize:11,color:"var(--text3)",marginTop:6}}>
+                        {speaking?"🔊 Speaking… tap to stop":"🔈 Tap to hear again"}
+                      </div>}
+                    </div>
+                  ):<div>{m.text}</div>}
                 </div>
               ))}
               {loading&&<div style={{alignSelf:"flex-start",padding:"8px 12px",color:"var(--text3)",fontSize:13}}><RefreshCw size={13} className="spin" style={{marginRight:6}}/>Thinking…</div>}
             </div>
-            <div style={{padding:"10px 0 16px",display:"flex",gap:8,borderTop:"1px solid var(--border)"}}>
-              <input className="input" value={input} onChange={e=>setInput(e.target.value)} placeholder="Type in Arabic or English…"
-                onKeyDown={e=>e.key==="Enter"&&sendMessage()} style={{flex:1,fontSize:15,padding:"12px 14px"}}
-                dir={/[\u0600-\u06FF]/.test(input)?"rtl":"ltr"}/>
-              <button className="btn btn-primary" onClick={sendMessage} disabled={loading||!input.trim()} style={{padding:"12px 16px",borderRadius:"var(--rs)"}}>
-                <Send size={16}/>
-              </button>
+            <div style={{padding:"10px 0 16px",display:"flex",gap:8,borderTop:"1px solid var(--border)",alignItems:"center"}}>
+              {voiceMode&&hasSpeechRecog?(
+                <>
+                  {/* Voice mode: big mic button + optional text fallback */}
+                  <input className="input" value={input} onChange={e=>setInput(e.target.value)} placeholder={listening?"Listening…":"Tap mic or type…"}
+                    onKeyDown={e=>e.key==="Enter"&&input.trim()&&sendMessage()} style={{flex:1,fontSize:15,padding:"12px 14px"}}
+                    dir={/[\u0600-\u06FF]/.test(input)?"rtl":"ltr"}/>
+                  <button className="btn" onClick={startListening}
+                    style={{width:48,height:48,borderRadius:"50%",flexShrink:0,
+                      background:listening?"var(--weak)":"var(--accent)",color:"white",
+                      border:"none",display:"flex",alignItems:"center",justifyContent:"center",
+                      boxShadow:listening?"0 0 0 4px var(--weak-bg)":"none",
+                      animation:listening?"pulse 1.5s infinite":"none"}}>
+                    <Mic size={20}/>
+                  </button>
+                  {input.trim()&&(
+                    <button className="btn btn-primary" onClick={()=>sendMessage()} disabled={loading} style={{padding:"12px 16px",borderRadius:"var(--rs)"}}>
+                      <Send size={16}/>
+                    </button>
+                  )}
+                </>
+              ):(
+                <>
+                  <input className="input" value={input} onChange={e=>setInput(e.target.value)} placeholder="Type in Arabic or English…"
+                    onKeyDown={e=>e.key==="Enter"&&sendMessage()} style={{flex:1,fontSize:15,padding:"12px 14px"}}
+                    dir={/[\u0600-\u06FF]/.test(input)?"rtl":"ltr"}/>
+                  <button className="btn btn-primary" onClick={()=>sendMessage()} disabled={loading||!input.trim()} style={{padding:"12px 16px",borderRadius:"var(--rs)"}}>
+                    <Send size={16}/>
+                  </button>
+                </>
+              )}
             </div>
           </>
         )}
