@@ -1980,21 +1980,22 @@ function ReadingScreen({decks,cardStates,onBack,onFinish,onAddToFlashcard,trackU
   const deckNames = decks.filter(d=>selDeckIds.has(d.id)).map(d=>d.title).join(" + ");
   const poolLabel = master?(masterPool==="weak"?"weak":masterPool==="due"?"due":"all"):"";
 
-  // Generate topics from selected vocab
+  // Generate topics from selected vocab, then auto-generate first passage
   const generateTopics=async()=>{
     if(!selectedCards.length){showToast("Select at least one card.","error");return;}
     setTopicsLoading(true);
-    const vocabSample=selectedCards.sort(()=>Math.random()-0.5).slice(0,25).map(c=>c.english).join(", ");
+    const vocabSample=[...selectedCards].sort(()=>Math.random()-0.5).slice(0,25).map(c=>c.english).join(", ");
+    let t;
     try {
       const raw=await callClaude(`Generate 5 short conversation/reading topic titles (5-8 words each, in English) that would naturally use these vocabulary words: ${vocabSample}. Return ONLY a JSON array: ["topic1","topic2","topic3","topic4","topic5"]`,200,"other",trackUsage);
       const parsed=extractJSON(raw);
-      const t=Array.isArray(parsed)?parsed:["Daily life","A trip to the market","School and learning","Family gathering","City exploration"];
-      setTopics(t);setActiveTopic(t[0]);
-      generateWithTopic(t[0]);
+      t=Array.isArray(parsed)?parsed:["Daily life","A trip to the market","School and learning","Family gathering","City exploration"];
     } catch {
-      const t=["Daily life","A trip to the market","School and learning","Family gathering","City exploration"];
-      setTopics(t);setActiveTopic(t[0]);generateWithTopic(t[0]);
-    } finally { setTopicsLoading(false); }
+      t=["Daily life","A trip to the market","School and learning","Family gathering","City exploration"];
+    }
+    setTopics(t);setActiveTopic(t[0]);setTopicsLoading(false);
+    // Now generate the first passage
+    await generateWithTopic(t[0]);
   };
 
   const switchTopic=(topic)=>{
@@ -2180,12 +2181,14 @@ function ListeningScreen({decks,cardStates,onBack,onFinish,onAddToFlashcard,trac
   const generateTopics=async()=>{
     if(!selectedCards.length){showToast("Select at least one card.","error");return;}
     setTopicsLoading(true);
-    const vocabSample=selectedCards.sort(()=>Math.random()-0.5).slice(0,25).map(c=>c.english).join(", ");
+    const vocabSample=[...selectedCards].sort(()=>Math.random()-0.5).slice(0,25).map(c=>c.english).join(", ");
+    let t;
     try {
       const raw=await callClaude(`Generate 5 short listening topic titles (5-8 words, English) for these words: ${vocabSample}. Return ONLY JSON: ["t1","t2","t3","t4","t5"]`,200,"other",trackUsage);
-      const t=extractJSON(raw);setTopics(t);setActiveTopic(t[0]);generateWithTopic(t[0]);
-    } catch {const t=["Daily routine","At the market","Weather talk","Neighborhood life","School day"];setTopics(t);setActiveTopic(t[0]);generateWithTopic(t[0]);}
-    finally {setTopicsLoading(false);}
+      t=extractJSON(raw);
+    } catch {t=["Daily routine","At the market","Weather talk","Neighborhood life","School day"];}
+    setTopics(t);setActiveTopic(t[0]);setTopicsLoading(false);
+    await generateWithTopic(t[0]);
   };
 
   const switchTopic=(topic)=>{setActiveTopic(topic);generateWithTopic(topic);};
