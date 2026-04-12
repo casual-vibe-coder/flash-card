@@ -2457,242 +2457,355 @@ function ConversationScreen({decks,cardStates,onBack,onFinish,trackUsage,onLogSt
   const [selDeckIds,setSelDeckIds]=useState(()=>new Set(decks.map(d=>d.id)));
   const allInitCards=decks.flatMap(d=>(cardStates[d.id]||[]).map(c=>c.id));
   const [selCardIds,setSelCardIds]=useState(()=>new Set(allInitCards));
+
+  // Phase: setup → topics → mission → chat → score → review
+  const [phase,setPhase]=useState("setup");
   const [messages,setMessages]=useState([]);
   const [input,setInput]=useState("");
   const [loading,setLoading]=useState(false);
-  const [started,setStarted]=useState(false);
   const [voiceMode,setVoiceMode]=useState(false);
   const [listening,setListening]=useState(false);
   const [speaking,setSpeaking]=useState(false);
   const [wordPopup,setWordPopup]=useState(null);
+  const [topics,setTopics]=useState([]);
+  const [selectedTopic,setSelectedTopic]=useState("");
+  const [missionWords,setMissionWords]=useState([]);
+  const [usedMissionWords,setUsedMissionWords]=useState(new Set());
+  const [corrections,setCorrections]=useState([]);
+  const [sessionRating,setSessionRatingLocal]=useState(0);
   const chatRef=useRef(null);
   const recognitionRef=useRef(null);
 
-  // Check browser support for speech recognition
   const SpeechRecognition=window.SpeechRecognition||window.webkitSpeechRecognition;
   const hasSpeechRecog=!!SpeechRecognition;
 
   const now3=Date.now();
-  const allPooled3 = decks.filter(d=>selDeckIds.has(d.id)).flatMap(d=>(cardStates[d.id]||[])).filter(c=>selCardIds.has(c.id));
-  const selectedCards = master&&masterPool&&masterPool!=="all"
-    ? allPooled3.filter(c=>masterPool==="weak"?c.status==="weak":masterPool==="due"?(c.srsLastReview&&c.srsNextReview&&c.srsNextReview<=now3):true)
-    : allPooled3;
-  const poolLabel3 = master?(masterPool==="weak"?"weak":masterPool==="due"?"due":"all"):"";
+  const allPooled3=decks.filter(d=>selDeckIds.has(d.id)).flatMap(d=>(cardStates[d.id]||[])).filter(c=>selCardIds.has(c.id));
+  const selectedCards=master&&masterPool&&masterPool!=="all"
+    ?allPooled3.filter(c=>masterPool==="weak"?c.status==="weak":masterPool==="due"?(c.srsLastReview&&c.srsNextReview&&c.srsNextReview<=now3):true)
+    :allPooled3;
+  const poolLabel3=master?(masterPool==="weak"?"weak":masterPool==="due"?"due":"all"):"";
 
   const scrollBottom=()=>setTimeout(()=>chatRef.current?.scrollTo(0,chatRef.current.scrollHeight),50);
 
-  // Text-to-speech: speak Arabic text
   const speakArabic=(text)=>{
     if(!window.speechSynthesis||!text) return;
-    // Strip English hint in parentheses for cleaner audio
-    const arabicOnly=text.replace(/\n?\n?\(.*?\)\s*$/s,"").trim();
+    const arabicOnly=text.replace(/\n?\n?\(.*?\)\s*$/s,"").replace(/\[تَصْحِيح.*?\]/gs,"").trim();
     if(!arabicOnly) return;
     window.speechSynthesis.cancel();
     const utt=new SpeechSynthesisUtterance(arabicOnly);
     utt.lang="ar-SA";utt.rate=0.82;
-    const v=window.speechSynthesis.getVoices().find(v=>v.lang.startsWith("ar"));
-    if(v) utt.voice=v;
-    utt.onstart=()=>setSpeaking(true);
-    utt.onend=()=>setSpeaking(false);
-    utt.onerror=()=>setSpeaking(false);
-    setSpeaking(true);
-    window.speechSynthesis.speak(utt);
+    const v=window.speechSynthesis.getVoices().find(v=>v.lang.startsWith("ar"));if(v) utt.voice=v;
+    utt.onstart=()=>setSpeaking(true);utt.onend=()=>setSpeaking(false);utt.onerror=()=>setSpeaking(false);
+    setSpeaking(true);window.speechSynthesis.speak(utt);
   };
 
-  // Speech-to-text: listen via mic
   const startListening=()=>{
-    if(!SpeechRecognition){showToast("Speech recognition not supported in this browser","error");return;}
-    if(listening){
-      recognitionRef.current?.stop();
-      setListening(false);
-      return;
-    }
-    const recognition=new SpeechRecognition();
-    recognitionRef.current=recognition;
-    recognition.lang="ar-SA";
-    recognition.interimResults=true;
-    recognition.continuous=false;
-    recognition.maxAlternatives=1;
-
-    recognition.onstart=()=>setListening(true);
-    recognition.onresult=(e)=>{
-      const transcript=Array.from(e.results).map(r=>r[0].transcript).join("");
-      setInput(transcript);
-      // If final result, auto-send
-      if(e.results[e.results.length-1].isFinal){
-        setListening(false);
-      }
-    };
-    recognition.onerror=(e)=>{
-      setListening(false);
-      if(e.error==="no-speech") showToast("No speech detected — try again","info");
-      else if(e.error!=="aborted") showToast(`Mic error: ${e.error}`,"error");
-    };
-    recognition.onend=()=>setListening(false);
-    recognition.start();
+    if(!SpeechRecognition){showToast("Speech recognition not supported","error");return;}
+    if(listening){recognitionRef.current?.stop();setListening(false);return;}
+    const r=new SpeechRecognition();recognitionRef.current=r;
+    r.lang="ar-SA";r.interimResults=true;r.continuous=false;r.maxAlternatives=1;
+    r.onstart=()=>setListening(true);
+    r.onresult=(e)=>{setInput(Array.from(e.results).map(x=>x[0].transcript).join(""));if(e.results[e.results.length-1].isFinal) setListening(false);};
+    r.onerror=(e)=>{setListening(false);if(e.error==="no-speech") showToast("No speech detected","info");else if(e.error!=="aborted") showToast(`Mic error: ${e.error}`,"error");};
+    r.onend=()=>setListening(false);r.start();
   };
 
-  // Cleanup speech on unmount
-  useEffect(()=>()=>{
-    if(window.speechSynthesis) window.speechSynthesis.cancel();
-    recognitionRef.current?.stop();
-  },[]);
+  useEffect(()=>()=>{if(window.speechSynthesis) window.speechSynthesis.cancel();recognitionRef.current?.stop();},[]);
 
-  const startConversation=async()=>{
+  // Check if user message used any mission words
+  const checkMissionWords=(text)=>{
+    const strip=s=>s.replace(/[\u064B-\u065F\u0670]/g,"");
+    const textStripped=strip(text);
+    missionWords.forEach(mw=>{
+      const mwStripped=strip(mw.arabicBase);
+      if(textStripped.includes(mwStripped)||text.toLowerCase().includes(mw.english.toLowerCase())){
+        setUsedMissionWords(p=>{const n=new Set(p);n.add(mw.id);return n;});
+      }
+    });
+  };
+
+  // Step 1: Generate topics
+  const generateTopics=async()=>{
     if(!selectedCards.length){showToast("Select at least one card.","error");return;}
-    setStarted(true);setLoading(true);setMessages([]);
-    const vocabList=selectedCards.slice(0,20).map(c=>`${c.english} (${c.arabicBase})`).join(", ");
+    setLoading(true);setPhase("topics");
+    const vocabSample=selectedCards.sort(()=>Math.random()-0.5).slice(0,20);
+    const vocabList=vocabSample.map(c=>`${c.english} (${c.arabicBase})`).join(", ");
+    // Pick mission words (5-8 random from selection)
+    const mission=selectedCards.sort(()=>Math.random()-0.5).slice(0,Math.min(8,Math.max(5,Math.floor(selectedCards.length/5))));
+    setMissionWords(mission);
+    try {
+      const raw=await callClaude(
+        `You are helping an Arabic language learner choose a conversation topic.
+Vocabulary available: ${vocabList}
+
+Generate exactly 4 conversation topics that would naturally use many of these words.
+Each topic should be a short title (5-8 words max) in English.
+
+Return ONLY valid JSON array: ["topic 1","topic 2","topic 3","topic 4"]`,
+        200,"other",trackUsage
+      );
+      const parsed=extractJSON(raw);
+      setTopics(Array.isArray(parsed)?parsed:["Daily life","At the market","Travel plans","My neighborhood"]);
+    } catch {
+      setTopics(["Daily life","At the market","Travel plans","My neighborhood"]);
+    } finally { setLoading(false); }
+  };
+
+  // Step 2: Start conversation with selected topic
+  const startWithTopic=async(topic)=>{
+    setSelectedTopic(topic);setPhase("chat");setLoading(true);setMessages([]);setUsedMissionWords(new Set());setCorrections([]);
+    const missionList=missionWords.map(c=>`${c.english} (${c.arabicBase})`).join(", ");
     try {
       const raw=await callClaudeWithTashkeel(
-        `You are a friendly Arabic conversation partner for a language learner.
-Vocabulary to practice: ${vocabList}
+        `You are a friendly Arabic conversation partner. Topic: "${topic}"
+Key vocabulary the learner should practice: ${missionList}
 
-Start a simple, natural conversation in Arabic that uses 2-3 of these vocabulary words.
-Write 2-3 short sentences as your opening message. Keep it beginner-friendly.
-After your Arabic text, add a line break and an English hint in parentheses.
+Start a natural conversation about "${topic}" in Arabic. Use 2-3 of the vocabulary words.
+Write 2-3 short sentences. Keep it beginner-friendly.
+After your Arabic, add a line break and English translation in parentheses.
 
-CRITICAL: Every Arabic word MUST have full tashkeel. Example: مَرْحَبًا، كَيْفَ حَالُكَ؟
+CRITICAL: Every Arabic word MUST have full tashkeel.
 Return plain text, NOT JSON.`,
-        400,"other",trackUsage
+        500,"other",trackUsage
       );
       setMessages([{role:"ai",text:raw}]);
       if(voiceMode) speakArabic(raw);
     } catch {
-      setMessages([{role:"ai",text:"مَرْحَبًا! كَيْفَ حَالُكَ الْيَوْمَ؟\n\n(Hello! How are you today?)"}]);
+      setMessages([{role:"ai",text:"مَرْحَبًا! هَيَّا نَتَحَدَّثُ.\n\n(Hello! Let's talk.)"}]);
     } finally { setLoading(false);scrollBottom(); }
   };
 
+  // Send message with correction request
   const sendMessage=async(overrideText)=>{
     const userMsg=(overrideText||input).trim();
     if(!userMsg||loading) return;
     setInput("");
     setMessages(p=>[...p,{role:"user",text:userMsg}]);
+    checkMissionWords(userMsg);
     setLoading(true);scrollBottom();
 
-    const vocabList=selectedCards.slice(0,15).map(c=>`${c.english} (${c.arabicBase})`).join(", ");
+    const missionList=missionWords.map(c=>`${c.english} (${c.arabicBase})`).join(", ");
     const history=messages.slice(-6).map(m=>`${m.role==="ai"?"Assistant":"User"}: ${m.text}`).join("\n");
     try {
       const raw=await callClaudeWithTashkeel(
-        `You are a friendly Arabic conversation partner for a language learner.
-Vocabulary to incorporate: ${vocabList}
+        `You are a friendly Arabic conversation partner. Topic: "${selectedTopic}"
+Vocabulary to encourage: ${missionList}
 
 Conversation so far:
 ${history}
 User: ${userMsg}
 
-Reply naturally in Arabic (2-3 short sentences). Try to use vocabulary from the list above.
-If the user makes a mistake, gently correct it. Add an English hint in parentheses at the end.
+Instructions:
+1. First, if the user's Arabic has any mistakes, write a brief correction line starting with [تَصْحِيح]: showing the corrected sentence. Be medium strictness — fix grammar, word usage, sentence structure. Skip this if the message was in English or had no errors.
+2. Then continue the conversation naturally in Arabic (2-3 sentences). Try to use vocabulary from the list.
+3. End with English translation in parentheses.
+
 CRITICAL: Every Arabic word MUST have full tashkeel.
 Return plain text, NOT JSON.`,
-        400,"other",trackUsage
+        600,"other",trackUsage
       );
+      // Extract correction if present
+      const corrMatch=raw.match(/\[تَصْحِيح\][:：]\s*(.+?)(?:\n|$)/);
+      if(corrMatch) setCorrections(p=>[...p,{original:userMsg,corrected:corrMatch[1].trim()}]);
       setMessages(p=>[...p,{role:"ai",text:raw}]);
       if(voiceMode) speakArabic(raw);
     } catch {
-      setMessages(p=>[...p,{role:"ai",text:"عُذْرًا، حَدَثَ خَطَأٌ. حَاوِلْ مَرَّةً أُخْرَى.\n\n(Sorry, an error occurred. Try again.)"}]);
+      setMessages(p=>[...p,{role:"ai",text:"عُذْرًا، حَدَثَ خَطَأٌ.\n\n(Sorry, an error occurred.)"}]);
     } finally { setLoading(false);scrollBottom(); }
   };
 
-  // Tap-to-speak on any AI bubble in voice mode
-  const handleBubbleTap=(msg)=>{
-    if(msg.role==="ai"&&!speaking) speakArabic(msg.text);
-    else if(speaking) {window.speechSynthesis.cancel();setSpeaking(false);}
+  // Finish → score
+  const finishSession=()=>{
+    if(window.speechSynthesis) window.speechSynthesis.cancel();
+    recognitionRef.current?.stop();
+    setPhase("score");
   };
 
+  // Calculate score
+  const missionScore=missionWords.length?Math.round(usedMissionWords.size/missionWords.length*100):0;
+  const userMsgCount=messages.filter(m=>m.role==="user").length;
+  const finalScore=sessionRating?Math.round((missionScore*0.5+sessionRating*20*0.3+(Math.min(userMsgCount,10)/10*100)*0.2)):missionScore;
+
+  const submitScore=()=>{
+    const score=finalScore;
+    if(onLogStudy) onLogStudy({type:"app",module:"speaking",minutes:0,rating:sessionRating||3,master:!!master,
+      speakingScore:score,missionWordsUsed:usedMissionWords.size,missionWordsTotal:missionWords.length,corrections:corrections.length});
+    if(onFinish) onFinish();
+    else onBack();
+  };
+
+  const handleBubbleTap=(msg)=>{if(msg.role==="ai"&&!speaking) speakArabic(msg.text);else if(speaking){window.speechSynthesis.cancel();setSpeaking(false);}};
+
+  // ── SETUP PHASE ──
+  if(phase==="setup") return (
+    <div className="screen" style={{display:"flex",flexDirection:"column",paddingBottom:0}}>
+      <Hdr title={master?"Master Speaking":"Conversation"} sub="Practice" onBack={onBack}/>
+      <div style={{flex:1,display:"flex",flexDirection:"column",padding:"12px 20px 0",overflow:"hidden"}}>
+        <div style={{display:"flex",flexDirection:"column",gap:14,flex:1,overflowY:"auto"}}>
+          <div style={{fontSize:13.5,color:"var(--text2)",lineHeight:1.6}}>
+            AI-driven conversation practice. Pick your words, get a topic, then complete your mission words during the chat.
+          </div>
+          <div style={{background:"var(--surface)",border:"1.5px solid var(--border)",borderRadius:"var(--rs)",padding:"12px 14px",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+            <div><div style={{fontSize:13.5,fontWeight:600}}>Voice Mode</div><div style={{fontSize:12,color:"var(--text3)",marginTop:2}}>{hasSpeechRecog?"Mic + audio":"Text-to-speech only"}</div></div>
+            <div className={`chk ${voiceMode?"on":""}`} onClick={()=>setVoiceMode(v=>!v)}>{voiceMode&&<Check size={11} color="white"/>}</div>
+          </div>
+          {!master&&<MultiDeckCardSelector decks={decks} cardStates={cardStates} selDeckIds={selDeckIds} setSelDeckIds={setSelDeckIds} selCardIds={selCardIds} setSelCardIds={setSelCardIds} accentVar="--accent" accentBgVar="--accent-bg" accentBorderVar="--accent-border" onReset={()=>{}}/>}
+          {master&&<div style={{background:"var(--accent-bg)",border:"1px solid var(--accent-border)",borderRadius:"var(--rs)",padding:"10px 14px",fontSize:13,color:"var(--accent)",fontWeight:500}}>Using {selectedCards.length} {poolLabel3} vocabulary words · Master session</div>}
+          <button className="btn btn-primary" onClick={generateTopics} disabled={loading||!selectedCards.length} style={{width:"100%",padding:"14px",borderRadius:"var(--r)",fontSize:14}}>
+            {loading?<><RefreshCw size={14} className="spin"/>Generating topics…</>:<><MessageCircle size={15}/> Choose Topic & Start</>}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+
+  // ── TOPIC SELECTION ──
+  if(phase==="topics") return (
+    <div className="screen" style={{display:"flex",flexDirection:"column",paddingBottom:0}}>
+      <Hdr title="Pick a Topic" sub="Conversation" onBack={()=>setPhase("setup")}/>
+      <div style={{padding:"16px 20px",display:"flex",flexDirection:"column",gap:12}}>
+        <div style={{fontSize:13.5,color:"var(--text2)",lineHeight:1.6}}>AI generated these topics based on your vocabulary. Pick one:</div>
+        {loading?<div style={{textAlign:"center",padding:20,color:"var(--text3)"}}><RefreshCw size={16} className="spin"/></div>:
+          topics.map((t,i)=>(
+            <div key={i} className="test-option" onClick={()=>startWithTopic(t)}>
+              <div style={{width:36,height:36,borderRadius:10,background:"var(--accent-bg)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:16}}>{["💬","🏪","✈️","🏠"][i]||"💬"}</div>
+              <div style={{flex:1,fontWeight:600,fontSize:14}}>{t}</div>
+              <ChevronRight size={14} color="var(--text3)"/>
+            </div>
+          ))
+        }
+        <div className="divider"/>
+        <div className="sec">Your Mission Words ({missionWords.length})</div>
+        <div style={{display:"flex",flexWrap:"wrap",gap:6}}>
+          {missionWords.map(mw=>(
+            <span key={mw.id} style={{fontSize:12,padding:"4px 10px",borderRadius:100,background:"var(--accent-bg)",border:"1px solid var(--accent-border)",color:"var(--accent)",fontWeight:500}}>
+              {mw.english} · <span className="ar" style={{fontSize:14}}>{mw.arabicBase}</span>
+            </span>
+          ))}
+        </div>
+        <div style={{fontSize:12,color:"var(--text3)"}}>Try to use these words during the conversation for a higher score.</div>
+      </div>
+    </div>
+  );
+
+  // ── SCORE PHASE ──
+  if(phase==="score") return (
+    <div className="screen" style={{display:"flex",flexDirection:"column"}}>
+      <Hdr title="Session Score" sub="Speaking" onBack={submitScore}/>
+      <div style={{padding:"20px",display:"flex",flexDirection:"column",gap:16,flex:1,overflowY:"auto"}}>
+        <div style={{textAlign:"center"}}>
+          <div style={{fontSize:48,marginBottom:8}}>{missionScore>=80?"🌟":missionScore>=50?"💬":"💪"}</div>
+          <div style={{fontFamily:"Lora,serif",fontSize:24,fontWeight:600}}>{missionScore}% Mission</div>
+          <div style={{fontSize:13,color:"var(--text3)",marginTop:4}}>{usedMissionWords.size} of {missionWords.length} target words used · {userMsgCount} messages sent</div>
+        </div>
+        {/* Mission words result */}
+        <div style={{background:"var(--surface)",border:"1.5px solid var(--border)",borderRadius:"var(--rs)",padding:"14px"}}>
+          <div className="sec">Mission Words</div>
+          <div style={{display:"flex",flexWrap:"wrap",gap:6}}>
+            {missionWords.map(mw=>{
+              const used=usedMissionWords.has(mw.id);
+              return <span key={mw.id} style={{fontSize:12,padding:"4px 10px",borderRadius:100,background:used?"var(--know-bg)":"var(--surface2)",border:`1px solid ${used?"var(--know-border)":"var(--border)"}`,color:used?"var(--know)":"var(--text3)",fontWeight:500}}>
+                {used?"✓ ":""}{mw.english} · <span className="ar" style={{fontSize:13}}>{mw.arabicBase}</span>
+              </span>;
+            })}
+          </div>
+        </div>
+        {/* Corrections summary */}
+        {corrections.length>0&&(
+          <div style={{background:"var(--surface)",border:"1.5px solid var(--border)",borderRadius:"var(--rs)",padding:"14px"}}>
+            <div className="sec">Corrections ({corrections.length})</div>
+            <div style={{display:"flex",flexDirection:"column",gap:8}}>
+              {corrections.map((c,i)=>(
+                <div key={i} style={{fontSize:13,lineHeight:1.6}}>
+                  <div style={{color:"var(--weak)",textDecoration:"line-through"}}>{c.original}</div>
+                  <div style={{color:"var(--know)"}}>{c.corrected}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+        {/* Self rating */}
+        <div style={{background:"var(--surface)",border:"1.5px solid var(--border)",borderRadius:"var(--rs)",padding:"14px",textAlign:"center"}}>
+          <div className="sec">How did you feel?</div>
+          <div className="rating-stars" style={{marginBottom:8}}>
+            {[1,2,3,4,5].map(n=><div key={n} className={`rating-star ${sessionRating>=n?"on":""}`} onClick={()=>setSessionRatingLocal(n)}>{n<=2?"😓":n===3?"😐":n===4?"🙂":"🌟"}</div>)}
+          </div>
+        </div>
+        <button className="btn btn-primary" onClick={submitScore} style={{width:"100%",padding:"14px",borderRadius:"var(--r)",fontSize:14}}>
+          <CheckCircle2 size={15}/> Save & {onFinish?"Finish":"Exit"}
+        </button>
+        {/* Review conversation */}
+        <div style={{background:"var(--surface)",border:"1.5px solid var(--border)",borderRadius:"var(--rs)",padding:"14px"}}>
+          <div className="sec">Conversation Review</div>
+          <div style={{display:"flex",flexDirection:"column",gap:8,maxHeight:300,overflowY:"auto"}}>
+            {messages.map((m,i)=>(
+              <div key={i} style={{fontSize:13,lineHeight:1.6,padding:"6px 0",borderBottom:"1px solid var(--border)"}}>
+                <span style={{fontWeight:600,color:m.role==="ai"?"var(--accent)":"var(--text2)",fontSize:11}}>{m.role==="ai"?"AI":"You"}:</span>
+                <div className={m.role==="ai"?"ar":""} style={m.role==="ai"?{fontSize:15,direction:"rtl"}:{}}>{m.text}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+
+  // ── CHAT PHASE ──
   return (
     <div className="screen" style={{display:"flex",flexDirection:"column",paddingBottom:0}}>
-      <Hdr title={master?"Master Speaking":"Conversation"} sub="Practice" onBack={()=>{if(window.speechSynthesis) window.speechSynthesis.cancel();recognitionRef.current?.stop();onBack();}}
-        right={started&&(
+      <Hdr title={selectedTopic||"Conversation"} sub={master?"Master Speaking":"Speaking"} onBack={()=>{if(window.speechSynthesis) window.speechSynthesis.cancel();recognitionRef.current?.stop();onBack();}}
+        right={
           <div style={{display:"flex",gap:6}}>
             <button className={`btn btn-sm ${voiceMode?"btn-primary":""}`} onClick={()=>{setVoiceMode(v=>!v);if(window.speechSynthesis) window.speechSynthesis.cancel();setSpeaking(false);}}
               style={voiceMode?{}:{background:"var(--surface2)",color:"var(--text2)"}}>
-              {voiceMode?<><Volume2 size={13}/>Voice</>:<><Mic size={13}/>Voice</>}
+              {voiceMode?<><Volume2 size={13}/></>:<><Mic size={13}/></>}
             </button>
-            <button className="btn btn-sm" onClick={()=>{if(window.speechSynthesis) window.speechSynthesis.cancel();recognitionRef.current?.stop();onFinish();}}
-              style={{background:"var(--know-bg)",color:"var(--know)",border:"1px solid var(--know-border)"}}>
+            <button className="btn btn-sm" onClick={finishSession} style={{background:"var(--know-bg)",color:"var(--know)",border:"1px solid var(--know-border)"}}>
               <CheckCircle2 size={13}/> Finish
             </button>
           </div>
-        )}/>
-      <div style={{flex:1,display:"flex",flexDirection:"column",padding:"12px 20px 0",overflow:"hidden"}}>
-        {!started?(
-          <div style={{display:"flex",flexDirection:"column",gap:14,flex:1,overflowY:"auto"}}>
-            <div style={{fontSize:13.5,color:"var(--text2)",lineHeight:1.6}}>
-              Practice Arabic conversation using vocabulary from your selected decks. The AI will guide the conversation and use your flashcard words.
-            </div>
-            {/* Voice mode toggle before starting */}
-            <div style={{background:"var(--surface)",border:"1.5px solid var(--border)",borderRadius:"var(--rs)",padding:"12px 14px",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-              <div>
-                <div style={{fontSize:13.5,fontWeight:600,color:"var(--text)"}}>Voice Mode</div>
-                <div style={{fontSize:12,color:"var(--text3)",marginTop:2}}>
-                  {hasSpeechRecog?"Speak into mic, AI reads back aloud":"Text-to-speech only (mic not supported in this browser)"}
+        }/>
+      <div style={{flex:1,display:"flex",flexDirection:"column",padding:"0 20px",overflow:"hidden"}}>
+        {/* Mission words bar */}
+        <div style={{padding:"8px 0",display:"flex",gap:5,flexWrap:"wrap",borderBottom:"1px solid var(--border)"}}>
+          {missionWords.map(mw=>{
+            const used=usedMissionWords.has(mw.id);
+            return <span key={mw.id} style={{fontSize:11,padding:"2px 8px",borderRadius:100,background:used?"var(--know-bg)":"var(--surface2)",border:`1px solid ${used?"var(--know-border)":"var(--border)"}`,color:used?"var(--know)":"var(--text3)",fontWeight:500,transition:"all .2s"}}>
+              {used?"✓ ":""}<span className="ar" style={{fontSize:12}}>{mw.arabicBase}</span>
+            </span>;
+          })}
+          <span style={{fontSize:10,color:"var(--text3)",alignSelf:"center",marginLeft:"auto"}}>{usedMissionWords.size}/{missionWords.length}</span>
+        </div>
+        {/* Chat messages */}
+        <div ref={chatRef} style={{flex:1,overflowY:"auto",display:"flex",flexDirection:"column",gap:10,paddingTop:10,paddingBottom:12}}>
+          {messages.map((m,i)=>(
+            <div key={i} className={`chat-bubble chat-${m.role==="ai"?"ai":"user"}`} style={m.role==="ai"&&voiceMode?{cursor:"pointer"}:{}}>
+              {m.role==="ai"?(
+                <div onClick={voiceMode?()=>handleBubbleTap(m):undefined}>
+                  <ClickableArabic text={m.text} onWordClick={(word,ctx)=>setWordPopup({word,context:ctx})} fontSize={18}/>
+                  <div style={{fontSize:11,color:"var(--text3)",marginTop:4}}>Tap any word to look it up{voiceMode&&(speaking?" · 🔊":" · 🔈")}</div>
                 </div>
-              </div>
-              <div className={`chk ${voiceMode?"on":""}`} onClick={()=>setVoiceMode(v=>!v)}>{voiceMode&&<Check size={11} color="white"/>}</div>
+              ):<div>{m.text}</div>}
             </div>
-            {!master&&<MultiDeckCardSelector
-              decks={decks} cardStates={cardStates}
-              selDeckIds={selDeckIds} setSelDeckIds={setSelDeckIds}
-              selCardIds={selCardIds} setSelCardIds={setSelCardIds}
-              accentVar="--accent" accentBgVar="--accent-bg" accentBorderVar="--accent-border"
-              onReset={()=>{}}
-            />}
-            {master&&<div style={{background:"var(--accent-bg)",border:"1px solid var(--accent-border)",borderRadius:"var(--rs)",padding:"10px 14px",fontSize:13,color:"var(--accent)",fontWeight:500}}>Using {selectedCards.length} {poolLabel3} vocabulary words · Master session</div>}
-            <button className="btn btn-primary" onClick={startConversation} disabled={loading||!selectedCards.length}
-              style={{width:"100%",padding:"14px",borderRadius:"var(--r)",fontSize:14}}>
-              {loading?<><RefreshCw size={14} className="spin"/>Starting…</>:<><MessageCircle size={15}/>{master?"Start Master Conversation":`Start Conversation with ${selectedCards.length} words`}</>}
+          ))}
+          {loading&&<div style={{alignSelf:"flex-start",padding:"8px 12px",color:"var(--text3)",fontSize:13}}><RefreshCw size={13} className="spin" style={{marginRight:6}}/>Thinking…</div>}
+        </div>
+        {/* Input bar */}
+        <div style={{padding:"10px 0 16px",display:"flex",gap:8,borderTop:"1px solid var(--border)",alignItems:"center"}}>
+          <input className="input" value={input} onChange={e=>setInput(e.target.value)} placeholder={listening?"Listening…":voiceMode?"Tap mic or type…":"Type in Arabic or English…"}
+            onKeyDown={e=>e.key==="Enter"&&input.trim()&&sendMessage()} style={{flex:1,fontSize:15,padding:"12px 14px"}}
+            dir={/[\u0600-\u06FF]/.test(input)?"rtl":"ltr"}/>
+          {voiceMode&&hasSpeechRecog&&(
+            <button className="btn" onClick={startListening}
+              style={{width:48,height:48,borderRadius:"50%",flexShrink:0,background:listening?"var(--weak)":"var(--accent)",color:"white",border:"none",display:"flex",alignItems:"center",justifyContent:"center",boxShadow:listening?"0 0 0 4px var(--weak-bg)":"none",animation:listening?"pulse 1.5s infinite":"none"}}>
+              <Mic size={20}/>
             </button>
-          </div>
-        ):(
-          <>
-            <div ref={chatRef} style={{flex:1,overflowY:"auto",display:"flex",flexDirection:"column",gap:10,paddingBottom:12}}>
-              {messages.map((m,i)=>(
-                <div key={i} className={`chat-bubble chat-${m.role==="ai"?"ai":"user"}`}
-                  style={m.role==="ai"&&voiceMode?{cursor:"pointer"}:{}}>
-                  {m.role==="ai"?(
-                    <div onClick={voiceMode?()=>handleBubbleTap(m):undefined}>
-                      <ClickableArabic text={m.text} onWordClick={(word,ctx)=>setWordPopup({word,context:ctx})} fontSize={18}/>
-                      <div style={{fontSize:11,color:"var(--text3)",marginTop:4}}>💡 Tap any word to look it up{voiceMode&&(speaking?" · 🔊 Speaking…":" · 🔈 Tap to hear")}</div>
-                    </div>
-                  ):<div>{m.text}</div>}
-                </div>
-              ))}
-              {loading&&<div style={{alignSelf:"flex-start",padding:"8px 12px",color:"var(--text3)",fontSize:13}}><RefreshCw size={13} className="spin" style={{marginRight:6}}/>Thinking…</div>}
-            </div>
-            <div style={{padding:"10px 0 16px",display:"flex",gap:8,borderTop:"1px solid var(--border)",alignItems:"center"}}>
-              {voiceMode&&hasSpeechRecog?(
-                <>
-                  {/* Voice mode: big mic button + optional text fallback */}
-                  <input className="input" value={input} onChange={e=>setInput(e.target.value)} placeholder={listening?"Listening…":"Tap mic or type…"}
-                    onKeyDown={e=>e.key==="Enter"&&input.trim()&&sendMessage()} style={{flex:1,fontSize:15,padding:"12px 14px"}}
-                    dir={/[\u0600-\u06FF]/.test(input)?"rtl":"ltr"}/>
-                  <button className="btn" onClick={startListening}
-                    style={{width:48,height:48,borderRadius:"50%",flexShrink:0,
-                      background:listening?"var(--weak)":"var(--accent)",color:"white",
-                      border:"none",display:"flex",alignItems:"center",justifyContent:"center",
-                      boxShadow:listening?"0 0 0 4px var(--weak-bg)":"none",
-                      animation:listening?"pulse 1.5s infinite":"none"}}>
-                    <Mic size={20}/>
-                  </button>
-                  {input.trim()&&(
-                    <button className="btn btn-primary" onClick={()=>sendMessage()} disabled={loading} style={{padding:"12px 16px",borderRadius:"var(--rs)"}}>
-                      <Send size={16}/>
-                    </button>
-                  )}
-                </>
-              ):(
-                <>
-                  <input className="input" value={input} onChange={e=>setInput(e.target.value)} placeholder="Type in Arabic or English…"
-                    onKeyDown={e=>e.key==="Enter"&&sendMessage()} style={{flex:1,fontSize:15,padding:"12px 14px"}}
-                    dir={/[\u0600-\u06FF]/.test(input)?"rtl":"ltr"}/>
-                  <button className="btn btn-primary" onClick={()=>sendMessage()} disabled={loading||!input.trim()} style={{padding:"12px 16px",borderRadius:"var(--rs)"}}>
-                    <Send size={16}/>
-                  </button>
-                </>
-              )}
-            </div>
-          </>
-        )}
+          )}
+          <button className="btn btn-primary" onClick={()=>sendMessage()} disabled={loading||!input.trim()} style={{padding:"12px 16px",borderRadius:"var(--rs)"}}>
+            <Send size={16}/>
+          </button>
+        </div>
       </div>
       {wordPopup&&<WordPopup word={wordPopup.word} context={wordPopup.context} decks={decks} cardStates={cardStates} onClose={()=>setWordPopup(null)} onAddToFlashcard={onAddToFlashcard} trackUsage={trackUsage}/>}
     </div>
