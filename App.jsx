@@ -1958,21 +1958,21 @@ function ReadingScreen({decks,cardStates,onBack,onFinish,onAddToFlashcard,trackU
   const [showTranslation,setShowTranslation]=useState(false);
   const [wordPopup,setWordPopup]=useState(null);
   const [showMiniRating,setShowMiniRating]=useState(false);
+  const [topics,setTopics]=useState([]);
+  const [activeTopic,setActiveTopic]=useState("");
+  const [topicsLoading,setTopicsLoading]=useState(false);
 
   const handleNextPassage=()=>{
-    if(passage){setShowMiniRating(true);} else generate();
+    if(passage){setShowMiniRating(true);} else generateWithTopic(activeTopic);
   };
   const submitMiniRating=(rating)=>{
     if(rating&&onLogStudy) onLogStudy({type:"app",module:"reading",minutes:0,rating,master:!!master});
-    setShowMiniRating(false);generate();
+    setShowMiniRating(false);generateWithTopic(activeTopic);
   };
 
   // Derive selected cards from pool
   const now=Date.now();
-  const allPooled = decks
-    .filter(d=>selDeckIds.has(d.id))
-    .flatMap(d=>(cardStates[d.id]||[]))
-    .filter(c=>selCardIds.has(c.id));
+  const allPooled = decks.filter(d=>selDeckIds.has(d.id)).flatMap(d=>(cardStates[d.id]||[])).filter(c=>selCardIds.has(c.id));
   const selectedCards = master&&masterPool&&masterPool!=="all"
     ? allPooled.filter(c=>masterPool==="weak"?c.status==="weak":masterPool==="due"?(c.srsLastReview&&c.srsNextReview&&c.srsNextReview<=now):true)
     : allPooled;
@@ -1980,32 +1980,50 @@ function ReadingScreen({decks,cardStates,onBack,onFinish,onAddToFlashcard,trackU
   const deckNames = decks.filter(d=>selDeckIds.has(d.id)).map(d=>d.title).join(" + ");
   const poolLabel = master?(masterPool==="weak"?"weak":masterPool==="due"?"due":"all"):"";
 
-  const generate=async()=>{
+  // Generate topics from selected vocab
+  const generateTopics=async()=>{
     if(!selectedCards.length){showToast("Select at least one card.","error");return;}
+    setTopicsLoading(true);
+    const vocabSample=selectedCards.sort(()=>Math.random()-0.5).slice(0,25).map(c=>c.english).join(", ");
+    try {
+      const raw=await callClaude(`Generate 5 short conversation/reading topic titles (5-8 words each, in English) that would naturally use these vocabulary words: ${vocabSample}. Return ONLY a JSON array: ["topic1","topic2","topic3","topic4","topic5"]`,200,"other",trackUsage);
+      const parsed=extractJSON(raw);
+      const t=Array.isArray(parsed)?parsed:["Daily life","A trip to the market","School and learning","Family gathering","City exploration"];
+      setTopics(t);setActiveTopic(t[0]);
+      generateWithTopic(t[0]);
+    } catch {
+      const t=["Daily life","A trip to the market","School and learning","Family gathering","City exploration"];
+      setTopics(t);setActiveTopic(t[0]);generateWithTopic(t[0]);
+    } finally { setTopicsLoading(false); }
+  };
+
+  const switchTopic=(topic)=>{
+    setActiveTopic(topic);generateWithTopic(topic);
+  };
+
+  const generateWithTopic=async(topic)=>{
+    if(!selectedCards.length) return;
     setGenerating(true);setPassage(null);setShowTranslation(settings.showTranslation);
     const baseLenMap={short:"60-80",medium:"110-140",long:"180-220"};
-    // Scale passage length with word count — more words need longer passages
     const MAX_VOCAB=20;
     let vocabCards=selectedCards;
-    if(vocabCards.length>MAX_VOCAB){
-      // Random subset for very large selections
-      vocabCards=[...vocabCards].sort(()=>Math.random()-0.5).slice(0,MAX_VOCAB);
-    }
+    if(vocabCards.length>MAX_VOCAB) vocabCards=[...vocabCards].sort(()=>Math.random()-0.5).slice(0,MAX_VOCAB);
     const scaleFactor=Math.max(1,vocabCards.length/10);
     const scaleLen=(range)=>{const[lo,hi]=range.split("-").map(Number);return `${Math.round(lo*scaleFactor)}-${Math.round(hi*scaleFactor)}`;};
     const targetLen=scaleLen(baseLenMap[settings.length]||"110-140");
     const maxTok=Math.min(4000,Math.max(1500,vocabCards.length*100));
+    const topicClause=topic?`\nTopic/theme: "${topic}" — write the passage about this topic.`:"";
     try {
       const raw=await callClaudeWithTashkeel(
         `Expert Arabic language teacher creating reading practice.
 Deck: ${deckNames}
-Arabic vocabulary (MUST use every word): ${vocabCards.map(c=>c.arabicBase).join("، ")}
+Arabic vocabulary (MUST use every word): ${vocabCards.map(c=>c.arabicBase).join("، ")}${topicClause}
 
 Write a ${settings.difficulty}-level Arabic reading passage of exactly ~${targetLen} words.
 Rules:
 - Include every Arabic word from the list above at least once — this is mandatory
 - Grammatically correct and coherent
-- CRITICAL: Every single Arabic word MUST have full tashkeel (فَتْحَة ضَمَّة كَسْرَة سُكُون شَدَّة تَنْوِين) — no bare letters. Example: ذَهَبَ الطَّالِبُ إِلَى الْمَدْرَسَةِ not ذهب الطالب إلى المدرسة.
+- CRITICAL: Every single Arabic word MUST have full tashkeel — no bare letters.
 
 Return ONLY valid JSON: {"arabic":"...","translation":"...","vocabUsed":["base form of each vocab word that appears"]}`,
         maxTok,"reading",trackUsage
@@ -2048,11 +2066,21 @@ Return ONLY valid JSON: {"arabic":"...","translation":"...","vocabUsed":["base f
         />}
         {master&&<div style={{background:"var(--read-bg)",border:"1px solid var(--read-border)",borderRadius:"var(--rs)",padding:"10px 14px",fontSize:13,color:"var(--read)",fontWeight:500}}>Using {selectedCards.length} {poolLabel} vocabulary words · Master session</div>}
 
-        <button className="btn btn-read" onClick={generate} disabled={generating||!selectedCards.length} style={{width:"100%",padding:"14px",borderRadius:"var(--r)",fontSize:14}}>
-          {generating
-            ?<><RefreshCw size={14} className="spin"/>Generating passage…</>
-            :<><FileText size={15}/>Generate from {selectedCards.length} Card{selectedCards.length!==1?"s":""} · {selDeckIds.size} Deck{selDeckIds.size!==1?"s":""}</>}
-        </button>
+        {!topics.length?(
+          <button className="btn btn-read" onClick={generateTopics} disabled={generating||topicsLoading||!selectedCards.length} style={{width:"100%",padding:"14px",borderRadius:"var(--r)",fontSize:14}}>
+            {topicsLoading||generating?<><RefreshCw size={14} className="spin"/>Generating…</>:<><FileText size={15}/>Generate from {selectedCards.length} Card{selectedCards.length!==1?"s":""}</>}
+          </button>
+        ):(
+          <div style={{background:"var(--surface)",border:"1.5px solid var(--border)",borderRadius:"var(--rs)",padding:"10px 12px"}}>
+            <div className="sec" style={{marginBottom:6}}>Topic</div>
+            <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+              {topics.map((t,i)=>(
+                <button key={i} className={`chip ${activeTopic===t?"chip-on":""}`} onClick={()=>switchTopic(t)} disabled={generating}
+                  style={{fontSize:12,padding:"5px 11px"}}>{t}</button>
+              ))}
+            </div>
+          </div>
+        )}
 
         {passage&&!generating&&(
           <div className="gen-appear" style={{display:"flex",flexDirection:"column",gap:12}}>
@@ -2132,60 +2160,66 @@ function ListeningScreen({decks,cardStates,onBack,onFinish,onAddToFlashcard,trac
   const [playing,setPlaying]=useState(false);
   const [wordPopup,setWordPopup]=useState(null);
   const [showMiniRating,setShowMiniRating]=useState(false);
+  const [topics,setTopics]=useState([]);
+  const [activeTopic,setActiveTopic]=useState("");
+  const [topicsLoading,setTopicsLoading]=useState(false);
 
-  const handleNextPassage=()=>{
-    if(content){setShowMiniRating(true);} else generate();
-  };
-  const submitMiniRating=(rating)=>{
-    if(rating&&onLogStudy) onLogStudy({type:"app",module:"listening",minutes:0,rating,master:!!master});
-    setShowMiniRating(false);generate();
-  };
+  const handleNextPassage=()=>{if(content){setShowMiniRating(true);}else generateWithTopic(activeTopic);};
+  const submitMiniRating=(rating)=>{if(rating&&onLogStudy) onLogStudy({type:"app",module:"listening",minutes:0,rating,master:!!master});setShowMiniRating(false);generateWithTopic(activeTopic);};
 
   useEffect(()=>()=>{if(window.speechSynthesis) window.speechSynthesis.cancel();},[]);
 
   const now2=Date.now();
-  const allPooled2 = decks.filter(d=>selDeckIds.has(d.id)).flatMap(d=>(cardStates[d.id]||[])).filter(c=>selCardIds.has(c.id));
-  const selectedCards = master&&masterPool&&masterPool!=="all"
-    ? allPooled2.filter(c=>masterPool==="weak"?c.status==="weak":masterPool==="due"?(c.srsLastReview&&c.srsNextReview&&c.srsNextReview<=now2):true)
-    : allPooled2;
-  const poolLabel2 = master?(masterPool==="weak"?"weak":masterPool==="due"?"due":"all"):"";
+  const allPooled2=decks.filter(d=>selDeckIds.has(d.id)).flatMap(d=>(cardStates[d.id]||[])).filter(c=>selCardIds.has(c.id));
+  const selectedCards=master&&masterPool&&masterPool!=="all"
+    ?allPooled2.filter(c=>masterPool==="weak"?c.status==="weak":masterPool==="due"?(c.srsLastReview&&c.srsNextReview&&c.srsNextReview<=now2):true)
+    :allPooled2;
+  const poolLabel2=master?(masterPool==="weak"?"weak":masterPool==="due"?"due":"all"):"";
+  const deckNames=decks.filter(d=>selDeckIds.has(d.id)).map(d=>d.title).join(" + ");
 
-  const deckNames = decks.filter(d=>selDeckIds.has(d.id)).map(d=>d.title).join(" + ");
-
-  const generate=async()=>{
-    if(window.speechSynthesis) window.speechSynthesis.cancel();
-    setPlaying(false);
+  const generateTopics=async()=>{
     if(!selectedCards.length){showToast("Select at least one card.","error");return;}
-    setGenerating(true);setContent(null);
-    setShowArabic(settings.showArabicDefault);setShowEnglish(settings.showEnglishDefault);
+    setTopicsLoading(true);
+    const vocabSample=selectedCards.sort(()=>Math.random()-0.5).slice(0,25).map(c=>c.english).join(", ");
+    try {
+      const raw=await callClaude(`Generate 5 short listening topic titles (5-8 words, English) for these words: ${vocabSample}. Return ONLY JSON: ["t1","t2","t3","t4","t5"]`,200,"other",trackUsage);
+      const t=extractJSON(raw);setTopics(t);setActiveTopic(t[0]);generateWithTopic(t[0]);
+    } catch {const t=["Daily routine","At the market","Weather talk","Neighborhood life","School day"];setTopics(t);setActiveTopic(t[0]);generateWithTopic(t[0]);}
+    finally {setTopicsLoading(false);}
+  };
+
+  const switchTopic=(topic)=>{setActiveTopic(topic);generateWithTopic(topic);};
+
+  const generateWithTopic=async(topic)=>{
+    if(window.speechSynthesis) window.speechSynthesis.cancel();setPlaying(false);
+    if(!selectedCards.length) return;
+    setGenerating(true);setContent(null);setShowArabic(settings.showArabicDefault);setShowEnglish(settings.showEnglishDefault);
     const baseLenMap={short:"50-70",medium:"90-120",long:"160-200"};
-    const MAX_VOCAB=20;
-    let vocabCards=selectedCards;
-    if(vocabCards.length>MAX_VOCAB){
-      vocabCards=[...vocabCards].sort(()=>Math.random()-0.5).slice(0,MAX_VOCAB);
-    }
+    const MAX_VOCAB=20;let vocabCards=selectedCards;
+    if(vocabCards.length>MAX_VOCAB) vocabCards=[...vocabCards].sort(()=>Math.random()-0.5).slice(0,MAX_VOCAB);
     const scaleFactor=Math.max(1,vocabCards.length/10);
     const scaleLen=(range)=>{const[lo,hi]=range.split("-").map(Number);return `${Math.round(lo*scaleFactor)}-${Math.round(hi*scaleFactor)}`;};
     const targetLen=scaleLen(baseLenMap[settings.length]||"90-120");
     const maxTok=Math.min(4000,Math.max(1200,vocabCards.length*100));
+    const topicClause=topic?`\nTopic/theme: "${topic}" — write about this topic.`:"";
     try {
       const raw=await callClaudeWithTashkeel(
         `Arabic teacher creating listening practice.
 Deck: ${deckNames}
-Arabic vocabulary (MUST use every word): ${vocabCards.map(c=>c.arabicBase).join("، ")}
+Arabic vocabulary (MUST use every word): ${vocabCards.map(c=>c.arabicBase).join("، ")}${topicClause}
 
 Write a ${settings.difficulty}-level spoken Arabic passage of exactly ~${targetLen} words.
 Rules:
 - Include every Arabic word from the list above at least once — this is mandatory
 - Natural conversational tone suitable for listening
-- CRITICAL: Every single Arabic word MUST have full tashkeel (فَتْحَة ضَمَّة كَسْرَة سُكُون شَدَّة تَنْوِين) — no bare letters. Example: ذَهَبَ الطَّالِبُ إِلَى الْمَدْرَسَةِ not ذهب الطالب إلى المدرسة.
+- CRITICAL: Every single Arabic word MUST have full tashkeel — no bare letters.
 
 Return ONLY valid JSON: {"arabic":"...","translation":"...","vocabUsed":["base form of each vocab word that appears"]}`,
         maxTok,"listening",trackUsage
       );
       setContent(extractJSON(raw));
     } catch {
-      setContent({arabic:"حَدَثَ خَطَأٌ. يُرْجَى الْمُحَاوَلَةُ مَرَّةً أُخْرَى.",translation:"A generation error occurred."});
+      setContent({arabic:"حَدَثَ خَطَأٌ.",translation:"An error occurred."});
     } finally { setGenerating(false); }
   };
 
@@ -2246,11 +2280,21 @@ Return ONLY valid JSON: {"arabic":"...","translation":"...","vocabUsed":["base f
         />}
         {master&&<div style={{background:"var(--listen-bg)",border:"1px solid var(--listen-border)",borderRadius:"var(--rs)",padding:"10px 14px",fontSize:13,color:"var(--listen)",fontWeight:500}}>Using {selectedCards.length} {poolLabel2} vocabulary words · Master session</div>}
 
-        <button className="btn btn-listen" onClick={generate} disabled={generating||!selectedCards.length} style={{width:"100%",padding:"14px",borderRadius:"var(--r)",fontSize:14}}>
-          {generating
-            ?<><RefreshCw size={14} className="spin"/>Generating…</>
-            :<><Mic size={15}/>{master?"Generate Master Passage":`Generate from ${selectedCards.length} Card${selectedCards.length!==1?"s":""}`}</>}
-        </button>
+        {!topics.length?(
+          <button className="btn btn-listen" onClick={generateTopics} disabled={generating||topicsLoading||!selectedCards.length} style={{width:"100%",padding:"14px",borderRadius:"var(--r)",fontSize:14}}>
+            {topicsLoading||generating?<><RefreshCw size={14} className="spin"/>Generating…</>:<><Mic size={15}/>Generate from {selectedCards.length} Card{selectedCards.length!==1?"s":""}</>}
+          </button>
+        ):(
+          <div style={{background:"var(--surface)",border:"1.5px solid var(--border)",borderRadius:"var(--rs)",padding:"10px 12px"}}>
+            <div className="sec" style={{marginBottom:6}}>Topic</div>
+            <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+              {topics.map((t,i)=>(
+                <button key={i} className={`chip ${activeTopic===t?"chip-on":""}`} onClick={()=>switchTopic(t)} disabled={generating}
+                  style={{fontSize:12,padding:"5px 11px"}}>{t}</button>
+              ))}
+            </div>
+          </div>
+        )}
 
         {content&&!generating&&(
           <div className="gen-appear" style={{display:"flex",flexDirection:"column",gap:12}}>
