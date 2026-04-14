@@ -1302,7 +1302,8 @@ function DeckScreen({deck,cards,onStartStudy,onBack,onAddCards,onEditCard,onDele
   const [newTitle,setNewTitle]=useState(deck.title);
   const [confirmDelete,setConfirmDelete]=useState(false);
   const [search,setSearch]=useState("");
-  const [statusFilter,setStatusFilter]=useState("all"); // all, new, weak, known, due
+  const [statusFilter,setStatusFilter]=useState("all");
+  const [studyFilter,setStudyFilter]=useState("all");
 
   const weak=cards.filter(c=>c.status==="weak").length;
   const known=cards.filter(c=>c.status==="known").length;
@@ -1343,21 +1344,32 @@ function DeckScreen({deck,cards,onStartStudy,onBack,onAddCards,onEditCard,onDele
             ))}
           </div>
         </div>
-        {cards.length>0&&(
-          <div style={{display:"flex",flexDirection:"column",gap:8,marginBottom:20}}>
-            {savedIdx>0&&savedIdx<cards.length&&(
-              <button className="btn btn-primary" onClick={()=>onStartStudy("all",false)} style={{width:"100%",padding:"13px",borderRadius:"var(--r)",fontSize:14}}>
-                <BookOpen size={16}/> Resume (Card {savedIdx+1}/{cards.length})
+        {cards.length>0&&(()=>{
+          const newCount=cards.filter(c=>c.status==="new"||!c.status).length;
+          const now=Date.now();
+          const dueC=cards.filter(c=>c.srsLastReview&&c.srsNextReview&&c.srsNextReview<=now).length;
+          const studyCounts={all:cards.length,new:newCount,weak,known,due:dueC};
+          const studyCount=studyCounts[studyFilter]||cards.length;
+          return (
+            <div style={{display:"flex",flexDirection:"column",gap:8,marginBottom:20}}>
+              <div className="sec">Study Filter</div>
+              <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:4}}>
+                {[["all",`All (${cards.length})`],["new",`New (${newCount})`],["weak",`Weak (${weak})`],["known",`Known (${known})`],["due",`Due (${dueC})`]].map(([k,label])=>(
+                  <button key={k} className={`chip ${studyFilter===k?"chip-on":""}`} onClick={()=>setStudyFilter(k)} style={{padding:"5px 11px",fontSize:12}}>{label}</button>
+                ))}
+              </div>
+              {savedIdx>0&&savedIdx<cards.length&&studyFilter==="all"&&(
+                <button className="btn btn-primary" onClick={()=>onStartStudy("all",false)} style={{width:"100%",padding:"13px",borderRadius:"var(--r)",fontSize:14}}>
+                  <BookOpen size={16}/> Resume (Card {savedIdx+1}/{cards.length})
+                </button>
+              )}
+              <button className="btn btn-primary" onClick={()=>onStartStudy(studyFilter,true)} disabled={!studyCount}
+                style={{width:"100%",padding:"13px",borderRadius:"var(--r)",fontSize:14,opacity:studyCount?1:0.5}}>
+                <BookOpen size={16}/> Study {studyFilter==="all"?"All":studyFilter.charAt(0).toUpperCase()+studyFilter.slice(1)} ({studyCount})
               </button>
-            )}
-            <button className="btn" onClick={()=>onStartStudy("all",true)} style={{width:"100%",padding:"13px",borderRadius:"var(--r)",fontSize:14,fontWeight:600,...(savedIdx>0?{background:"var(--surface)",color:"var(--accent)",border:"1.5px solid var(--accent)"}:{background:"var(--accent)",color:"#fff"})}}>
-              <BookOpen size={16}/> {savedIdx>0?"Restart All":"Study All"} ({cards.length})
-            </button>
-            {weak>0&&<button className="btn" onClick={()=>onStartStudy("weak")} style={{width:"100%",padding:"12px",borderRadius:"var(--r)",fontSize:14,fontWeight:600,background:"var(--weak-bg)",color:"var(--weak)",border:"1.5px solid var(--weak-border)"}}>
-              <RotateCcw size={15}/> Practice Weak ({weak})
-            </button>}
-          </div>
-        )}
+            </div>
+          );
+        })()}
         {cards.length>0&&(
           <div style={{marginBottom:12}}>
             <div style={{position:"relative",marginBottom:10}}>
@@ -3677,6 +3689,8 @@ export default function App() {
     const now=Date.now();
     const toStudy=mode==="weak"?dc.filter(c=>c.status==="weak")
       :mode==="due"?dc.filter(c=>c.srsLastReview&&c.srsNextReview&&c.srsNextReview<=now)
+      :mode==="new"?dc.filter(c=>c.status==="new"||!c.status)
+      :mode==="known"?dc.filter(c=>c.status==="known")
       :sortByDueDate(dc);
     if(!toStudy.length) return;
     studyStartRef.current=Date.now();
