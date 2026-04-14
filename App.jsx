@@ -1345,8 +1345,13 @@ function DeckScreen({deck,cards,onStartStudy,onBack,onAddCards,onEditCard,onDele
         </div>
         {cards.length>0&&(
           <div style={{display:"flex",flexDirection:"column",gap:8,marginBottom:20}}>
-            <button className="btn btn-primary" onClick={()=>onStartStudy("all",true)} style={{width:"100%",padding:"13px",borderRadius:"var(--r)",fontSize:14}}>
-              <BookOpen size={16}/> Study All ({cards.length})
+            {savedIdx>0&&savedIdx<cards.length&&(
+              <button className="btn btn-primary" onClick={()=>onStartStudy("all",false)} style={{width:"100%",padding:"13px",borderRadius:"var(--r)",fontSize:14}}>
+                <BookOpen size={16}/> Resume (Card {savedIdx+1}/{cards.length})
+              </button>
+            )}
+            <button className="btn" onClick={()=>onStartStudy("all",true)} style={{width:"100%",padding:"13px",borderRadius:"var(--r)",fontSize:14,fontWeight:600,...(savedIdx>0?{background:"var(--surface)",color:"var(--accent)",border:"1.5px solid var(--accent)"}:{background:"var(--accent)",color:"#fff"})}}>
+              <BookOpen size={16}/> {savedIdx>0?"Restart All":"Study All"} ({cards.length})
             </button>
             {weak>0&&<button className="btn" onClick={()=>onStartStudy("weak")} style={{width:"100%",padding:"12px",borderRadius:"var(--r)",fontSize:14,fontWeight:600,background:"var(--weak-bg)",color:"var(--weak)",border:"1.5px solid var(--weak-border)"}}>
               <RotateCcw size={15}/> Practice Weak ({weak})
@@ -1608,12 +1613,14 @@ function StudyScreen({cards,currentIndex,onSwipe,onBack,onExit,trackUsage,decks,
     setGenLoading(true);setGen(null);
     try {
       const avoidClause=prevSentence?`\nDo NOT reuse or closely resemble this previous sentence: "${prevSentence}"`:"";
+      const knownVocab=Object.values(cardStates).flat().filter(c=>c.status==="known"||c.status==="weak").slice(0,20).map(c=>c.arabicBase).join("، ");
       const raw=await callClaudeWithTashkeel(
         `Arabic teacher creating flashcard learning aid.
 Word: "${card.english}" · Arabic form "${arabicForm}" (${formLabel})
 Generate: 1) Short natural Arabic sentence (6-10w) using EXACTLY: ${arabicForm}  2) English translation  3) Vivid DALL-E scene (2-3 sentences, real everyday Arabic life, no Arabic text in scene)${avoidClause}
+${knownVocab?`Try to naturally include some of these known words in the sentence where possible: ${knownVocab}`:""}
 
-CRITICAL: Every single Arabic word MUST have full tashkeel (فَتْحَة ضَمَّة كَسْرَة سُكُون شَدَّة تَنْوِين) — no bare letters. Example: ذَهَبَ الطَّالِبُ إِلَى الْمَدْرَسَةِ not ذهب الطالب إلى المدرسة.
+CRITICAL: Every single Arabic word MUST have full tashkeel — no bare letters.
 Return ONLY valid JSON: {"sentence":"...","translation":"...","imagePrompt":"..."}`,
         600,"sentence",trackUsage
       );
@@ -1944,7 +1951,7 @@ function ReadingScreen({decks,cardStates,onBack,onFinish,onAddToFlashcard,trackU
     if(mins>=1&&onLogStudy) onLogStudy({type:"app",module:"reading",minutes:mins});
   };},[]);
   const [showSettings,setShowSettings]=useState(false);
-  const [settings,setSettings]=useState({length:"medium",difficulty:"intermediate",showTranslation:false,highlightVocab:true});
+  const [settings,setSettings]=useState({length:"short",difficulty:"beginner",showTranslation:false,highlightVocab:true});
   const setSetting=(k,v)=>setSettings(p=>({...p,[k]:v}));
 
   // Multi-deck selection — all decks selected by default
@@ -1993,13 +2000,11 @@ function ReadingScreen({decks,cardStates,onBack,onFinish,onAddToFlashcard,trackU
     } catch {
       t=["Daily life","A trip to the market","School and learning","Family gathering","City exploration"];
     }
-    setTopics(t);setActiveTopic(t[0]);setTopicsLoading(false);
-    // Now generate the first passage
-    await generateWithTopic(t[0]);
+    setTopics(t);setActiveTopic("");setTopicsLoading(false);
   };
 
   const switchTopic=(topic)=>{
-    setActiveTopic(topic);generateWithTopic(topic);
+    setActiveTopic(topic);setPassage(null);
   };
 
   const generateWithTopic=async(topic)=>{
@@ -2063,23 +2068,29 @@ Return ONLY valid JSON: {"arabic":"...","translation":"...","vocabUsed":["base f
           selDeckIds={selDeckIds} setSelDeckIds={setSelDeckIds}
           selCardIds={selCardIds} setSelCardIds={setSelCardIds}
           accentVar="--read" accentBgVar="--read-bg" accentBorderVar="--read-border"
-          onReset={()=>setPassage(null)}
+          onReset={()=>{setPassage(null);setTopics([]);setActiveTopic("");}}
         />}
         {master&&<div style={{background:"var(--read-bg)",border:"1px solid var(--read-border)",borderRadius:"var(--rs)",padding:"10px 14px",fontSize:13,color:"var(--read)",fontWeight:500}}>Using {selectedCards.length} {poolLabel} vocabulary words · Master session</div>}
 
         {!topics.length?(
           <button className="btn btn-read" onClick={generateTopics} disabled={generating||topicsLoading||!selectedCards.length} style={{width:"100%",padding:"14px",borderRadius:"var(--r)",fontSize:14}}>
-            {topicsLoading||generating?<><RefreshCw size={14} className="spin"/>Generating…</>:<><FileText size={15}/>Generate from {selectedCards.length} Card{selectedCards.length!==1?"s":""}</>}
+            {topicsLoading?<><RefreshCw size={14} className="spin"/>Finding topics…</>:<><FileText size={15}/>Choose Topic for {selectedCards.length} Cards</>}
           </button>
         ):(
           <div style={{background:"var(--surface)",border:"1.5px solid var(--border)",borderRadius:"var(--rs)",padding:"10px 12px"}}>
-            <div className="sec" style={{marginBottom:6}}>Topic</div>
+            <div className="sec" style={{marginBottom:6}}>Topic {!activeTopic&&<span style={{color:"var(--accent)",fontWeight:400,letterSpacing:0,textTransform:"none"}}>— pick one to generate</span>}</div>
             <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
               {topics.map((t,i)=>(
                 <button key={i} className={`chip ${activeTopic===t?"chip-on":""}`} onClick={()=>switchTopic(t)} disabled={generating}
-                  style={{fontSize:12,padding:"5px 11px"}}>{t}</button>
+                  style={{fontSize:12,padding:"5px 11px"}}>{i===0?"⭐ ":""}{t}</button>
               ))}
             </div>
+            {activeTopic&&!passage&&!generating&&(
+              <button className="btn btn-read" onClick={()=>generateWithTopic(activeTopic)} style={{width:"100%",padding:"12px",borderRadius:"var(--rs)",fontSize:13,marginTop:10}}>
+                <FileText size={14}/> Generate: {activeTopic}
+              </button>
+            )}
+            {generating&&<div style={{textAlign:"center",padding:"12px 0",color:"var(--text3)",fontSize:13}}><RefreshCw size={13} className="spin" style={{marginRight:6}}/>Generating passage…</div>}
           </div>
         )}
 
@@ -2146,7 +2157,7 @@ function ListeningScreen({decks,cardStates,onBack,onFinish,onAddToFlashcard,trac
     if(mins>=1&&onLogStudy) onLogStudy({type:"app",module:"listening",minutes:mins});
   };},[]);
   const [showSettings,setShowSettings]=useState(false);
-  const [settings,setSettings]=useState({length:"medium",difficulty:"intermediate",speed:0.82,showArabicDefault:false,showEnglishDefault:false,highlightVocab:true});
+  const [settings,setSettings]=useState({length:"short",difficulty:"beginner",speed:0.82,showArabicDefault:false,showEnglishDefault:false,highlightVocab:true});
   const setSetting=(k,v)=>setSettings(p=>({...p,[k]:v}));
 
   // Multi-deck selection — all selected by default
@@ -2187,11 +2198,10 @@ function ListeningScreen({decks,cardStates,onBack,onFinish,onAddToFlashcard,trac
       const raw=await callClaude(`Generate 5 short listening topic titles (5-8 words, English) for these words: ${vocabSample}. Return ONLY JSON: ["t1","t2","t3","t4","t5"]`,200,"other",trackUsage);
       t=extractJSON(raw);
     } catch {t=["Daily routine","At the market","Weather talk","Neighborhood life","School day"];}
-    setTopics(t);setActiveTopic(t[0]);setTopicsLoading(false);
-    await generateWithTopic(t[0]);
+    setTopics(t);setActiveTopic("");setTopicsLoading(false);
   };
 
-  const switchTopic=(topic)=>{setActiveTopic(topic);generateWithTopic(topic);};
+  const switchTopic=(topic)=>{setActiveTopic(topic);setContent(null);};
 
   const generateWithTopic=async(topic)=>{
     if(window.speechSynthesis) window.speechSynthesis.cancel();setPlaying(false);
@@ -2220,7 +2230,10 @@ Rules:
 Return ONLY valid JSON: {"arabic":"...","translation":"...","vocabUsed":["base form of each vocab word that appears"]}`,
         maxTok,"listening",trackUsage
       );
-      setContent(extractJSON(raw));
+      const parsed=extractJSON(raw);
+      setContent(parsed);
+      // Auto-play audio
+      setTimeout(()=>{if(parsed.arabic) doPlay(settings.speed);},300);
     } catch {
       setContent({arabic:"حَدَثَ خَطَأٌ.",translation:"An error occurred."});
     } finally { setGenerating(false); }
@@ -2279,23 +2292,29 @@ Return ONLY valid JSON: {"arabic":"...","translation":"...","vocabUsed":["base f
           selDeckIds={selDeckIds} setSelDeckIds={setSelDeckIds}
           selCardIds={selCardIds} setSelCardIds={setSelCardIds}
           accentVar="--listen" accentBgVar="--listen-bg" accentBorderVar="--listen-border"
-          onReset={()=>{setContent(null);if(window.speechSynthesis) window.speechSynthesis.cancel();setPlaying(false);}}
+          onReset={()=>{setContent(null);setTopics([]);setActiveTopic("");if(window.speechSynthesis) window.speechSynthesis.cancel();setPlaying(false);}}
         />}
         {master&&<div style={{background:"var(--listen-bg)",border:"1px solid var(--listen-border)",borderRadius:"var(--rs)",padding:"10px 14px",fontSize:13,color:"var(--listen)",fontWeight:500}}>Using {selectedCards.length} {poolLabel2} vocabulary words · Master session</div>}
 
         {!topics.length?(
           <button className="btn btn-listen" onClick={generateTopics} disabled={generating||topicsLoading||!selectedCards.length} style={{width:"100%",padding:"14px",borderRadius:"var(--r)",fontSize:14}}>
-            {topicsLoading||generating?<><RefreshCw size={14} className="spin"/>Generating…</>:<><Mic size={15}/>Generate from {selectedCards.length} Card{selectedCards.length!==1?"s":""}</>}
+            {topicsLoading?<><RefreshCw size={14} className="spin"/>Finding topics…</>:<><Headphones size={15}/>Choose Topic for {selectedCards.length} Cards</>}
           </button>
         ):(
           <div style={{background:"var(--surface)",border:"1.5px solid var(--border)",borderRadius:"var(--rs)",padding:"10px 12px"}}>
-            <div className="sec" style={{marginBottom:6}}>Topic</div>
+            <div className="sec" style={{marginBottom:6}}>Topic {!activeTopic&&<span style={{color:"var(--listen)",fontWeight:400,letterSpacing:0,textTransform:"none"}}>— pick one to generate</span>}</div>
             <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
               {topics.map((t,i)=>(
                 <button key={i} className={`chip ${activeTopic===t?"chip-on":""}`} onClick={()=>switchTopic(t)} disabled={generating}
-                  style={{fontSize:12,padding:"5px 11px"}}>{t}</button>
+                  style={{fontSize:12,padding:"5px 11px"}}>{i===0?"⭐ ":""}{t}</button>
               ))}
             </div>
+            {activeTopic&&!content&&!generating&&(
+              <button className="btn btn-listen" onClick={()=>generateWithTopic(activeTopic)} style={{width:"100%",padding:"12px",borderRadius:"var(--rs)",fontSize:13,marginTop:10}}>
+                <Headphones size={14}/> Generate: {activeTopic}
+              </button>
+            )}
+            {generating&&<div style={{textAlign:"center",padding:"12px 0",color:"var(--text3)",fontSize:13}}><RefreshCw size={13} className="spin" style={{marginRight:6}}/>Generating…</div>}
           </div>
         )}
 
@@ -2864,13 +2883,17 @@ Return plain text, NOT JSON.`,
 // ─────────────────────────────────────────────────────────────
 function MasterReviewScreen({decks,cardStates,onBack,onSwipeCard,trackUsage,onAddToFlashcard,studyLog,onLogStudy,onMasterReading,onMasterListening,onMasterSpeaking}) {
   const [started,setStarted]=useState(false);
-  const [mode,setMode]=useState("smart"); // smart, due, weak, new, all
+  const [mode,setMode]=useState("smart");
   const [limit,setLimit]=useState(50);
   const [masterModulePool,setMasterModulePool]=useState("all");
   const [sessionCards,setSessionCards]=useState([]);
   const [idx,setIdx]=useState(0);
   const [results,setResults]=useState({known:0,weak:0});
   const [flipped,setFlipped]=useState(false);
+  const [gen,setGen]=useState(null);
+  const [genLoading,setGenLoading]=useState(false);
+  const [mPlaying,setMPlaying]=useState(false);
+  const genRef=useRef(0);
   const [selForm,setSelForm]=useState(null);
   const [wordPopup,setWordPopup]=useState(null);
   const startRef=useRef(null);
@@ -2910,7 +2933,8 @@ function MasterReviewScreen({decks,cardStates,onBack,onSwipeCard,trackUsage,onAd
     setResults(p=>({...p,[ns]:p[ns]+1}));
     onSwipeCard(card._deckId,card.id,ns,selForm);
     if(idx<sessionCards.length-1){
-      setIdx(i=>i+1);setFlipped(false);setSelForm(null);
+      setIdx(i=>i+1);setFlipped(false);setSelForm(null);setGen(null);setGenLoading(false);
+      if(window.speechSynthesis) window.speechSynthesis.cancel();setMPlaying(false);
     } else {
       if(startRef.current){
         const mins=Math.max(1,Math.round((Date.now()-startRef.current)/60000));
@@ -2959,6 +2983,42 @@ function MasterReviewScreen({decks,cardStates,onBack,onSwipeCard,trackUsage,onAd
     );
   }
 
+  // Generate learning aid for master review cards
+  const allVocabForContext=Object.values(cardStates).flat().filter(c=>c.status==="known"||c.status==="weak").slice(0,30).map(c=>c.arabicBase).join("، ");
+  const generateAid=async()=>{
+    if(!selForm||genLoading||!card) return;
+    const id=++genRef.current;
+    const arabicForm=card.forms?.[selForm];if(!arabicForm) return;
+    setGenLoading(true);setGen(null);
+    try {
+      const raw=await callClaudeWithTashkeel(
+        `Arabic teacher creating flashcard learning aid.
+Word: "${card.english}" · Arabic form "${arabicForm}" (${FORM_LABELS[selForm]||selForm})
+Generate: 1) Short natural Arabic sentence (6-10w) using EXACTLY: ${arabicForm}  2) English translation
+${allVocabForContext?`Try to naturally include some of these known words in the sentence: ${allVocabForContext}`:""}
+
+CRITICAL: Every Arabic word MUST have full tashkeel.
+Return ONLY valid JSON: {"sentence":"...","translation":"..."}`,
+        400,"sentence",trackUsage
+      );
+      if(id!==genRef.current) return;
+      setGen(extractJSON(raw));
+    } catch {
+      if(id!==genRef.current) return;
+      setGen({sentence:arabicForm,translation:card.english});
+    } finally { setGenLoading(false); }
+  };
+  const playMasterAudio=()=>{
+    if(!gen?.sentence||!window.speechSynthesis) return;
+    window.speechSynthesis.cancel();
+    if(mPlaying){setMPlaying(false);return;}
+    const utt=new SpeechSynthesisUtterance(gen.sentence);
+    utt.lang="ar-SA";utt.rate=0.82;
+    const v=window.speechSynthesis.getVoices().find(v=>v.lang.startsWith("ar"));if(v) utt.voice=v;
+    utt.onend=()=>setMPlaying(false);utt.onerror=()=>setMPlaying(false);
+    setMPlaying(true);window.speechSynthesis.speak(utt);
+  };
+
   // Active study
   if(started&&card){
     const availForms=Object.entries(card.forms||{}).filter(([,v])=>v);
@@ -3005,6 +3065,22 @@ function MasterReviewScreen({decks,cardStates,onBack,onSwipeCard,trackUsage,onAd
                 <div style={{textAlign:"center",background:"var(--accent-bg)",borderRadius:"var(--rxs)",padding:"9px 13px",marginBottom:12}}>
                   <div style={{fontSize:11,color:"var(--text3)",marginBottom:3}}>{FORM_LABELS[selForm]}</div>
                   <div className="ar" style={{fontSize:28,color:"var(--accent)",fontWeight:500}}>{card.forms[selForm]}</div>
+                </div>
+              )}
+              <button className="btn btn-primary" onClick={generateAid} disabled={genLoading||!selForm} style={{width:"100%",padding:"10px",borderRadius:"var(--rs)",fontSize:13,marginBottom:gen?10:0}}>
+                {genLoading?<><RefreshCw size={13} className="spin"/>Generating…</>:<><Sparkles size={13}/>Generate Learning Aid</>}
+              </button>
+              {gen&&!genLoading&&(
+                <div className="gen-appear" style={{display:"flex",flexDirection:"column",gap:8}}>
+                  <div style={{background:"var(--accent-bg)",border:"1px solid var(--accent-border)",borderRadius:"var(--rs)",padding:"10px 12px"}}>
+                    <div style={{fontSize:10,fontWeight:700,color:"var(--accent)",letterSpacing:".1em",textTransform:"uppercase",marginBottom:5}}>Example Sentence</div>
+                    <ClickableArabic text={gen.sentence} highlightWords={[card.forms[selForm]||card.arabicBase]} onWordClick={()=>{}} fontSize={20}/>
+                    <div style={{fontSize:12.5,color:"var(--text2)",fontStyle:"italic",marginTop:4}}>{gen.translation}</div>
+                  </div>
+                  <button className="btn" onClick={playMasterAudio}
+                    style={{background:mPlaying?"var(--accent)":"transparent",color:mPlaying?"white":"var(--accent)",border:"1.5px solid var(--accent)",borderRadius:"var(--rs)",padding:"9px",width:"100%",fontSize:13,fontWeight:600}}>
+                    <Volume2 size={14}/> {mPlaying?"Playing…":"Play Audio"}
+                  </button>
                 </div>
               )}
             </div>
