@@ -1729,9 +1729,9 @@ Return ONLY valid JSON: {"sentence":"...","translation":"...","imagePrompt":"...
                   return (order.indexOf(a[0])===-1?99:order.indexOf(a[0]))-(order.indexOf(b[0])===-1?99:order.indexOf(b[0]));
                 })
                 .map(([key,val])=>(
-                <button key={key} className={`chip ${selForm===key?"chip-on":""}`} onClick={()=>{setSelForm(key);setGen(null);}}>
-                  {(card.weakForms||[]).includes(key)&&<span style={{color:selForm===key?"rgba(255,200,200,.9)":"var(--weak)",fontSize:10}}>●</span>}
-                  {FORM_LABELS[key]}<span className="ar" style={{fontSize:13,color:selForm===key?"rgba(255,255,255,.75)":"var(--text3)"}}>· {val}</span>
+                <button key={key} className={`chip ${selForm===key?"chip-on":""}`} onClick={()=>{setSelForm(key);setGen(null);}} style={{padding:"8px 14px"}}>
+                  {(card.weakForms||[]).includes(key)&&<span style={{color:selForm===key?"rgba(255,200,200,.9)":"var(--weak)",fontSize:11}}>●</span>}
+                  {FORM_LABELS[key]}<span className="ar" style={{fontSize:16,color:selForm===key?"rgba(255,255,255,.75)":"var(--text2)",fontWeight:500}}>· {val}</span>
                 </button>
               ))}
             </div>
@@ -2905,9 +2905,9 @@ function MasterReviewScreen({decks,cardStates,onBack,onSwipeCard,trackUsage,onAd
   const [gen,setGen]=useState(null);
   const [genLoading,setGenLoading]=useState(false);
   const [mPlaying,setMPlaying]=useState(false);
+  const [wordPopup,setWordPopup]=useState(null);
   const genRef=useRef(0);
   const [selForm,setSelForm]=useState(null);
-  const [wordPopup,setWordPopup]=useState(null);
   const startRef=useRef(null);
 
   const allCards=Object.values(cardStates).flat();
@@ -3065,11 +3065,18 @@ Return ONLY valid JSON: {"sentence":"...","translation":"..."}`,
                 {card.srsStreak>0&&<div style={{display:"inline-flex",alignItems:"center",gap:4,marginTop:5,fontSize:11,color:"var(--know)"}}>{"🔥".repeat(Math.min(card.srsStreak,5))} {card.srsStreak} streak</div>}
                 {card.forms?.harf&&<div style={{display:"inline-flex",alignItems:"center",gap:5,marginTop:7,background:"var(--harf-bg)",border:"1px solid var(--harf-border)",borderRadius:100,padding:"3px 11px"}}><span className="ar" style={{fontSize:17,color:"var(--harf)",fontWeight:600}}>{card.forms.harf}</span></div>}
               </div>
+              <div className="sec">Select a form</div>
               <div style={{display:"flex",flexWrap:"wrap",gap:7,marginBottom:12}}>
-                {availForms.filter(([k])=>k!=="harf").map(([key,val])=>(
-                  <button key={key} className={`chip ${selForm===key?"chip-on":""}`} onClick={()=>setSelForm(key)}>
-                    {(card.weakForms||[]).includes(key)&&<span style={{color:selForm===key?"rgba(255,200,200,.9)":"var(--weak)",fontSize:10}}>●</span>}
-                    {FORM_LABELS[key]||key}<span className="ar" style={{fontSize:13,color:selForm===key?"rgba(255,255,255,.75)":"var(--text3)"}}>· {val}</span>
+                {availForms
+                  .filter(([k])=>k!=="harf")
+                  .sort((a,b)=>{
+                    const order=["singular","plural","plural2","masculine","feminine","past","present","imperative","masdar","activePart","passivePart","synonym","synonymPlural","antonym","antonymPlural"];
+                    return (order.indexOf(a[0])===-1?99:order.indexOf(a[0]))-(order.indexOf(b[0])===-1?99:order.indexOf(b[0]));
+                  })
+                  .map(([key,val])=>(
+                  <button key={key} className={`chip ${selForm===key?"chip-on":""}`} onClick={()=>{setSelForm(key);setGen(null);}} style={{padding:"8px 14px"}}>
+                    {(card.weakForms||[]).includes(key)&&<span style={{color:selForm===key?"rgba(255,200,200,.9)":"var(--weak)",fontSize:11}}>●</span>}
+                    {FORM_LABELS[key]||key}<span className="ar" style={{fontSize:16,color:selForm===key?"rgba(255,255,255,.75)":"var(--text2)",fontWeight:500}}>· {val}</span>
                   </button>
                 ))}
               </div>
@@ -3086,7 +3093,8 @@ Return ONLY valid JSON: {"sentence":"...","translation":"..."}`,
                 <div className="gen-appear" style={{display:"flex",flexDirection:"column",gap:8}}>
                   <div style={{background:"var(--accent-bg)",border:"1px solid var(--accent-border)",borderRadius:"var(--rs)",padding:"10px 12px"}}>
                     <div style={{fontSize:10,fontWeight:700,color:"var(--accent)",letterSpacing:".1em",textTransform:"uppercase",marginBottom:5}}>Example Sentence</div>
-                    <ClickableArabic text={gen.sentence} highlightWords={[card.forms[selForm]||card.arabicBase]} onWordClick={()=>{}} fontSize={20}/>
+                    <ClickableArabic text={gen.sentence} highlightWords={[card.forms[selForm]||card.arabicBase]} onWordClick={(word,ctx)=>setWordPopup({word,context:ctx})} fontSize={20}/>
+                    <div style={{fontSize:11,color:"var(--text3)",marginTop:3}}>Tap any word to look it up</div>
                     <div style={{fontSize:12.5,color:"var(--text2)",fontStyle:"italic",marginTop:4}}>{gen.translation}</div>
                   </div>
                   <button className="btn" onClick={playMasterAudio}
@@ -3107,6 +3115,7 @@ Return ONLY valid JSON: {"sentence":"...","translation":"..."}`,
             <span><span className="kbd">←</span> Weak</span><span><span className="kbd">→</span> Know</span>
           </div>}
         </div>
+        {wordPopup&&<WordPopup word={wordPopup.word} context={wordPopup.context} decks={decks} cardStates={cardStates} onClose={()=>setWordPopup(null)} onAddToFlashcard={onAddToFlashcard} trackUsage={trackUsage}/>}
       </div>
     );
   }
