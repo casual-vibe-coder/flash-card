@@ -1725,7 +1725,7 @@ Return ONLY valid JSON: {"sentence":"...","translation":"...","imagePrompt":"...
               {availForms
                 .filter(([k])=>k!=="harf")
                 .sort((a,b)=>{
-                  const order=["singular","plural","plural2","masculine","feminine","past","present","imperative","masdar","activePart","passivePart","synonym","synonymPlural","antonym","antonymPlural"];
+                  const order=["past","present","imperative","masdar","activePart","passivePart","singular","plural","plural2","masculine","feminine","synonym","synonymPlural","antonym","antonymPlural"];
                   return (order.indexOf(a[0])===-1?99:order.indexOf(a[0]))-(order.indexOf(b[0])===-1?99:order.indexOf(b[0]));
                 })
                 .map(([key,val])=>(
@@ -2909,6 +2909,8 @@ function MasterReviewScreen({decks,cardStates,onBack,onSwipeCard,trackUsage,onAd
   const genRef=useRef(0);
   const [selForm,setSelForm]=useState(null);
   const startRef=useRef(null);
+  // Persist session for resume
+  const [savedSession,setSavedSession]=useState(null); // {cards,idx,results,mode}
 
   const allCards=Object.values(cardStates).flat();
   const now=Date.now();
@@ -2936,23 +2938,33 @@ function MasterReviewScreen({decks,cardStates,onBack,onSwipeCard,trackUsage,onAd
       pool.forEach(c=>{if(deckCards.has(c.id)&&!tagged.find(t=>t.id===c.id)) tagged.push({...c,_deckId:deck.id});});
     }
     setSessionCards(tagged);setIdx(0);setResults({known:0,weak:0});setFlipped(false);setStarted(true);
-    startRef.current=Date.now();
+    setSavedSession(null);startRef.current=Date.now();
+  };
+
+  const resumeSession=()=>{
+    if(!savedSession) return;
+    setSessionCards(savedSession.cards);setIdx(savedSession.idx);setResults(savedSession.results);
+    setFlipped(false);setSelForm(null);setStarted(true);startRef.current=Date.now();
   };
 
   const handleSwipe=(dir)=>{
     const card=sessionCards[idx];
     const ns=dir==="right"?"known":"weak";
-    setResults(p=>({...p,[ns]:p[ns]+1}));
+    const newResults={...results,[ns]:results[ns]+1};
+    setResults(newResults);
     onSwipeCard(card._deckId,card.id,ns,selForm);
     if(idx<sessionCards.length-1){
-      setIdx(i=>i+1);setFlipped(false);setSelForm(null);setGen(null);setGenLoading(false);
+      const nextIdx=idx+1;
+      setIdx(nextIdx);setFlipped(false);setSelForm(null);setGen(null);setGenLoading(false);
       if(window.speechSynthesis) window.speechSynthesis.cancel();setMPlaying(false);
+      // Save for resume
+      setSavedSession({cards:sessionCards,idx:nextIdx,results:newResults});
     } else {
       if(startRef.current){
         const mins=Math.max(1,Math.round((Date.now()-startRef.current)/60000));
         onLogStudy({type:"app",module:"vocab",minutes:mins,subtype:"master-review"});
       }
-      setStarted(false);setMode("done");
+      setStarted(false);setMode("done");setSavedSession(null);
     }
   };
 
@@ -3070,7 +3082,7 @@ Return ONLY valid JSON: {"sentence":"...","translation":"..."}`,
                 {availForms
                   .filter(([k])=>k!=="harf")
                   .sort((a,b)=>{
-                    const order=["singular","plural","plural2","masculine","feminine","past","present","imperative","masdar","activePart","passivePart","synonym","synonymPlural","antonym","antonymPlural"];
+                    const order=["past","present","imperative","masdar","activePart","passivePart","singular","plural","plural2","masculine","feminine","synonym","synonymPlural","antonym","antonymPlural"];
                     return (order.indexOf(a[0])===-1?99:order.indexOf(a[0]))-(order.indexOf(b[0])===-1?99:order.indexOf(b[0]));
                   })
                   .map(([key,val])=>(
@@ -3143,6 +3155,11 @@ Return ONLY valid JSON: {"sentence":"...","translation":"..."}`,
 
         {/* Mode selection */}
         <div className="sec">Review Mode</div>
+        {savedSession&&(
+          <button className="btn btn-primary" onClick={resumeSession} style={{width:"100%",padding:"14px",borderRadius:"var(--r)",fontSize:14,marginBottom:8}}>
+            <BookOpen size={15}/> Resume (Card {savedSession.idx+1}/{savedSession.cards.length}) · {savedSession.results.known}✓ {savedSession.results.weak}✗
+          </button>
+        )}
         <div className="test-option" onClick={()=>{setMode("smart");start("smart");}}>
           <div style={{width:40,height:40,borderRadius:12,background:"var(--accent-bg)",display:"flex",alignItems:"center",justifyContent:"center"}}><Zap size={18} color="var(--accent)"/></div>
           <div style={{flex:1}}>
