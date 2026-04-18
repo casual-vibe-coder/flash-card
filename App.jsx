@@ -653,7 +653,7 @@ function ClickableArabic({text,highlightWords=[],onWordClick,fontSize=20}) {
         const isHL=hlStripped.some(hw=>hw&&cleanS&&(cleanS===hw||cleanS.includes(hw)||hw.includes(cleanS)));
         return (
           <span key={i}>
-            <span className={`ar-word${isHL?" hl":""}`} onClick={()=>onWordClick&&onWordClick(clean,text)} title="Tap to look up">{w}</span>{" "}
+            <span className={`ar-word${isHL?" hl":""}`} onClick={(e)=>{e.stopPropagation();onWordClick&&onWordClick(clean,text);}} title="Tap to look up">{w}</span>{" "}
           </span>
         );
       })}
