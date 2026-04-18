@@ -3520,9 +3520,9 @@ function SRSSettingsPanel({srsSettings,onChange}) {
         <div>
           <label className="lbl">Daily Review Limit</label>
           <div style={{display:"flex",gap:6}}>
-            {[20,50,100,999].map(n=>(
-              <button key={n} className={`chip ${s.dailyLimit===n?"chip-on":""}`} onClick={()=>set("dailyLimit",n)} style={{flex:1,justifyContent:"center",padding:"8px 0",fontSize:12}}>
-                {n>=999?"No limit":n}
+            {[20,50,100,150,200,300,999].map(n=>(
+              <button key={n} className={`chip ${s.dailyLimit===n?"chip-on":""}`} onClick={()=>set("dailyLimit",n)} style={{flex:1,justifyContent:"center",padding:"8px 0",fontSize:12,minWidth:42}}>
+                {n>=999?"All":n}
               </button>
             ))}
           </div>
