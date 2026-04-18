@@ -1400,15 +1400,15 @@ function DeckScreen({deck,cards,onStartStudy,onBack,onAddCards,onEditCard,onDele
                   )}
                 </div>
                 <div className="ar" style={{fontSize:20,color:"var(--accent)",marginBottom:4}}>{c.arabicBase}</div>
-                <div style={{display:"flex",flexWrap:"wrap",gap:4}}>
+                <div style={{display:"flex",flexWrap:"wrap",gap:5,direction:"rtl"}}>
                   {c.forms.harf&&(
-                    <span style={{fontSize:11.5,background:"var(--harf-bg)",color:"var(--harf)",padding:"2px 8px",borderRadius:100,border:"1px solid var(--harf-border)",display:"inline-flex",alignItems:"center",gap:3}}>
-                      حرف: <span className="ar" style={{fontSize:13}}>{c.forms.harf}</span>
+                    <span style={{fontSize:12.5,background:"var(--harf-bg)",color:"var(--harf)",padding:"3px 10px",borderRadius:100,border:"1px solid var(--harf-border)",display:"inline-flex",alignItems:"center",gap:4}}>
+                      حرف: <span className="ar" style={{fontSize:15,fontWeight:500}}>{c.forms.harf}</span>
                     </span>
                   )}
-                  {Object.entries(c.forms).filter(([k,v])=>v&&k!=="harf").map(([k,v])=>(
-                    <span key={k} style={{fontSize:11,color:"var(--text3)",background:"var(--surface2)",padding:"2px 7px",borderRadius:100}}>
-                      {FORM_LABELS[k]}: <span className="ar" style={{fontSize:12}}>{v}</span>
+                  {(FORMS_BY_TYPE[c.wordType]||FORMS_BY_TYPE.other).filter(k=>k!=="harf"&&c.forms[k]).map(k=>(
+                    <span key={k} style={{fontSize:12,color:"var(--text3)",background:"var(--surface2)",padding:"3px 9px",borderRadius:100,display:"inline-flex",alignItems:"center",gap:4}}>
+                      {FORM_LABELS[k]}: <span className="ar" style={{fontSize:14,fontWeight:500,color:"var(--text2)"}}>{c.forms[k]}</span>
                     </span>
                   ))}
                 </div>
