@@ -242,10 +242,12 @@ function getModuleSkillScores(studyLog) {
   return result;
 }
 
-/** Get vocab level as percentage toward B2 */
+/** Get vocab breadth as percentage toward B2 — based on total cards in decks, not just mastered */
 function getVocabProgress(cardStates) {
-  const known = Object.values(cardStates).flat().filter(c => c.status === "known").length;
-  return { known, target: B2_WORD_TARGET, pct: Math.min(100, Math.round(known / B2_WORD_TARGET * 100)) };
+  const all = Object.values(cardStates).flat();
+  const total = all.length;
+  const known = all.filter(c => c.status === "known").length;
+  return { total, known, target: B2_WORD_TARGET, pct: Math.min(100, Math.round(total / B2_WORD_TARGET * 100)) };
 }
 
 /** Generate a performance interpretation from card data and study log */
@@ -3669,7 +3671,7 @@ function ProgressScreen({cardStates,studyLog,onBack,onLogManual}) {
                 <div className="progress-fill" style={{width:`${vocabProgress.pct}%`,background:"linear-gradient(90deg, var(--accent), var(--know))"}}/>
               </div>
               <div style={{display:"flex",justifyContent:"space-between",fontSize:12}}>
-                <span style={{color:"var(--know)",fontWeight:600}}>{vocabProgress.known} known</span>
+                <span style={{color:"var(--accent)",fontWeight:600}}>{vocabProgress.total} cards <span style={{color:"var(--text3)",fontWeight:400}}>· {vocabProgress.known} known</span></span>
                 <span style={{color:"var(--text3)"}}>B2 target: ~{B2_WORD_TARGET.toLocaleString()} words</span>
               </div>
               <div style={{fontSize:11,color:"var(--text3)",marginTop:6,lineHeight:1.5}}>
