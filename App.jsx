@@ -983,25 +983,28 @@ function LoginScreen({onLogin,loading,error}) {
 // SETTINGS
 // ─────────────────────────────────────────────────────────────
 // ─────────────────────────────────────────────────────────────
-// CARD CLEANUP TOOL — strip extras, correct verbs across all decks
+// CARD CLEANUP TOOL — audit every form on every card, scope by deck
 // ─────────────────────────────────────────────────────────────
-const CLEANUP_OPTIONAL_EXTRAS=["plural2","synonym","synonymPlural","antonym","antonymPlural"];
-const CLEANUP_VERB_FORMS=["past","present","imperative","masdar","activePart","passivePart"];
+const CLEANUP_OPTIONAL_EXTRAS=new Set(["plural2","synonym","synonymPlural","antonym","antonymPlural"]);
 
 function CardCleanupTool({decks,cardStates,setCardStates,trackUsage}) {
   const [phase,setPhase]=useState("idle"); // idle | scanning | review | done
   const [progress,setProgress]=useState({current:0,total:0});
   const [proposals,setProposals]=useState([]);
   const [error,setError]=useState("");
+  const [selectedDecks,setSelectedDecks]=useState(()=>new Set(decks.map(d=>d.id)));
+
+  const toggleCleanupDeck=id=>setSelectedDecks(p=>{const n=new Set(p);n.has(id)?n.delete(id):n.add(id);return n;});
+  const selectAllDecks=()=>setSelectedDecks(new Set(decks.map(d=>d.id)));
+  const clearAllDecks=()=>setSelectedDecks(new Set());
 
   const candidates=(()=>{
     const out=[];
     for(const deck of decks){
+      if(!selectedDecks.has(deck.id)) continue;
       for(const card of (cardStates[deck.id]||[])){
-        const formsToCheck=card.wordType==="verb"
-          ?[...CLEANUP_OPTIONAL_EXTRAS,...CLEANUP_VERB_FORMS]
-          :CLEANUP_OPTIONAL_EXTRAS;
-        const present=formsToCheck.filter(f=>card.forms?.[f]);
+        // Audit every form present on the card — core + optional + verb conjugations
+        const present=Object.keys(card.forms||{}).filter(k=>card.forms[k]);
         if(present.length) out.push({card,deckId:deck.id,formsToCheck:present});
       }
     }
@@ -1023,13 +1026,13 @@ function CardCleanupTool({decks,cardStates,setCardStates,trackUsage}) {
       const prompt=`You are auditing flashcards for an Arabic language learner (B2 level). For each form on each card, decide:
 - "keep" — the form is correct, common, and pedagogically valuable
 - "drop" — rare, archaic, redundant, technical, or low-value (be conservative; do NOT drop unless clearly low-value)
-- "replace" (VERBS ONLY) — the form is incorrect or non-standard; provide the most common correct form
+- "replace" — the form is wrong, has a typo, or is non-standard; provide the most common correct form
 
 Rules:
-- For NOUN/ADJECTIVE/OTHER cards: only "keep" or "drop" — never "replace".
-- For VERB cards: "keep", "drop", or "replace" all allowed. Replacement values MUST have full tashkeel.
-- Optional extras (plural2, synonym, synonymPlural, antonym, antonymPlural): drop unless naturally common and worth knowing.
-- Verb conjugations (past, present, imperative, masdar, activePart, passivePart): usually keep; replace if wrong; drop only if extremely uncommon.
+- BE CONSERVATIVE. Default to "keep" unless there is a clear, specific issue. Do not "fix" forms that are merely stylistic preferences.
+- "replace" is allowed for ANY form on ANY word type — but only when there's a real correctness issue (typo, wrong conjugation, non-standard inflection, missing tashkeel, etc.).
+- "drop" is only for OPTIONAL forms (plural2, synonym, synonymPlural, antonym, antonymPlural) when they are rare/archaic/low-value. NEVER drop core forms (singular, plural, masculine, feminine, past, present, imperative, masdar, activePart, passivePart, harf) — for those, "keep" or "replace" only.
+- Replacement values MUST have full tashkeel.
 
 Cards:
 ${cardsBlock}
@@ -1105,10 +1108,32 @@ CRITICAL: Every Arabic word in any "value" field MUST have full tashkeel.`;
       </div>
 
       {phase==="idle"&&(
-        <button className="btn btn-primary" onClick={startScan} disabled={!candidates.length}
-          style={{width:"100%",padding:12,borderRadius:"var(--rs)",fontSize:13,opacity:candidates.length?1:0.5}}>
-          <Sparkles size={14}/> Scan {candidates.length} card{candidates.length===1?"":"s"}
-        </button>
+        <div style={{display:"flex",flexDirection:"column",gap:10}}>
+          <div>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
+              <div style={{fontSize:11.5,fontWeight:700,color:"var(--text3)",letterSpacing:".08em",textTransform:"uppercase"}}>Decks to audit ({selectedDecks.size}/{decks.length})</div>
+              <div style={{display:"flex",gap:6}}>
+                <button className="btn btn-sm" onClick={selectAllDecks} disabled={selectedDecks.size===decks.length} style={{background:"var(--accent-bg)",color:"var(--accent)",border:"1px solid var(--accent-border)",padding:"3px 8px",fontSize:11,opacity:selectedDecks.size===decks.length?0.5:1}}>All</button>
+                <button className="btn btn-sm" onClick={clearAllDecks} disabled={selectedDecks.size===0} style={{background:"var(--surface2)",color:"var(--text2)",padding:"3px 8px",fontSize:11,opacity:selectedDecks.size===0?0.5:1}}>Clear</button>
+              </div>
+            </div>
+            <div style={{display:"flex",flexWrap:"wrap",gap:5,maxHeight:160,overflowY:"auto",padding:"4px 0"}}>
+              {decks.map(d=>{
+                const on=selectedDecks.has(d.id);
+                const count=(cardStates[d.id]||[]).length;
+                return (
+                  <button key={d.id} className={`chip ${on?"chip-on":""}`} onClick={()=>toggleCleanupDeck(d.id)} style={{fontSize:11.5,padding:"4px 9px"}}>
+                    {d.title} <span style={{opacity:.7}}>· {count}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+          <button className="btn btn-primary" onClick={startScan} disabled={!candidates.length}
+            style={{width:"100%",padding:12,borderRadius:"var(--rs)",fontSize:13,opacity:candidates.length?1:0.5}}>
+            <Sparkles size={14}/> Scan {candidates.length} card{candidates.length===1?"":"s"}
+          </button>
+        </div>
       )}
 
       {phase==="scanning"&&(
