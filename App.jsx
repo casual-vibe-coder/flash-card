@@ -982,7 +982,188 @@ function LoginScreen({onLogin,loading,error}) {
 // ─────────────────────────────────────────────────────────────
 // SETTINGS
 // ─────────────────────────────────────────────────────────────
-function SettingsScreen({settings,setSettings,onBack,usage,user,onSignOut,onReplayOnboarding,studyLog,onUpdateTargets}) {
+// ─────────────────────────────────────────────────────────────
+// CARD CLEANUP TOOL — strip extras, correct verbs across all decks
+// ─────────────────────────────────────────────────────────────
+const CLEANUP_OPTIONAL_EXTRAS=["plural2","synonym","synonymPlural","antonym","antonymPlural"];
+const CLEANUP_VERB_FORMS=["past","present","imperative","masdar","activePart","passivePart"];
+
+function CardCleanupTool({decks,cardStates,setCardStates,trackUsage}) {
+  const [phase,setPhase]=useState("idle"); // idle | scanning | review | done
+  const [progress,setProgress]=useState({current:0,total:0});
+  const [proposals,setProposals]=useState([]);
+  const [error,setError]=useState("");
+
+  const candidates=(()=>{
+    const out=[];
+    for(const deck of decks){
+      for(const card of (cardStates[deck.id]||[])){
+        const formsToCheck=card.wordType==="verb"
+          ?[...CLEANUP_OPTIONAL_EXTRAS,...CLEANUP_VERB_FORMS]
+          :CLEANUP_OPTIONAL_EXTRAS;
+        const present=formsToCheck.filter(f=>card.forms?.[f]);
+        if(present.length) out.push({card,deckId:deck.id,formsToCheck:present});
+      }
+    }
+    return out;
+  })();
+
+  const startScan=async()=>{
+    setError("");setProposals([]);setPhase("scanning");
+    setProgress({current:0,total:candidates.length});
+    const all=[];
+    const BATCH=3;
+    for(let i=0;i<candidates.length;i+=BATCH){
+      const batch=candidates.slice(i,i+BATCH);
+      const cardsBlock=batch.map(({card,formsToCheck})=>{
+        const formsText=formsToCheck.map(f=>`  ${f}: "${card.forms[f]}"`).join("\n");
+        return `Card id="${card.id}" english="${card.english}" arabic="${card.arabicBase}" type=${card.wordType}\n${formsText}`;
+      }).join("\n\n");
+
+      const prompt=`You are auditing flashcards for an Arabic language learner (B2 level). For each form on each card, decide:
+- "keep" — the form is correct, common, and pedagogically valuable
+- "drop" — rare, archaic, redundant, technical, or low-value (be conservative; do NOT drop unless clearly low-value)
+- "replace" (VERBS ONLY) — the form is incorrect or non-standard; provide the most common correct form
+
+Rules:
+- For NOUN/ADJECTIVE/OTHER cards: only "keep" or "drop" — never "replace".
+- For VERB cards: "keep", "drop", or "replace" all allowed. Replacement values MUST have full tashkeel.
+- Optional extras (plural2, synonym, synonymPlural, antonym, antonymPlural): drop unless naturally common and worth knowing.
+- Verb conjugations (past, present, imperative, masdar, activePart, passivePart): usually keep; replace if wrong; drop only if extremely uncommon.
+
+Cards:
+${cardsBlock}
+
+Return ONLY a valid JSON array, one object per card, in the same order:
+[{"id":"<card-id>","decisions":{"<formKey>":{"action":"keep"} | {"action":"drop"} | {"action":"replace","value":"الكلمة المصححة بتشكيل كامل"}}}]
+
+CRITICAL: Every Arabic word in any "value" field MUST have full tashkeel.`;
+
+      try {
+        const raw=await callClaudeWithTashkeel(prompt,1800,"regen",trackUsage);
+        const parsed=extractJSON(raw);
+        const arr=Array.isArray(parsed)?parsed:[parsed];
+        for(const entry of arr){
+          const cand=batch.find(c=>c.card.id===entry.id);
+          if(!cand) continue;
+          all.push({
+            cardId:cand.card.id,
+            deckId:cand.deckId,
+            english:cand.card.english,
+            arabicBase:cand.card.arabicBase,
+            wordType:cand.card.wordType,
+            currentForms:{...cand.card.forms},
+            decisions:entry.decisions||{},
+          });
+        }
+      } catch(e){
+        console.error("Cleanup batch failed:",e);
+      }
+      setProgress({current:Math.min(i+BATCH,candidates.length),total:candidates.length});
+    }
+    const changed=all.filter(p=>Object.values(p.decisions||{}).some(d=>d.action==="drop"||d.action==="replace"));
+    setProposals(changed);
+    setPhase(changed.length?"review":"done");
+  };
+
+  const apply=()=>{
+    setCardStates(prev=>{
+      const next={...prev};
+      for(const p of proposals){
+        const list=next[p.deckId]||[];
+        next[p.deckId]=list.map(c=>{
+          if(c.id!==p.cardId) return c;
+          const newForms={...c.forms};
+          for(const [k,d] of Object.entries(p.decisions)){
+            if(d.action==="drop") delete newForms[k];
+            else if(d.action==="replace"&&d.value) newForms[k]=d.value;
+          }
+          return {...c,forms:newForms};
+        });
+      }
+      return next;
+    });
+    showToast(`Updated ${proposals.length} card${proposals.length===1?"":"s"}`,"success");
+    setPhase("done");
+  };
+
+  const reset=()=>{setPhase("idle");setProposals([]);setProgress({current:0,total:0});setError("");};
+
+  const stats=(()=>{
+    let drops=0,replaces=0;
+    for(const p of proposals) for(const d of Object.values(p.decisions||{})){
+      if(d.action==="drop") drops++; else if(d.action==="replace") replaces++;
+    }
+    return {drops,replaces};
+  })();
+
+  return (
+    <div style={{background:"var(--surface)",border:"1.5px solid var(--border)",borderRadius:"var(--r)",padding:"15px 17px"}}>
+      <div className="sec">Card Cleanup</div>
+      <div style={{fontSize:13,color:"var(--text2)",lineHeight:1.6,marginBottom:10}}>
+        Audit your existing cards. Strips weak/archaic optional forms (plural2, synonyms, antonyms). For verbs, also corrects wrong conjugations. Uses your OpenRouter key.
+      </div>
+
+      {phase==="idle"&&(
+        <button className="btn btn-primary" onClick={startScan} disabled={!candidates.length}
+          style={{width:"100%",padding:12,borderRadius:"var(--rs)",fontSize:13,opacity:candidates.length?1:0.5}}>
+          <Sparkles size={14}/> Scan {candidates.length} card{candidates.length===1?"":"s"}
+        </button>
+      )}
+
+      {phase==="scanning"&&(
+        <div style={{textAlign:"center",padding:"14px 0",color:"var(--text2)",fontSize:13}}>
+          <RefreshCw size={14} className="spin" style={{marginRight:8,verticalAlign:"middle"}}/>
+          Reviewing card {progress.current} of {progress.total}…
+        </div>
+      )}
+
+      {phase==="review"&&(
+        <div>
+          <div style={{background:"var(--info-bg)",border:"1px solid var(--info-border)",borderRadius:"var(--rs)",padding:"10px 12px",marginBottom:10,fontSize:13}}>
+            <strong>{proposals.length}</strong> card{proposals.length===1?"":"s"} flagged · <strong>{stats.drops}</strong> drop{stats.drops===1?"":"s"} · <strong>{stats.replaces}</strong> correction{stats.replaces===1?"":"s"}
+          </div>
+          <div style={{maxHeight:340,overflowY:"auto",border:"1px solid var(--border)",borderRadius:"var(--rs)",padding:"8px 10px",marginBottom:10}}>
+            {proposals.map(p=>(
+              <div key={p.cardId} style={{padding:"8px 0",borderBottom:"1px solid var(--border)"}}>
+                <div style={{fontWeight:600,fontSize:13}}>{p.english} <span className="ar" style={{color:"var(--accent)"}}>· {p.arabicBase}</span></div>
+                <div style={{display:"flex",flexDirection:"column",gap:3,marginTop:4}}>
+                  {Object.entries(p.decisions).filter(([,d])=>d.action!=="keep").map(([k,d])=>(
+                    <div key={k} style={{fontSize:12,color:"var(--text3)"}}>
+                      <span style={{display:"inline-block",minWidth:90,fontWeight:500,color:"var(--text2)"}}>{FORM_LABELS[k]||k}:</span>
+                      <span className="ar" style={{textDecoration:d.action==="drop"?"line-through":"none",opacity:0.7}}> {p.currentForms[k]}</span>
+                      {d.action==="drop"&&<span style={{color:"var(--weak)",marginRight:5}}> ✗ drop</span>}
+                      {d.action==="replace"&&<span style={{color:"var(--know)",marginRight:5}}> → <span className="ar">{d.value}</span> ✏ correct</span>}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+          <div style={{display:"flex",gap:8}}>
+            <button className="btn" onClick={reset} style={{flex:1,background:"var(--surface2)",color:"var(--text2)",padding:"10px",borderRadius:"var(--rs)",fontSize:13}}>Cancel</button>
+            <button className="btn btn-primary" onClick={apply} style={{flex:2,padding:"10px",borderRadius:"var(--rs)",fontSize:13}}>
+              <Check size={14}/> Apply All
+            </button>
+          </div>
+        </div>
+      )}
+
+      {phase==="done"&&(
+        <div style={{background:"var(--know-bg)",border:"1px solid var(--know-border)",borderRadius:"var(--rs)",padding:"12px",fontSize:13,color:"var(--know)",textAlign:"center"}}>
+          {proposals.length===0?"All cards look good — no changes needed.":`Applied changes to ${proposals.length} card${proposals.length===1?"":"s"}.`}
+          <div style={{marginTop:8}}>
+            <button className="btn btn-ghost" onClick={reset} style={{fontSize:12,color:"var(--text3)"}}>Run again</button>
+          </div>
+        </div>
+      )}
+
+      {error&&<div style={{color:"var(--weak)",fontSize:12,marginTop:8}}>{error}</div>}
+    </div>
+  );
+}
+
+function SettingsScreen({settings,setSettings,onBack,usage,user,onSignOut,onReplayOnboarding,studyLog,onUpdateTargets,decks,cardStates,setCardStates,trackUsage}) {
   const [local,setLocal]=useState(settings);
   const [saved,setSaved]=useState(false);
   const set=(k,v)=>setLocal(p=>({...p,[k]:v}));
@@ -1091,6 +1272,8 @@ function SettingsScreen({settings,setSettings,onBack,usage,user,onSignOut,onRepl
 
         <SRSSettingsPanel srsSettings={local.srs} onChange={srs=>set("srs",srs)}/>
 
+        <CardCleanupTool decks={decks} cardStates={cardStates} setCardStates={setCardStates} trackUsage={trackUsage}/>
+
         <button className="btn btn-primary" onClick={save} style={{width:"100%",padding:14,borderRadius:"var(--r)",fontSize:15}}>
           {saved?<><Check size={16}/>Saved</>:<><Save size={15}/>Save Settings</>}
         </button>
@@ -1169,6 +1352,7 @@ Return ONLY valid JSON array, no markdown:
 [{"english":"...","arabicBase":"Arabic with diacritics","wordType":"${wordType}","forms":{${selForms.map(f=>`"${f}":"Arabic with diacritics or empty string"`).join(",")}}}]
 
 Rules: exactly ${chunk.length} objects in same order.
+- The "forms" object MUST contain ONLY these keys: ${selForms.map(f=>`"${f}"`).join(", ")}. Do NOT add any other keys (e.g. no extra forms, conjugations, particles, or variants the user did not request).
 - Use "" for any form that does not naturally exist or is extremely rare/unnatural (e.g. no synonym, no antonym, no plural for an uncountable noun). Do NOT invent or force rare forms — only include commonly used ones.
 CRITICAL: Every Arabic word MUST have full tashkeel (فَتْحَة ضَمَّة كَسْرَة سُكُون شَدَّة تَنْوِين) — no bare letters.`,
           Math.min(4000, chunk.length*600),"flashcard",trackUsage
@@ -1191,7 +1375,13 @@ CRITICAL: Every Arabic word MUST have full tashkeel (فَتْحَة ضَمَّة
 
   const save=()=>{
     if(!preview?.length) return;
-    onSave(preview.map((c,i)=>({...c,id:`c${Date.now()}-${i}`,status:"new",forms:Object.fromEntries(Object.entries(c.forms||{}).filter(([,v])=>v))})));
+    const allowed=new Set(selForms);
+    onSave(preview.map((c,i)=>({
+      ...c,
+      id:`c${Date.now()}-${i}`,
+      status:"new",
+      forms:Object.fromEntries(Object.entries(c.forms||{}).filter(([k,v])=>v&&allowed.has(k))),
+    })));
   };
 
   return (
@@ -1595,7 +1785,7 @@ CRITICAL: Every Arabic word MUST have full tashkeel (فَتْحَة ضَمَّة
 // ─────────────────────────────────────────────────────────────
 // STUDY SCREEN
 // ─────────────────────────────────────────────────────────────
-function StudyScreen({cards,currentIndex,onSwipe,onBack,onExit,trackUsage,decks,cardStates,onAddToFlashcard,activeFormOverride}) {
+function StudyScreen({cards,currentIndex,onSwipe,onBack,canUndo,onExit,trackUsage,decks,cardStates,onAddToFlashcard,activeFormOverride}) {
   const [flipped,setFlipped]=useState(false);
   const [selForm,setSelForm]=useState(null);
   const [gen,setGen]=useState(null);
@@ -1625,16 +1815,25 @@ function StudyScreen({cards,currentIndex,onSwipe,onBack,onExit,trackUsage,decks,
     setGenLoading(true);setGen(null);
     try {
       const avoidClause=prevSentence?`\nDo NOT reuse or closely resemble this previous sentence: "${prevSentence}"`:"";
-      const knownVocab=Object.values(cardStates).flat().filter(c=>c.status==="known"||c.status==="weak").slice(0,20).map(c=>c.arabicBase).join("، ");
+      // Pull a wide pool of words the user has studied, shuffled fresh each time
+      const learnedPool=Object.values(cardStates).flat().filter(c=>c.status==="known"||c.status==="weak");
+      const learnedSample=[...learnedPool].sort(()=>Math.random()-0.5).slice(0,60).map(c=>c.arabicBase).join("، ");
       const raw=await callClaudeWithTashkeel(
-        `Arabic teacher creating flashcard learning aid.
+        `Arabic teacher creating a flashcard learning aid.
 Word: "${card.english}" · Arabic form "${arabicForm}" (${formLabel})
-Generate: 1) Short natural Arabic sentence (6-10w) using EXACTLY: ${arabicForm}  2) English translation  3) Vivid DALL-E scene (2-3 sentences, real everyday Arabic life, no Arabic text in scene)${avoidClause}
-${knownVocab?`Try to naturally include some of these known words in the sentence where possible: ${knownVocab}`:""}
+Generate:
+1) ONE short Arabic sentence (6-12 words) using EXACTLY: ${arabicForm}
+2) English translation
+3) Vivid DALL-E scene (2-3 sentences, real everyday Arabic life, no Arabic text in scene)${avoidClause}
+
+QUALITY RULES — non-negotiable:
+- The sentence MUST sound natural and useful, like something a fluent speaker would actually say in daily life. No textbook-stiff phrasing, no contrived "the cat sat on the mat" filler.
+- Weave in as many of the learner's already-studied words as fits naturally (do NOT force them — natural use only). Pool: ${learnedSample||"(none yet)"}
+- Grammatically correct and idiomatic Modern Standard Arabic.
 
 CRITICAL: Every single Arabic word MUST have full tashkeel — no bare letters.
 Return ONLY valid JSON: {"sentence":"...","translation":"...","imagePrompt":"..."}`,
-        600,"sentence",trackUsage
+        700,"sentence",trackUsage
       );
       if(id!==genRef.current) return;
       const parsed=extractJSON(raw);
@@ -1660,7 +1859,7 @@ Return ONLY valid JSON: {"sentence":"...","translation":"...","imagePrompt":"...
       if(e.key===" "||e.key==="Enter"){e.preventDefault();if(!flipped) setFlipped(true);}
       if(flipped&&e.key==="ArrowLeft"){e.preventDefault();onSwipe("left",card.id,selForm);}
       if(flipped&&e.key==="ArrowRight"){e.preventDefault();onSwipe("right",card.id,selForm);}
-      if(e.key==="ArrowUp"&&currentIndex>0){e.preventDefault();onBack();}
+      if(e.key==="ArrowUp"&&canUndo){e.preventDefault();onBack();}
     };
     window.addEventListener("keydown",handler);
     return ()=>window.removeEventListener("keydown",handler);
@@ -1688,7 +1887,7 @@ Return ONLY valid JSON: {"sentence":"...","translation":"...","imagePrompt":"...
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
         <button className="btn btn-ghost" onClick={onExit} style={{width:32,height:32}}><X size={14}/></button>
         <span style={{fontSize:13,color:"var(--text2)",fontWeight:600}}>{currentIndex+1} <span style={{color:"var(--text3)",fontWeight:400}}>/ {cards.length}</span></span>
-        <button className="btn btn-ghost" onClick={onBack} disabled={currentIndex===0} style={{width:32,height:32,opacity:currentIndex===0?0.3:1}}><ArrowLeft size={14}/></button>
+        <button className="btn btn-ghost" onClick={onBack} disabled={!canUndo} title="Undo last swipe" style={{width:32,height:32,opacity:canUndo?1:0.3}}><ArrowLeft size={14}/></button>
       </div>
       <div className="progress-track" style={{marginBottom:16}}><div className="progress-fill" style={{width:`${((currentIndex+1)/cards.length)*100}%`,background:"var(--accent)"}}/></div>
 
@@ -1957,29 +2156,35 @@ function MultiDeckCardSelector({decks,cardStates,selDeckIds,setSelDeckIds,selCar
 // READING — multi-deck + multi-card pool
 // ─────────────────────────────────────────────────────────────
 function ReadingScreen({decks,cardStates,onBack,onFinish,onAddToFlashcard,trackUsage,onLogStudy,master,masterPool}) {
+  const SCREEN_NAME=master?"masterReading":"reading";
+  const saved=useRef(loadScreen(SCREEN_NAME)||{}).current;
   const screenStart=useRef(Date.now());
   useEffect(()=>{screenStart.current=Date.now();return ()=>{
     const mins=Math.max(1,Math.round((Date.now()-screenStart.current)/60000));
     if(mins>=1&&onLogStudy) onLogStudy({type:"app",module:"reading",minutes:mins});
   };},[]);
   const [showSettings,setShowSettings]=useState(false);
-  const [settings,setSettings]=useState({length:"short",difficulty:"beginner",showTranslation:false,highlightVocab:true});
+  const [settings,setSettings]=useState(saved.settings||{length:"short",difficulty:"beginner",showTranslation:false,highlightVocab:true});
   const setSetting=(k,v)=>setSettings(p=>({...p,[k]:v}));
 
-  // Multi-deck selection — all decks selected by default
-  const [selDeckIds,setSelDeckIds]=useState(()=>new Set(decks.map(d=>d.id)));
-  // Multi-card selection — all cards selected by default
+  // Multi-deck selection — all decks selected by default (or restored)
+  const [selDeckIds,setSelDeckIds]=useState(()=>new Set(saved.selDeckIds||decks.map(d=>d.id)));
   const allInitCards=decks.flatMap(d=>(cardStates[d.id]||[]).map(c=>c.id));
-  const [selCardIds,setSelCardIds]=useState(()=>new Set(allInitCards));
+  const [selCardIds,setSelCardIds]=useState(()=>new Set(saved.selCardIds||allInitCards));
 
-  const [passage,setPassage]=useState(null);
+  const [passage,setPassage]=useState(saved.passage||null);
   const [generating,setGenerating]=useState(false);
   const [showTranslation,setShowTranslation]=useState(false);
   const [wordPopup,setWordPopup]=useState(null);
   const [showMiniRating,setShowMiniRating]=useState(false);
-  const [topics,setTopics]=useState([]);
-  const [activeTopic,setActiveTopic]=useState("");
+  const [topics,setTopics]=useState(saved.topics||[]);
+  const [activeTopic,setActiveTopic]=useState(saved.activeTopic||"");
   const [topicsLoading,setTopicsLoading]=useState(false);
+
+  // Persist screen state on change
+  useEffect(()=>{
+    saveScreen(SCREEN_NAME,{settings,selDeckIds:[...selDeckIds],selCardIds:[...selCardIds],passage,topics,activeTopic});
+  },[settings,selDeckIds,selCardIds,passage,topics,activeTopic,SCREEN_NAME]);
 
   const handleNextPassage=()=>{
     if(passage){setShowMiniRating(true);} else generateWithTopic(activeTopic);
@@ -2031,17 +2236,24 @@ function ReadingScreen({decks,cardStates,onBack,onFinish,onAddToFlashcard,trackU
     const targetLen=scaleLen(baseLenMap[settings.length]||"110-140");
     const maxTok=Math.min(4000,Math.max(1500,vocabCards.length*100));
     const topicClause=topic?`\nTopic/theme: "${topic}" — write the passage about this topic.`:"";
+    // Bonus pool of words the learner has already studied — to weave in beyond the required vocab
+    const learnedPool=Object.values(cardStates).flat().filter(c=>c.status==="known"||c.status==="weak");
+    const learnedSample=[...learnedPool].sort(()=>Math.random()-0.5).slice(0,80).map(c=>c.arabicBase).join("، ");
     try {
       const raw=await callClaudeWithTashkeel(
         `Expert Arabic language teacher creating reading practice.
 Deck: ${deckNames}
-Arabic vocabulary (MUST use every word): ${vocabCards.map(c=>c.arabicBase).join("، ")}${topicClause}
+Required Arabic vocabulary (MUST use every word at least once): ${vocabCards.map(c=>c.arabicBase).join("، ")}${topicClause}
 
 Write a ${settings.difficulty}-level Arabic reading passage of exactly ~${targetLen} words.
-Rules:
-- Include every Arabic word from the list above at least once — this is mandatory
-- Grammatically correct and coherent
-- CRITICAL: Every single Arabic word MUST have full tashkeel — no bare letters.
+
+QUALITY RULES — non-negotiable:
+- The passage MUST read naturally — like real prose a native speaker would write. No stilted, contrived, or "vocabulary-cramming" phrasing.
+- Include every word from the required vocabulary above at least once.
+- Beyond the required list, also weave in as many of the learner's other already-studied words as fits naturally — do NOT force them. Bonus pool: ${learnedSample||"(none)"}
+- Grammatically correct, coherent, idiomatic Modern Standard Arabic.
+
+CRITICAL: Every single Arabic word MUST have full tashkeel — no bare letters.
 
 Return ONLY valid JSON: {"arabic":"...","translation":"...","vocabUsed":["base form of each vocab word that appears"]}`,
         maxTok,"reading",trackUsage
@@ -2163,30 +2375,35 @@ Return ONLY valid JSON: {"arabic":"...","translation":"...","vocabUsed":["base f
 // LISTENING — multi-deck + multi-card pool
 // ─────────────────────────────────────────────────────────────
 function ListeningScreen({decks,cardStates,onBack,onFinish,onAddToFlashcard,trackUsage,onLogStudy,master,masterPool}) {
+  const SCREEN_NAME=master?"masterListening":"listening";
+  const saved=useRef(loadScreen(SCREEN_NAME)||{}).current;
   const screenStart=useRef(Date.now());
   useEffect(()=>{screenStart.current=Date.now();return ()=>{
     const mins=Math.max(1,Math.round((Date.now()-screenStart.current)/60000));
     if(mins>=1&&onLogStudy) onLogStudy({type:"app",module:"listening",minutes:mins});
   };},[]);
   const [showSettings,setShowSettings]=useState(false);
-  const [settings,setSettings]=useState({length:"short",difficulty:"beginner",speed:0.82,showArabicDefault:false,showEnglishDefault:false,highlightVocab:true});
+  const [settings,setSettings]=useState(saved.settings||{length:"short",difficulty:"beginner",speed:0.82,showArabicDefault:false,showEnglishDefault:false,highlightVocab:true});
   const setSetting=(k,v)=>setSettings(p=>({...p,[k]:v}));
 
-  // Multi-deck selection — all selected by default
-  const [selDeckIds,setSelDeckIds]=useState(()=>new Set(decks.map(d=>d.id)));
+  const [selDeckIds,setSelDeckIds]=useState(()=>new Set(saved.selDeckIds||decks.map(d=>d.id)));
   const allInitCards=decks.flatMap(d=>(cardStates[d.id]||[]).map(c=>c.id));
-  const [selCardIds,setSelCardIds]=useState(()=>new Set(allInitCards));
+  const [selCardIds,setSelCardIds]=useState(()=>new Set(saved.selCardIds||allInitCards));
 
-  const [content,setContent]=useState(null);
+  const [content,setContent]=useState(saved.content||null);
   const [generating,setGenerating]=useState(false);
   const [showArabic,setShowArabic]=useState(false);
   const [showEnglish,setShowEnglish]=useState(false);
   const [playing,setPlaying]=useState(false);
   const [wordPopup,setWordPopup]=useState(null);
   const [showMiniRating,setShowMiniRating]=useState(false);
-  const [topics,setTopics]=useState([]);
-  const [activeTopic,setActiveTopic]=useState("");
+  const [topics,setTopics]=useState(saved.topics||[]);
+  const [activeTopic,setActiveTopic]=useState(saved.activeTopic||"");
   const [topicsLoading,setTopicsLoading]=useState(false);
+
+  useEffect(()=>{
+    saveScreen(SCREEN_NAME,{settings,selDeckIds:[...selDeckIds],selCardIds:[...selCardIds],content,topics,activeTopic});
+  },[settings,selDeckIds,selCardIds,content,topics,activeTopic,SCREEN_NAME]);
 
   const handleNextPassage=()=>{if(content){setShowMiniRating(true);}else generateWithTopic(activeTopic);};
   const submitMiniRating=(rating)=>{if(rating&&onLogStudy) onLogStudy({type:"app",module:"listening",minutes:0,rating,master:!!master});setShowMiniRating(false);generateWithTopic(activeTopic);};
@@ -2227,17 +2444,24 @@ function ListeningScreen({decks,cardStates,onBack,onFinish,onAddToFlashcard,trac
     const targetLen=scaleLen(baseLenMap[settings.length]||"90-120");
     const maxTok=Math.min(4000,Math.max(1200,vocabCards.length*100));
     const topicClause=topic?`\nTopic/theme: "${topic}" — write about this topic.`:"";
+    // Bonus pool of words the learner has already studied — to weave in beyond the required vocab
+    const learnedPool=Object.values(cardStates).flat().filter(c=>c.status==="known"||c.status==="weak");
+    const learnedSample=[...learnedPool].sort(()=>Math.random()-0.5).slice(0,80).map(c=>c.arabicBase).join("، ");
     try {
       const raw=await callClaudeWithTashkeel(
         `Arabic teacher creating listening practice.
 Deck: ${deckNames}
-Arabic vocabulary (MUST use every word): ${vocabCards.map(c=>c.arabicBase).join("، ")}${topicClause}
+Required Arabic vocabulary (MUST use every word at least once): ${vocabCards.map(c=>c.arabicBase).join("، ")}${topicClause}
 
 Write a ${settings.difficulty}-level spoken Arabic passage of exactly ~${targetLen} words.
-Rules:
-- Include every Arabic word from the list above at least once — this is mandatory
-- Natural conversational tone suitable for listening
-- CRITICAL: Every single Arabic word MUST have full tashkeel — no bare letters.
+
+QUALITY RULES — non-negotiable:
+- The passage MUST sound natural and conversational — like real spoken Arabic, not a vocabulary list dressed up as a paragraph.
+- Include every word from the required vocabulary above at least once.
+- Beyond the required list, weave in as many of the learner's other already-studied words as fits naturally — do NOT force them. Bonus pool: ${learnedSample||"(none)"}
+- Grammatically correct and idiomatic.
+
+CRITICAL: Every single Arabic word MUST have full tashkeel — no bare letters.
 
 Return ONLY valid JSON: {"arabic":"...","translation":"...","vocabUsed":["base form of each vocab word that appears"]}`,
         maxTok,"listening",trackUsage
@@ -2527,30 +2751,40 @@ function Onboarding({onComplete}) {
 // CONVERSATION MODULE
 // ─────────────────────────────────────────────────────────────
 function ConversationScreen({decks,cardStates,onBack,onFinish,trackUsage,onLogStudy,onAddToFlashcard,master,masterPool}) {
+  const SCREEN_NAME=master?"masterSpeaking":"conversation";
+  const saved=useRef(loadScreen(SCREEN_NAME)||{}).current;
   const screenStart=useRef(Date.now());
   useEffect(()=>{screenStart.current=Date.now();return ()=>{
     const mins=Math.max(1,Math.round((Date.now()-screenStart.current)/60000));
     if(mins>=1&&onLogStudy) onLogStudy({type:"app",module:"speaking",minutes:mins});
   };},[]);
-  const [selDeckIds,setSelDeckIds]=useState(()=>new Set(decks.map(d=>d.id)));
+  const [selDeckIds,setSelDeckIds]=useState(()=>new Set(saved.selDeckIds||decks.map(d=>d.id)));
   const allInitCards=decks.flatMap(d=>(cardStates[d.id]||[]).map(c=>c.id));
-  const [selCardIds,setSelCardIds]=useState(()=>new Set(allInitCards));
+  const [selCardIds,setSelCardIds]=useState(()=>new Set(saved.selCardIds||allInitCards));
 
   // Phase: setup → topics → mission → chat → score → review
-  const [phase,setPhase]=useState("setup");
-  const [messages,setMessages]=useState([]);
+  const [phase,setPhase]=useState(saved.phase||"setup");
+  const [messages,setMessages]=useState(saved.messages||[]);
   const [input,setInput]=useState("");
   const [loading,setLoading]=useState(false);
-  const [voiceMode,setVoiceMode]=useState(false);
+  const [voiceMode,setVoiceMode]=useState(saved.voiceMode||false);
   const [listening,setListening]=useState(false);
   const [speaking,setSpeaking]=useState(false);
   const [wordPopup,setWordPopup]=useState(null);
-  const [topics,setTopics]=useState([]);
-  const [selectedTopic,setSelectedTopic]=useState("");
-  const [missionWords,setMissionWords]=useState([]);
-  const [usedMissionWords,setUsedMissionWords]=useState(new Set());
-  const [corrections,setCorrections]=useState([]);
+  const [topics,setTopics]=useState(saved.topics||[]);
+  const [selectedTopic,setSelectedTopic]=useState(saved.selectedTopic||"");
+  const [missionWords,setMissionWords]=useState(saved.missionWords||[]);
+  const [usedMissionWords,setUsedMissionWords]=useState(new Set(saved.usedMissionWords||[]));
+  const [corrections,setCorrections]=useState(saved.corrections||[]);
   const [sessionRating,setSessionRatingLocal]=useState(0);
+
+  useEffect(()=>{
+    saveScreen(SCREEN_NAME,{
+      selDeckIds:[...selDeckIds],selCardIds:[...selCardIds],
+      phase,messages,voiceMode,topics,selectedTopic,
+      missionWords,usedMissionWords:[...usedMissionWords],corrections,
+    });
+  },[selDeckIds,selCardIds,phase,messages,voiceMode,topics,selectedTopic,missionWords,usedMissionWords,corrections,SCREEN_NAME]);
   const chatRef=useRef(null);
   const recognitionRef=useRef(null);
 
@@ -2634,14 +2868,20 @@ Return ONLY valid JSON array: ["topic 1","topic 2","topic 3","topic 4"]`,
   const startWithTopic=async(topic)=>{
     setSelectedTopic(topic);setPhase("chat");setLoading(true);setMessages([]);setUsedMissionWords(new Set());setCorrections([]);
     const missionList=missionWords.map(c=>`${c.english} (${c.arabicBase})`).join(", ");
+    const learnedPool=Object.values(cardStates).flat().filter(c=>c.status==="known"||c.status==="weak");
+    const learnedSample=[...learnedPool].sort(()=>Math.random()-0.5).slice(0,60).map(c=>c.arabicBase).join("، ");
     try {
       const raw=await callClaudeWithTashkeel(
         `You are a friendly Arabic conversation partner. Topic: "${topic}"
-Key vocabulary the learner should practice: ${missionList}
+Key vocabulary the learner should practice (mission words): ${missionList}
 
-Start a natural conversation about "${topic}" in Arabic. Use 2-3 of the vocabulary words.
+Start a natural conversation about "${topic}" in Arabic. Use 2-3 of the mission words.
 Write 2-3 short sentences. Keep it beginner-friendly.
 After your Arabic, add a line break and English translation in parentheses.
+
+QUALITY RULES — non-negotiable:
+- Speak naturally — like a real friend chatting, not a textbook example.
+- Beyond the mission words, weave in the learner's other studied words where they fit naturally. Bonus pool: ${learnedSample||"(none)"}
 
 CRITICAL: Every Arabic word MUST have full tashkeel.
 Return plain text, NOT JSON.`,
@@ -2665,10 +2905,12 @@ Return plain text, NOT JSON.`,
 
     const missionList=missionWords.map(c=>`${c.english} (${c.arabicBase})`).join(", ");
     const history=messages.slice(-6).map(m=>`${m.role==="ai"?"Assistant":"User"}: ${m.text}`).join("\n");
+    const learnedPool=Object.values(cardStates).flat().filter(c=>c.status==="known"||c.status==="weak");
+    const learnedSample=[...learnedPool].sort(()=>Math.random()-0.5).slice(0,60).map(c=>c.arabicBase).join("، ");
     try {
       const raw=await callClaudeWithTashkeel(
         `You are a friendly Arabic conversation partner. Topic: "${selectedTopic}"
-Vocabulary to encourage: ${missionList}
+Mission vocabulary to encourage: ${missionList}
 
 Conversation so far:
 ${history}
@@ -2676,12 +2918,14 @@ User: ${userMsg}
 
 Instructions:
 1. First, if the user's Arabic has any mistakes, write a brief correction line starting with [تَصْحِيح]: showing the corrected sentence. Be medium strictness — fix grammar, word usage, sentence structure. Skip this if the message was in English or had no errors.
-2. Then continue the conversation naturally in Arabic (2-3 sentences). Try to use vocabulary from the list.
+2. Then continue the conversation naturally in Arabic (2-3 sentences). Try to use mission vocabulary AND weave in other words the learner has already studied where they fit naturally (do NOT force them). Bonus pool: ${learnedSample||"(none)"}
 3. End with English translation in parentheses.
+
+QUALITY RULE — non-negotiable: Speak naturally, like a real friend chatting. No textbook stiffness.
 
 CRITICAL: Every Arabic word MUST have full tashkeel.
 Return plain text, NOT JSON.`,
-        600,"other",trackUsage
+        650,"other",trackUsage
       );
       // Extract correction if present
       const corrMatch=raw.match(/\[تَصْحِيح\][:：]\s*(.+?)(?:\n|$)/);
@@ -2893,14 +3137,16 @@ Return plain text, NOT JSON.`,
 // ─────────────────────────────────────────────────────────────
 // MASTER REVIEW — Anki-style across all decks
 // ─────────────────────────────────────────────────────────────
-function MasterReviewScreen({decks,cardStates,onBack,onSwipeCard,trackUsage,onAddToFlashcard,studyLog,onLogStudy,onMasterReading,onMasterListening,onMasterSpeaking}) {
-  const [started,setStarted]=useState(false);
-  const [mode,setMode]=useState("smart");
-  const [limit,setLimit]=useState(50);
-  const [masterModulePool,setMasterModulePool]=useState("all");
-  const [sessionCards,setSessionCards]=useState([]);
-  const [idx,setIdx]=useState(0);
-  const [results,setResults]=useState({known:0,weak:0});
+function MasterReviewScreen({decks,cardStates,onBack,onSwipeCard,onUndoSwipe,trackUsage,onAddToFlashcard,studyLog,onLogStudy,onMasterReading,onMasterListening,onMasterSpeaking}) {
+  const SCREEN_NAME="masterReview";
+  const saved=useRef(loadScreen(SCREEN_NAME)||{}).current;
+  const [started,setStarted]=useState(saved.started||false);
+  const [mode,setMode]=useState(saved.mode||"smart");
+  const [limit,setLimit]=useState(saved.limit||50);
+  const [masterModulePool,setMasterModulePool]=useState(saved.masterModulePool||"all");
+  const [sessionCards,setSessionCards]=useState(saved.sessionCards||[]);
+  const [idx,setIdx]=useState(typeof saved.idx==="number"?saved.idx:0);
+  const [results,setResults]=useState(saved.results||{known:0,weak:0});
   const [flipped,setFlipped]=useState(false);
   const [gen,setGen]=useState(null);
   const [genLoading,setGenLoading]=useState(false);
@@ -2910,7 +3156,16 @@ function MasterReviewScreen({decks,cardStates,onBack,onSwipeCard,trackUsage,onAd
   const [selForm,setSelForm]=useState(null);
   const startRef=useRef(null);
   // Persist session for resume
-  const [savedSession,setSavedSession]=useState(null); // {cards,idx,results,mode}
+  const [savedSession,setSavedSession]=useState(saved.savedSession||null); // {cards,idx,results,mode}
+  // Undo history: snapshots of {prevCard, prevIdx, prevResults, deckId}
+  const swipeHist=useRef([]);
+
+  // Persist screen state only while a session is active or pausable; otherwise leave storage cleared
+  useEffect(()=>{
+    if(started||savedSession){
+      saveScreen(SCREEN_NAME,{started,mode,limit,masterModulePool,sessionCards,idx,results,savedSession});
+    }
+  },[started,mode,limit,masterModulePool,sessionCards,idx,results,savedSession]);
 
   const allCards=Object.values(cardStates).flat();
   const now=Date.now();
@@ -2938,7 +3193,7 @@ function MasterReviewScreen({decks,cardStates,onBack,onSwipeCard,trackUsage,onAd
       pool.forEach(c=>{if(deckCards.has(c.id)&&!tagged.find(t=>t.id===c.id)) tagged.push({...c,_deckId:deck.id});});
     }
     setSessionCards(tagged);setIdx(0);setResults({known:0,weak:0});setFlipped(false);setStarted(true);
-    setSavedSession(null);startRef.current=Date.now();
+    setSavedSession(null);swipeHist.current=[];startRef.current=Date.now();
   };
 
   const resumeSession=()=>{
@@ -2950,6 +3205,17 @@ function MasterReviewScreen({decks,cardStates,onBack,onSwipeCard,trackUsage,onAd
   const handleSwipe=(dir)=>{
     const card=sessionCards[idx];
     const ns=dir==="right"?"known":"weak";
+    // Snapshot for undo BEFORE mutating
+    const prevDeckCards=cardStates[card._deckId]||[];
+    const prevCard=prevDeckCards.find(c=>c.id===card.id);
+    if(prevCard){
+      swipeHist.current.push({
+        prevCard:JSON.parse(JSON.stringify(prevCard)),
+        prevIdx:idx,
+        prevResults:{...results},
+        deckId:card._deckId,
+      });
+    }
     const newResults={...results,[ns]:results[ns]+1};
     setResults(newResults);
     onSwipeCard(card._deckId,card.id,ns,selForm);
@@ -2965,7 +3231,19 @@ function MasterReviewScreen({decks,cardStates,onBack,onSwipeCard,trackUsage,onAd
         onLogStudy({type:"app",module:"vocab",minutes:mins,subtype:"master-review"});
       }
       setStarted(false);setMode("done");setSavedSession(null);
+      saveScreen(SCREEN_NAME,null);saveSession(null);
     }
+  };
+
+  const undoMasterSwipe=()=>{
+    const snap=swipeHist.current.pop();
+    if(!snap) return;
+    if(onUndoSwipe) onUndoSwipe(snap.deckId,snap.prevCard);
+    setIdx(snap.prevIdx);
+    setResults(snap.prevResults);
+    setFlipped(false);setSelForm(null);setGen(null);setGenLoading(false);
+    if(window.speechSynthesis) window.speechSynthesis.cancel();setMPlaying(false);
+    setSavedSession({cards:sessionCards,idx:snap.prevIdx,results:snap.prevResults});
   };
 
   // Keyboard shortcuts
@@ -2999,8 +3277,8 @@ function MasterReviewScreen({decks,cardStates,onBack,onSwipeCard,trackUsage,onAd
             <div className="progress-fill" style={{width:`${pct}%`,background:pct>=70?"var(--know)":"var(--weak)"}}/>
           </div>
           <div style={{display:"flex",gap:8}}>
-            <button className="btn" onClick={()=>{setMode("smart");}} style={{flex:1,background:"var(--surface2)",color:"var(--text2)",padding:"13px",borderRadius:"var(--rs)",fontWeight:600}}>Review Again</button>
-            <button className="btn btn-primary" onClick={onBack} style={{flex:1,padding:"13px",borderRadius:"var(--rs)"}}> Home</button>
+            <button className="btn" onClick={()=>{saveScreen(SCREEN_NAME,null);saveSession(null);setMode("smart");}} style={{flex:1,background:"var(--surface2)",color:"var(--text2)",padding:"13px",borderRadius:"var(--rs)",fontWeight:600}}>Review Again</button>
+            <button className="btn btn-primary" onClick={()=>{saveScreen(SCREEN_NAME,null);saveSession(null);onBack();}} style={{flex:1,padding:"13px",borderRadius:"var(--rs)"}}> Home</button>
           </div>
         </div>
       </div>
@@ -3008,22 +3286,28 @@ function MasterReviewScreen({decks,cardStates,onBack,onSwipeCard,trackUsage,onAd
   }
 
   // Generate learning aid for master review cards
-  const allVocabForContext=Object.values(cardStates).flat().filter(c=>c.status==="known"||c.status==="weak").slice(0,30).map(c=>c.arabicBase).join("، ");
   const generateAid=async()=>{
     if(!selForm||genLoading||!card) return;
     const id=++genRef.current;
     const arabicForm=card.forms?.[selForm];if(!arabicForm) return;
     setGenLoading(true);setGen(null);
+    // Pull a wide pool of words the user has studied, shuffled fresh each time
+    const learnedPool=Object.values(cardStates).flat().filter(c=>c.status==="known"||c.status==="weak");
+    const learnedSample=[...learnedPool].sort(()=>Math.random()-0.5).slice(0,60).map(c=>c.arabicBase).join("، ");
     try {
       const raw=await callClaudeWithTashkeel(
-        `Arabic teacher creating flashcard learning aid.
+        `Arabic teacher creating a flashcard learning aid.
 Word: "${card.english}" · Arabic form "${arabicForm}" (${FORM_LABELS[selForm]||selForm})
-Generate: 1) Short natural Arabic sentence (6-10w) using EXACTLY: ${arabicForm}  2) English translation
-${allVocabForContext?`Try to naturally include some of these known words in the sentence: ${allVocabForContext}`:""}
+Generate: 1) ONE short Arabic sentence (6-12 words) using EXACTLY: ${arabicForm}  2) English translation
+
+QUALITY RULES — non-negotiable:
+- Sentence MUST sound natural and useful — like real speech, not textbook filler.
+- Weave in as many of the learner's already-studied words as fits naturally (do NOT force them). Pool: ${learnedSample||"(none yet)"}
+- Grammatically correct and idiomatic Modern Standard Arabic.
 
 CRITICAL: Every Arabic word MUST have full tashkeel.
 Return ONLY valid JSON: {"sentence":"...","translation":"..."}`,
-        400,"sentence",trackUsage
+        500,"sentence",trackUsage
       );
       if(id!==genRef.current) return;
       setGen(extractJSON(raw));
@@ -3056,7 +3340,10 @@ Return ONLY valid JSON: {"sentence":"...","translation":"..."}`,
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
           <button className="btn btn-ghost" onClick={()=>{setStarted(false);setMode("smart");}} style={{width:32,height:32}}><X size={14}/></button>
           <span style={{fontSize:13,color:"var(--text2)",fontWeight:600}}>{idx+1} / {sessionCards.length}</span>
-          <span style={{fontSize:12,color:"var(--text3)"}}><span style={{color:"var(--know)"}}>{results.known}✓</span> <span style={{color:"var(--weak)"}}>{results.weak}✗</span></span>
+          <div style={{display:"flex",alignItems:"center",gap:6}}>
+            <button className="btn btn-ghost" onClick={undoMasterSwipe} disabled={!swipeHist.current.length} title="Undo last swipe" style={{width:32,height:32,opacity:swipeHist.current.length?1:0.3}}><ArrowLeft size={14}/></button>
+            <span style={{fontSize:12,color:"var(--text3)"}}><span style={{color:"var(--know)"}}>{results.known}✓</span> <span style={{color:"var(--weak)"}}>{results.weak}✗</span></span>
+          </div>
         </div>
         <div className="progress-track" style={{marginBottom:16}}><div className="progress-fill" style={{width:`${((idx+1)/sessionCards.length)*100}%`,background:"var(--accent)"}}/></div>
 
@@ -3571,6 +3858,20 @@ function initUsage() {
   return {byTag};
 }
 
+// ─────────────────────────────────────────────────────────────
+// ACTIVE SESSION PERSISTENCE — keep work-in-progress across reload/navigation
+// ─────────────────────────────────────────────────────────────
+const SESSION_KEY="arabic_fc_active_session";
+const SCREEN_PREFIX="arabic_fc_screen_";
+const SESSION_TTL_MS=30*24*60*60*1000;
+const SESSION_SCREENS=new Set(["study","reading","listening","conversation","masterReading","masterListening","masterSpeaking","masterReview"]);
+const SCREEN_KEYS=["study","reading","listening","conversation","masterReading","masterListening","masterSpeaking","masterReview"];
+function loadSession(){try{const r=localStorage.getItem(SESSION_KEY);if(!r) return null;const s=JSON.parse(r);if(Date.now()-(s.savedAt||0)>SESSION_TTL_MS){localStorage.removeItem(SESSION_KEY);return null;}return s;}catch{return null;}}
+function saveSession(s){try{if(s===null) localStorage.removeItem(SESSION_KEY);else localStorage.setItem(SESSION_KEY,JSON.stringify({...s,savedAt:Date.now()}));}catch{}}
+function loadScreen(name){try{const r=localStorage.getItem(SCREEN_PREFIX+name);if(!r) return null;const s=JSON.parse(r);if(Date.now()-(s.savedAt||0)>SESSION_TTL_MS){localStorage.removeItem(SCREEN_PREFIX+name);return null;}return s;}catch{return null;}}
+function saveScreen(name,s){try{if(s===null) localStorage.removeItem(SCREEN_PREFIX+name);else localStorage.setItem(SCREEN_PREFIX+name,JSON.stringify({...s,savedAt:Date.now()}));}catch{}}
+function clearAllSessions(){saveSession(null);SCREEN_KEYS.forEach(n=>saveScreen(n,null));}
+
 export default function App() {
   const [screen,setScreen]=useState("home");
   const [decks,setDecks]=useState(SEED_DECKS);
@@ -3590,7 +3891,9 @@ export default function App() {
   const [showOnboarding,setShowOnboarding]=useState(false);
   const [sessionRating,setSessionRating]=useState(null);
   const [masterPool,setMasterPool]=useState("all"); // all, weak, due
+  const [sessionRestored,setSessionRestored]=useState(false);
   const sessionRes=useRef({known:0,weak:0});
+  const studyHistory=useRef([]); // [{prevCard, prevIdx, prevRes}] for undo
   const [darkMode,setDarkMode]=useState(()=>{
     const saved=localStorage.getItem("arabic_fc_dark");
     if(saved!==null) return saved==="true";
@@ -3654,6 +3957,46 @@ export default function App() {
     return ()=>clearTimeout(t);
   },[decks,cardStates,settings,usage,studyLog,user,dataLoaded]);
 
+  // Restore active session from localStorage once data is loaded
+  useEffect(()=>{
+    if(!dataLoaded||sessionRestored) return;
+    const saved=loadSession();
+    if(saved){
+      // If saved session references a deck that no longer exists, drop the whole session
+      const deckOk=!saved.activeDeckId||decks.some(x=>x.id===saved.activeDeckId);
+      if(!deckOk){
+        saveSession(null);
+      } else {
+        if(saved.activeDeckId){
+          const d=decks.find(x=>x.id===saved.activeDeckId);
+          if(d) setActiveDeck(d);
+        }
+        if(saved.masterPool) setMasterPool(saved.masterPool);
+        if(Array.isArray(saved.sessionCards)&&saved.sessionCards.length){
+          setSessionCards(saved.sessionCards);
+          if(typeof saved.currentIdx==="number") setCurrentIdx(saved.currentIdx);
+        }
+        if(saved.sessionRes) sessionRes.current={...saved.sessionRes};
+        if(saved.screen&&SESSION_SCREENS.has(saved.screen)) setScreen(saved.screen);
+      }
+    }
+    setSessionRestored(true);
+  },[dataLoaded,decks,sessionRestored]);
+
+  // Auto-save active session whenever session-screen state changes
+  useEffect(()=>{
+    if(!dataLoaded||!sessionRestored) return;
+    if(!SESSION_SCREENS.has(screen)) return;
+    saveSession({
+      screen,
+      activeDeckId:activeDeck?.id||null,
+      masterPool,
+      sessionCards,
+      currentIdx,
+      sessionRes:{...sessionRes.current},
+    });
+  },[screen,activeDeck,masterPool,sessionCards,currentIdx,dataLoaded,sessionRestored]);
+
   const handleSignIn=async()=>{
     setAuthLoading(true);setAuthError("");
     try {
@@ -3664,6 +4007,9 @@ export default function App() {
   };
 
   const handleSignOut=async()=>{
+    clearAllSessions();
+    studyHistory.current=[];
+    setSessionCards([]);setCurrentIdx(0);
     await signOut(auth);
     setScreen("home");
   };
@@ -3720,7 +4066,9 @@ export default function App() {
       :sortByDueDate(dc);
     if(!toStudy.length) return;
     studyStartRef.current=Date.now();
-    sessionRes.current={known:0,weak:0};setSessionCards(toStudy);
+    sessionRes.current={known:0,weak:0};
+    studyHistory.current=[]; // fresh undo stack on (re)start
+    setSessionCards(toStudy);
     const key=activeDeck.id+"_"+mode;
     const resumeIdx=(!restart&&savedIdx.current[key])||0;
     setCurrentIdx(Math.min(resumeIdx,toStudy.length-1));
@@ -3728,6 +4076,15 @@ export default function App() {
   };
   const handleSwipe=(dir,cardId,activeForm)=>{
     const ns=dir==="right"?"known":"weak";
+    // Snapshot for undo: previous card object and counters
+    const prevCard=(cardStates[activeDeck.id]||[]).find(c=>c.id===cardId);
+    if(prevCard){
+      studyHistory.current.push({
+        prevCard:JSON.parse(JSON.stringify(prevCard)),
+        prevIdx:currentIdx,
+        prevRes:{...sessionRes.current},
+      });
+    }
     sessionRes.current[ns==="known"?"known":"weak"]++;
     setCardStates(p=>({...p,[activeDeck.id]:p[activeDeck.id].map(c=>{
       if(c.id!==cardId) return c;
@@ -3747,14 +4104,31 @@ export default function App() {
       // Save progress for resume
       if(activeDeck) savedIdx.current[activeDeck.id+"_all"]=nextIdx;
     } else {
-      // Reset saved progress on completion, log study time
+      // Reset saved progress on completion, log study time, clear persisted session
       if(activeDeck){savedIdx.current[activeDeck.id+"_all"]=0;savedIdx.current[activeDeck.id+"_weak"]=0;}
       if(studyStartRef.current){
         const mins=Math.max(1,Math.round((Date.now()-studyStartRef.current)/60000));
         logStudy({type:"app",module:"vocab",minutes:mins});studyStartRef.current=null;
       }
+      saveSession(null);
+      studyHistory.current=[];
       go("complete");
     }
+  };
+
+  // Undo the most recent swipe in StudyScreen
+  const undoStudy=()=>{
+    const snap=studyHistory.current.pop();
+    if(!snap||!activeDeck) return;
+    setCardStates(p=>({...p,[activeDeck.id]:(p[activeDeck.id]||[]).map(c=>c.id===snap.prevCard.id?snap.prevCard:c)}));
+    sessionRes.current={...snap.prevRes};
+    setCurrentIdx(snap.prevIdx);
+  };
+
+  // Restore a card snapshot — used by MasterReview undo
+  const restoreCard=(deckId,prevCard)=>{
+    if(!deckId||!prevCard) return;
+    setCardStates(p=>({...p,[deckId]:(p[deckId]||[]).map(c=>c.id===prevCard.id?prevCard:c)}));
   };
   const saveCards=newCards=>{
     setCardStates(p=>({...p,[activeDeck.id]:[...(p[activeDeck.id]||[]),...newCards]}));
@@ -3797,21 +4171,21 @@ export default function App() {
 
   const screens={
     home:<HomeScreen {...commonProps} onOpenDeck={openDeck} onSettings={()=>go("settings")} onCreateDeck={()=>go("createDeck")} onReading={()=>go("reading")} onListening={()=>go("listening")} onConversation={()=>go("conversation")} onSearch={()=>setShowSearch(true)} onProgress={()=>go("progress")} onMasterReview={()=>go("masterReview")} darkMode={darkMode} onToggleDark={()=>setDarkMode(d=>!d)} studyLog={studyLog}/>,
-    settings:<SettingsScreen settings={settings} setSettings={setSettings} onBack={()=>go("home")} usage={usage} user={user} onSignOut={handleSignOut} onReplayOnboarding={()=>setShowOnboarding(true)} studyLog={studyLog} onUpdateTargets={(t)=>setStudyLog(sl=>({...sl,targets:t}))}/>,
+    settings:<SettingsScreen settings={settings} setSettings={setSettings} onBack={()=>go("home")} usage={usage} user={user} onSignOut={handleSignOut} onReplayOnboarding={()=>setShowOnboarding(true)} studyLog={studyLog} onUpdateTargets={(t)=>setStudyLog(sl=>({...sl,targets:t}))} decks={decks} cardStates={cardStates} setCardStates={setCardStates} trackUsage={trackUsage}/>,
     createDeck:<CreateDeckScreen onBack={()=>go("home")} onCreate={createDeck}/>,
     addCards:activeDeck&&<AddCardsScreen deck={activeDeck} onBack={()=>go("deck")} onSave={saveCards} trackUsage={trackUsage}/>,
     deck:activeDeck&&<DeckScreen deck={activeDeck} cards={cardStates[activeDeck.id]||[]} onStartStudy={startStudy} onBack={()=>go("home")} onAddCards={()=>go("addCards")} onEditCard={c=>{setActiveCard(c);go("editCard");}} onDeleteCard={deleteCard} onRenameDeck={renameDeck} onDeleteDeck={deleteDeck} savedIdx={savedIdx.current[activeDeck.id+"_all"]||0}/>,
     editCard:activeCard&&activeDeck&&<EditCardScreen card={activeCard} onBack={()=>go("deck")} onSave={saveEditedCard} trackUsage={trackUsage}/>,
-    study:activeDeck&&sessionCards.length>0&&<StudyScreen cards={sessionCards} currentIndex={currentIdx} onSwipe={handleSwipe} onBack={()=>{if(currentIdx>0)setCurrentIdx(i=>i-1);}} onExit={()=>go("deck")} trackUsage={trackUsage} decks={decks} cardStates={cardStates} onAddToFlashcard={addToFlashcard}/>,
+    study:activeDeck&&sessionCards.length>0&&<StudyScreen cards={sessionCards} currentIndex={currentIdx} onSwipe={handleSwipe} onBack={undoStudy} canUndo={studyHistory.current.length>0} onExit={()=>go("deck")} trackUsage={trackUsage} decks={decks} cardStates={cardStates} onAddToFlashcard={addToFlashcard}/>,
     complete:<CompleteScreen known={sessionRes.current.known} weak={sessionRes.current.weak} onBack={()=>go("deck")}/>,
-    reading:<ReadingScreen {...commonProps} onBack={()=>go("home")} onFinish={()=>{go("home");setSessionRating({module:"reading"});}} onAddToFlashcard={addToFlashcard} onLogStudy={logStudy}/>,
-    listening:<ListeningScreen {...commonProps} onBack={()=>go("home")} onFinish={()=>{go("home");setSessionRating({module:"listening"});}} onAddToFlashcard={addToFlashcard} onLogStudy={logStudy}/>,
-    masterReading:<ReadingScreen {...commonProps} master={true} masterPool={masterPool} onBack={()=>go("masterReview")} onFinish={()=>{go("home");setSessionRating({module:"reading",master:true});}} onAddToFlashcard={addToFlashcard} onLogStudy={logStudy}/>,
-    masterListening:<ListeningScreen {...commonProps} master={true} masterPool={masterPool} onBack={()=>go("masterReview")} onFinish={()=>{go("home");setSessionRating({module:"listening",master:true});}} onAddToFlashcard={addToFlashcard} onLogStudy={logStudy}/>,
-    masterSpeaking:<ConversationScreen {...commonProps} master={true} masterPool={masterPool} onBack={()=>go("masterReview")} onFinish={()=>{go("home");setSessionRating({module:"speaking",master:true});}} onLogStudy={logStudy} onAddToFlashcard={addToFlashcard}/>,
-    conversation:<ConversationScreen {...commonProps} onBack={()=>go("home")} onFinish={()=>{go("home");setSessionRating({module:"speaking"});}} onLogStudy={logStudy} onAddToFlashcard={addToFlashcard}/>,
+    reading:<ReadingScreen {...commonProps} onBack={()=>go("home")} onFinish={()=>{saveScreen("reading",null);saveSession(null);go("home");setSessionRating({module:"reading"});}} onAddToFlashcard={addToFlashcard} onLogStudy={logStudy}/>,
+    listening:<ListeningScreen {...commonProps} onBack={()=>go("home")} onFinish={()=>{saveScreen("listening",null);saveSession(null);go("home");setSessionRating({module:"listening"});}} onAddToFlashcard={addToFlashcard} onLogStudy={logStudy}/>,
+    masterReading:<ReadingScreen {...commonProps} master={true} masterPool={masterPool} onBack={()=>go("masterReview")} onFinish={()=>{saveScreen("masterReading",null);saveSession(null);go("home");setSessionRating({module:"reading",master:true});}} onAddToFlashcard={addToFlashcard} onLogStudy={logStudy}/>,
+    masterListening:<ListeningScreen {...commonProps} master={true} masterPool={masterPool} onBack={()=>go("masterReview")} onFinish={()=>{saveScreen("masterListening",null);saveSession(null);go("home");setSessionRating({module:"listening",master:true});}} onAddToFlashcard={addToFlashcard} onLogStudy={logStudy}/>,
+    masterSpeaking:<ConversationScreen {...commonProps} master={true} masterPool={masterPool} onBack={()=>go("masterReview")} onFinish={()=>{saveScreen("masterSpeaking",null);saveSession(null);go("home");setSessionRating({module:"speaking",master:true});}} onLogStudy={logStudy} onAddToFlashcard={addToFlashcard}/>,
+    conversation:<ConversationScreen {...commonProps} onBack={()=>go("home")} onFinish={()=>{saveScreen("conversation",null);saveSession(null);go("home");setSessionRating({module:"speaking"});}} onLogStudy={logStudy} onAddToFlashcard={addToFlashcard}/>,
     progress:<ProgressScreen cardStates={cardStates} studyLog={studyLog} onBack={()=>go("home")} onLogManual={(e)=>logStudy(e)}/>,
-    masterReview:<MasterReviewScreen decks={decks} cardStates={cardStates} onBack={()=>go("home")} onSwipeCard={handleMasterSwipe} trackUsage={trackUsage} onAddToFlashcard={addToFlashcard} studyLog={studyLog} onLogStudy={logStudy}
+    masterReview:<MasterReviewScreen decks={decks} cardStates={cardStates} onBack={()=>go("home")} onSwipeCard={handleMasterSwipe} onUndoSwipe={restoreCard} trackUsage={trackUsage} onAddToFlashcard={addToFlashcard} studyLog={studyLog} onLogStudy={logStudy}
       onMasterReading={(pool)=>{setMasterPool(pool);go("masterReading");}}
       onMasterListening={(pool)=>{setMasterPool(pool);go("masterListening");}}
       onMasterSpeaking={(pool)=>{setMasterPool(pool);go("masterSpeaking");}}/>,
@@ -3829,6 +4203,14 @@ export default function App() {
   if(!user) return (
     <><style>{CSS}</style>
     <div className="app"><LoginScreen onLogin={handleSignIn} loading={authLoading} error={authError}/></div></>
+  );
+
+  // While Firestore loads or session is restoring, show spinner so we don't flash HomeScreen before resuming
+  if(!dataLoaded||!sessionRestored) return (
+    <><style>{CSS}</style>
+    <div className="app" style={{display:"flex",alignItems:"center",justifyContent:"center",minHeight:"100vh"}}>
+      <RefreshCw size={24} className="spin" style={{color:"var(--accent)"}}/>
+    </div></>
   );
 
   return (
