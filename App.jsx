@@ -326,6 +326,23 @@ const OR_MODELS = [
   {id:"meta-llama/llama-3.3-70b-instruct",label:"Llama 3.3 70B  · Open source"},
 ];
 
+// Image generation models — used by /api/image proxy with the user's OpenAI key
+const IMAGE_MODELS = [
+  {id:"dall-e-3", label:"DALL-E 3  · Standard quality"},
+  {id:"dall-e-2", label:"DALL-E 2  · Cheaper, lower quality"},
+];
+
+// Per-feature model override list — each entry maps a usage tag to a Settings dropdown
+const MODEL_FEATURES = [
+  {tag:"flashcard", label:"Flashcard generation",   desc:"New cards with all forms"},
+  {tag:"sentence",  label:"Sentence aids",          desc:"Study & master sentence-aid generation"},
+  {tag:"reading",   label:"Reading passages",       desc:"Reading practice generation"},
+  {tag:"listening", label:"Listening passages",     desc:"Listening practice generation"},
+  {tag:"wordLookup",label:"Word lookups",           desc:"Click-to-look-up Arabic words"},
+  {tag:"regen",     label:"Cleanup & regen",        desc:"Card cleanup audit + form regeneration"},
+  {tag:"other",     label:"Topics & conversation",  desc:"Topic generation, chat replies, misc"},
+];
+
 const USAGE_LABELS = {
   flashcard:"Flashcard Generation", sentence:"Sentence / Learning Aid",
   reading:"Reading Passage", listening:"Listening Content",
@@ -502,18 +519,22 @@ textarea.input{resize:vertical;min-height:110px;line-height:1.7}
 // Model is toggled in Settings and stored in module-level ref below
 // ─────────────────────────────────────────────────────────────
 
-// Module-level model ref — updated by root App when settings change.
+// Module-level model refs — updated by root App when settings change.
 // Avoids threading model as a prop through every screen component.
-let _activeModel = "openai/gpt-4o-mini";
+let _defaultModel = "openai/gpt-4o-mini";
+let _modelByTag = {}; // per-feature override: tag -> modelId
+let _imageModel = "dall-e-3";
 let _orKey = ""; // OpenRouter key — synced from settings
 let _oaKey = ""; // OpenAI key for DALL-E — synced from settings
+
+function pickModelForTag(tag){return _modelByTag[tag]||_defaultModel;}
 
 async function callClaude(prompt, maxTokens=1500, tag="other", trackFn=null) {
   const res = await fetch("/api/claude", {
     method:"POST",
     headers:{"Content-Type":"application/json"},
     body:JSON.stringify({
-      model: _activeModel,
+      model: pickModelForTag(tag),
       max_tokens: maxTokens,
       messages:[{role:"user",content:prompt}],
       ..._orKey ? {apiKey:_orKey} : {},
@@ -585,7 +606,7 @@ async function generateDalleImage(prompt) {
       method:"POST",
       headers:{"Content-Type":"application/json"},
       body:JSON.stringify({
-        model:"dall-e-3",
+        model:_imageModel||"dall-e-3",
         prompt:`${prompt} Style: warm natural photography, soft daylight, everyday life in an Arabic-speaking country, photorealistic. No text or Arabic letters visible in the image.`,
         n:1, size:"1024x1024", quality:"standard",
         ..._oaKey ? {apiKey:_oaKey} : {},
@@ -1362,14 +1383,44 @@ function SettingsScreen({settings,setSettings,onBack,usage,user,onSignOut,onRepl
 
         <UsageMeter usage={usage}/>
 
-        {/* Model toggle — the main thing to configure */}
+        {/* AI Models — default + per-feature overrides */}
         <div style={{background:"var(--surface)",border:"1.5px solid var(--border)",borderRadius:"var(--r)",padding:"15px 17px"}}>
-          <div className="sec">AI Model · via OpenRouter</div>
+          <div className="sec">AI Model · Default (OpenRouter)</div>
           <select className="input" value={local.model} onChange={e=>set("model",e.target.value)} style={{marginBottom:8}}>
             {OR_MODELS.map(m=><option key={m.id} value={m.id}>{m.label}</option>)}
           </select>
+          <div style={{fontSize:11.5,color:"var(--text3)",lineHeight:1.65,marginBottom:14}}>
+            Used wherever you haven't picked a per-feature override below. Pricing at <strong>openrouter.ai/models</strong>.
+          </div>
+
+          <div className="sec" style={{marginTop:6}}>Per-Feature Override</div>
+          <div style={{fontSize:11.5,color:"var(--text3)",lineHeight:1.65,marginBottom:10}}>
+            Use a stronger model where it matters (new cards, cleanup) and a cheaper one where you can save (reading, conversation). "(Use default)" falls back to the model above.
+          </div>
+          <div style={{display:"flex",flexDirection:"column",gap:10}}>
+            {MODEL_FEATURES.map(f=>{
+              const cur=local.models?.[f.tag]||"";
+              return (
+                <div key={f.tag}>
+                  <label className="lbl" style={{marginBottom:3}}>{f.label} <span style={{color:"var(--text3)",fontWeight:400,letterSpacing:0,textTransform:"none"}}>· {f.desc}</span></label>
+                  <select className="input" value={cur} onChange={e=>set("models",{...(local.models||{}),[f.tag]:e.target.value||undefined})} style={{fontSize:13}}>
+                    <option value="">(Use default)</option>
+                    {OR_MODELS.map(m=><option key={m.id} value={m.id}>{m.label}</option>)}
+                  </select>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* Image model */}
+        <div style={{background:"var(--surface)",border:"1.5px solid var(--border)",borderRadius:"var(--r)",padding:"15px 17px"}}>
+          <div className="sec">Image Model · via OpenAI</div>
+          <select className="input" value={local.imageModel||"dall-e-3"} onChange={e=>set("imageModel",e.target.value)} style={{marginBottom:8}}>
+            {IMAGE_MODELS.map(m=><option key={m.id} value={m.id}>{m.label}</option>)}
+          </select>
           <div style={{fontSize:11.5,color:"var(--text3)",lineHeight:1.65}}>
-            All text generation (flashcards, sentences, reading, listening, word lookups) uses this model. Switch anytime — takes effect immediately after saving. Compare models and pricing at <strong>openrouter.ai/models</strong>.
+            Used for the DALL-E scene on flashcards. Requires the OpenAI API key below. DALL-E 3 is sharper; DALL-E 2 is ~2× cheaper.
           </div>
         </div>
 
@@ -4212,7 +4263,13 @@ export default function App() {
   },[]);
 
   // Keep module-level refs in sync — picked up automatically by callClaude / generateDalleImage
-  useEffect(()=>{ _activeModel = settings.model; _orKey = settings.orKey||""; _oaKey = settings.oaKey||""; },[settings.model,settings.orKey,settings.oaKey]);
+  useEffect(()=>{
+    _defaultModel = settings.model || "openai/gpt-4o-mini";
+    _modelByTag = {...(settings.models||{})};
+    _imageModel = settings.imageModel || "dall-e-3";
+    _orKey = settings.orKey||"";
+    _oaKey = settings.oaKey||"";
+  },[settings.model,settings.models,settings.imageModel,settings.orKey,settings.oaKey]);
   const go=s=>setScreen(s);
 
   // Usage tracker function passed to all Claude calls
