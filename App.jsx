@@ -2059,6 +2059,16 @@ function MultiDeckCardSelector({decks,cardStates,selDeckIds,setSelDeckIds,selCar
   const toggleCard=(id)=>setSelCardIds(p=>{const n=new Set(p);n.has(id)?n.delete(id):n.add(id);onReset&&onReset();return n;});
   const selectAllCards=()=>{setSelCardIds(new Set(pooledCards.map(c=>c.id)));onReset&&onReset();};
   const clearAllCards=()=>{setSelCardIds(new Set());onReset&&onReset();};
+  const selectAllDecks=()=>{
+    setSelDeckIds(new Set(decks.map(d=>d.id)));
+    setSelCardIds(new Set(decks.flatMap(d=>(cardStates[d.id]||[]).map(c=>c.id))));
+    onReset&&onReset();
+  };
+  const clearAllDecks=()=>{
+    setSelDeckIds(new Set());
+    setSelCardIds(new Set());
+    onReset&&onReset();
+  };
   const selectByStatus=(status)=>{setSelCardIds(new Set(pooledCards.filter(c=>status==="new"?(c.status==="new"||!c.status):c.status===status).map(c=>c.id)));onReset&&onReset();};
   const weakCount=pooledCards.filter(c=>c.status==="weak").length;
   const knownCount=pooledCards.filter(c=>c.status==="known").length;
@@ -2080,6 +2090,10 @@ function MultiDeckCardSelector({decks,cardStates,selDeckIds,setSelDeckIds,selCar
         </div>
         {showDeckPicker&&(
           <div style={{padding:"10px 14px",display:"flex",flexDirection:"column",gap:7}}>
+            <div style={{display:"flex",gap:6,marginBottom:3}}>
+              <button className="btn btn-sm" onClick={selectAllDecks} disabled={selDeckIds.size===decks.length} style={{background:`var(${accentBgVar})`,color:`var(${accentVar})`,border:`1px solid var(${accentBorderVar})`,opacity:selDeckIds.size===decks.length?0.5:1}}>Select All</button>
+              <button className="btn btn-sm" onClick={clearAllDecks} disabled={selDeckIds.size===0} style={{background:"var(--surface2)",color:"var(--text2)",opacity:selDeckIds.size===0?0.5:1}}>Clear All</button>
+            </div>
             {decks.map(d=>{
               const on=selDeckIds.has(d.id);
               const count=(cardStates[d.id]||[]).length;
