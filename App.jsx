@@ -1190,6 +1190,149 @@ CRITICAL: Every Arabic word in any "value" field MUST have full tashkeel.`;
   );
 }
 
+// ─────────────────────────────────────────────────────────────
+// DUPLICATE FINDER — exact-match dedup across all decks
+// ─────────────────────────────────────────────────────────────
+function stripTashkeel(s){return (s||"").replace(/[ً-ْٰ]/g,"");}
+
+function findDuplicateGroups(decks,cardStates){
+  const buckets=new Map(); // key -> [{card, deckId, deckTitle}]
+  for(const deck of decks){
+    for(const card of (cardStates[deck.id]||[])){
+      const ar=stripTashkeel(card.arabicBase||"").trim();
+      const en=(card.english||"").trim().toLowerCase();
+      if(!ar&&!en) continue;
+      const key=`${ar}|${en}`;
+      if(!buckets.has(key)) buckets.set(key,[]);
+      buckets.get(key).push({card,deckId:deck.id,deckTitle:deck.title});
+    }
+  }
+  // Only groups with >1 entry are duplicates
+  const groups=[];
+  for(const [key,entries] of buckets){
+    if(entries.length>1) groups.push({key,entries});
+  }
+  return groups;
+}
+
+function scoreCardForKeep(card){
+  const statusPts=card.status==="known"?300:card.status==="weak"?200:100;
+  const formsPts=Object.values(card.forms||{}).filter(Boolean).length*5;
+  const srsPts=card.srsLastReview?20:0;
+  const streakPts=(card.srsStreak||0)*3;
+  return statusPts+formsPts+srsPts+streakPts;
+}
+
+function DuplicateFinder({decks,cardStates,setCardStates}) {
+  const [phase,setPhase]=useState("idle"); // idle | review | done
+  const [keepIds,setKeepIds]=useState({}); // groupKey -> cardId to keep
+
+  const groups=phase==="idle"?[]:findDuplicateGroups(decks,cardStates);
+  const totalDuplicates=groups.reduce((s,g)=>s+g.entries.length-1,0);
+
+  const startScan=()=>{
+    const found=findDuplicateGroups(decks,cardStates);
+    if(!found.length){setPhase("done");return;}
+    // Default: keep the highest-scored card per group
+    const defaults={};
+    for(const g of found){
+      const winner=[...g.entries].sort((a,b)=>scoreCardForKeep(b.card)-scoreCardForKeep(a.card))[0];
+      defaults[g.key]=winner.card.id;
+    }
+    setKeepIds(defaults);
+    setPhase("review");
+  };
+
+  const apply=()=>{
+    setCardStates(prev=>{
+      const next={...prev};
+      for(const g of groups){
+        const keep=keepIds[g.key];
+        for(const e of g.entries){
+          if(e.card.id===keep) continue;
+          next[e.deckId]=(next[e.deckId]||[]).filter(c=>c.id!==e.card.id);
+        }
+      }
+      return next;
+    });
+    showToast(`Removed ${totalDuplicates} duplicate${totalDuplicates===1?"":"s"}`,"success");
+    setPhase("done");
+  };
+
+  const reset=()=>{setPhase("idle");setKeepIds({});};
+
+  // Initial scan count for the idle button
+  const initialGroups=findDuplicateGroups(decks,cardStates);
+  const initialDupes=initialGroups.reduce((s,g)=>s+g.entries.length-1,0);
+
+  return (
+    <div style={{background:"var(--surface)",border:"1.5px solid var(--border)",borderRadius:"var(--r)",padding:"15px 17px"}}>
+      <div className="sec">Duplicate Finder</div>
+      <div style={{fontSize:13,color:"var(--text2)",lineHeight:1.6,marginBottom:10}}>
+        Finds cards with the same Arabic word and English meaning across all decks. Picks the most-mastered copy to keep; you can override per group before applying.
+      </div>
+
+      {phase==="idle"&&(
+        <button className="btn btn-primary" onClick={startScan} disabled={!initialGroups.length}
+          style={{width:"100%",padding:12,borderRadius:"var(--rs)",fontSize:13,opacity:initialGroups.length?1:0.5}}>
+          <Search size={14}/> {initialGroups.length?`Find ${initialDupes} duplicate${initialDupes===1?"":"s"} across ${initialGroups.length} group${initialGroups.length===1?"":"s"}`:"No duplicates found"}
+        </button>
+      )}
+
+      {phase==="review"&&(
+        <div>
+          <div style={{background:"var(--info-bg)",border:"1px solid var(--info-border)",borderRadius:"var(--rs)",padding:"10px 12px",marginBottom:10,fontSize:13}}>
+            <strong>{groups.length}</strong> group{groups.length===1?"":"s"} · <strong>{totalDuplicates}</strong> card{totalDuplicates===1?"":"s"} will be removed (the un-selected ones)
+          </div>
+          <div style={{maxHeight:380,overflowY:"auto",border:"1px solid var(--border)",borderRadius:"var(--rs)",padding:"8px 10px",marginBottom:10}}>
+            {groups.map(g=>(
+              <div key={g.key} style={{padding:"8px 0",borderBottom:"1px solid var(--border)"}}>
+                <div style={{fontSize:11,fontWeight:700,color:"var(--text3)",letterSpacing:".05em",textTransform:"uppercase",marginBottom:5}}>
+                  {g.entries[0].card.english} <span className="ar" style={{color:"var(--accent)",fontSize:14,letterSpacing:0,textTransform:"none"}}>· {g.entries[0].card.arabicBase}</span>
+                </div>
+                <div style={{display:"flex",flexDirection:"column",gap:4}}>
+                  {g.entries.map(e=>{
+                    const isKeep=keepIds[g.key]===e.card.id;
+                    const formsCount=Object.values(e.card.forms||{}).filter(Boolean).length;
+                    return (
+                      <div key={e.card.id} onClick={()=>setKeepIds(p=>({...p,[g.key]:e.card.id}))}
+                        style={{display:"flex",alignItems:"center",gap:8,padding:"6px 8px",borderRadius:"var(--rxs)",cursor:"pointer",border:`1.5px solid ${isKeep?"var(--know)":"var(--border)"}`,background:isKeep?"var(--know-bg)":"transparent"}}>
+                        <div className={`chk ${isKeep?"on":""}`} style={{width:14,height:14,borderColor:isKeep?"var(--know)":"var(--border)",background:isKeep?"var(--know)":"transparent"}}>{isKeep&&<Check size={9} color="white"/>}</div>
+                        <div style={{flex:1,fontSize:12}}>
+                          <span style={{fontWeight:isKeep?600:400,color:isKeep?"var(--know)":"var(--text2)"}}>{isKeep?"Keep":"Delete"}</span>
+                          <span style={{color:"var(--text3)",marginLeft:6}}>· {e.deckTitle}</span>
+                          {e.card.status&&<span className={`tag tag-${e.card.status}`} style={{fontSize:9,marginLeft:6}}>{e.card.status}</span>}
+                          <span style={{color:"var(--text3)",fontSize:11,marginLeft:6}}>{formsCount} forms</span>
+                          {e.card.srsStreak>0&&<span style={{color:"var(--know)",fontSize:11,marginLeft:6}}>🔥{e.card.srsStreak}</span>}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            ))}
+          </div>
+          <div style={{display:"flex",gap:8}}>
+            <button className="btn" onClick={reset} style={{flex:1,background:"var(--surface2)",color:"var(--text2)",padding:"10px",borderRadius:"var(--rs)",fontSize:13}}>Cancel</button>
+            <button className="btn btn-primary" onClick={apply} style={{flex:2,padding:"10px",borderRadius:"var(--rs)",fontSize:13}}>
+              <Trash2 size={14}/> Delete {totalDuplicates} Duplicate{totalDuplicates===1?"":"s"}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {phase==="done"&&(
+        <div style={{background:"var(--know-bg)",border:"1px solid var(--know-border)",borderRadius:"var(--rs)",padding:"12px",fontSize:13,color:"var(--know)",textAlign:"center"}}>
+          {initialGroups.length===0?"No duplicates found — your decks look clean.":"Duplicates removed."}
+          <div style={{marginTop:8}}>
+            <button className="btn btn-ghost" onClick={reset} style={{fontSize:12,color:"var(--text3)"}}>Run again</button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function SettingsScreen({settings,setSettings,onBack,usage,user,onSignOut,onReplayOnboarding,studyLog,onUpdateTargets,decks,cardStates,setCardStates,trackUsage}) {
   const [local,setLocal]=useState(settings);
   const [saved,setSaved]=useState(false);
@@ -1300,6 +1443,8 @@ function SettingsScreen({settings,setSettings,onBack,usage,user,onSignOut,onRepl
         <SRSSettingsPanel srsSettings={local.srs} onChange={srs=>set("srs",srs)}/>
 
         <CardCleanupTool decks={decks} cardStates={cardStates} setCardStates={setCardStates} trackUsage={trackUsage}/>
+
+        <DuplicateFinder decks={decks} cardStates={cardStates} setCardStates={setCardStates}/>
 
         <button className="btn btn-primary" onClick={save} style={{width:"100%",padding:14,borderRadius:"var(--r)",fontSize:15}}>
           {saved?<><Check size={16}/>Saved</>:<><Save size={15}/>Save Settings</>}
