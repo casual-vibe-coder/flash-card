@@ -326,10 +326,9 @@ const OR_MODELS = [
   {id:"meta-llama/llama-3.3-70b-instruct",label:"Llama 3.3 70B  · Open source"},
 ];
 
-// Image generation models — used by /api/image proxy with the user's OpenAI key
+// Image generation model — Google's Gemini 2.5 Flash Image ("Nano Banana")
 const IMAGE_MODELS = [
-  {id:"dall-e-3", label:"DALL-E 3  · Standard quality"},
-  {id:"dall-e-2", label:"DALL-E 2  · Cheaper, lower quality"},
+  {id:"gemini-2.5-flash-image", label:"Nano Banana  · Gemini 2.5 Flash Image"},
 ];
 
 // Per-feature model override list — each entry maps a usage tag to a Settings dropdown
@@ -523,9 +522,9 @@ textarea.input{resize:vertical;min-height:110px;line-height:1.7}
 // Avoids threading model as a prop through every screen component.
 let _defaultModel = "openai/gpt-4o-mini";
 let _modelByTag = {}; // per-feature override: tag -> modelId
-let _imageModel = "dall-e-3";
+let _imageModel = "gemini-2.5-flash-image";
 let _orKey = ""; // OpenRouter key — synced from settings
-let _oaKey = ""; // OpenAI key for DALL-E — synced from settings
+let _gKey = ""; // Google AI Studio key for Nano Banana image gen — synced from settings
 
 function pickModelForTag(tag){return _modelByTag[tag]||_defaultModel;}
 
@@ -598,18 +597,16 @@ function extractJSON(raw) {
   throw new Error("JSON extraction failed — the AI response may have been cut off. Try fewer words per batch.");
 }
 
-// DALL-E image generation — goes through /api/image proxy
-// Returns image URL or null (app shows scene description as fallback)
-async function generateDalleImage(prompt) {
+// Image generation via Nano Banana (Gemini 2.5 Flash Image) — through /api/image proxy
+// Returns image URL (base64 data URL) or null (app shows scene description as fallback)
+async function generateImage(prompt) {
   try {
     const res = await fetch("/api/image", {
       method:"POST",
       headers:{"Content-Type":"application/json"},
       body:JSON.stringify({
-        model:_imageModel||"dall-e-3",
-        prompt:`${prompt} Style: warm natural photography, soft daylight, everyday life in an Arabic-speaking country, photorealistic. No text or Arabic letters visible in the image.`,
-        n:1, size:"1024x1024", quality:"standard",
-        ..._oaKey ? {apiKey:_oaKey} : {},
+        prompt:`${prompt} Style: minimalist flat sticker illustration, single bold subject centered on a plain white background, vivid simple colors, thick clean outlines, slightly exaggerated for memorability, no text or letters anywhere in the image.`,
+        ..._gKey ? {apiKey:_gKey} : {},
       }),
     });
     const data = await res.json();
@@ -655,10 +652,10 @@ function SceneCard({imagePrompt,word}) {
           <ImageIcon size={13} color="rgba(255,255,255,.6)"/>
           <span style={{fontSize:10,fontWeight:700,color:"rgba(255,255,255,.6)",letterSpacing:".12em",textTransform:"uppercase"}}>Visual Scene</span>
           <span style={{fontSize:10,color:"rgba(255,255,255,.35)",marginRight:"auto"}}>· {word}</span>
-          <span style={{fontSize:10,color:"rgba(255,255,255,.4)",background:"rgba(255,255,255,.08)",padding:"2px 7px",borderRadius:100,border:"1px solid rgba(255,255,255,.12)"}}>DALL-E ready</span>
+          <span style={{fontSize:10,color:"rgba(255,255,255,.4)",background:"rgba(255,255,255,.08)",padding:"2px 7px",borderRadius:100,border:"1px solid rgba(255,255,255,.12)"}}>Nano Banana ready</span>
         </div>
         <div style={{fontSize:13.5,color:"rgba(255,255,255,.88)",lineHeight:1.75,fontStyle:"italic"}}>{imagePrompt}</div>
-        <div style={{marginTop:10,fontSize:11,color:"rgba(255,255,255,.35)"}}>Prompt ready for DALL-E 3 in your deployed app</div>
+        <div style={{marginTop:10,fontSize:11,color:"rgba(255,255,255,.35)"}}>Prompt ready for Nano Banana in your deployed app</div>
       </div>
     </div>
   );
@@ -1415,12 +1412,12 @@ function SettingsScreen({settings,setSettings,onBack,usage,user,onSignOut,onRepl
 
         {/* Image model */}
         <div style={{background:"var(--surface)",border:"1.5px solid var(--border)",borderRadius:"var(--r)",padding:"15px 17px"}}>
-          <div className="sec">Image Model · via OpenAI</div>
-          <select className="input" value={local.imageModel||"dall-e-3"} onChange={e=>set("imageModel",e.target.value)} style={{marginBottom:8}}>
+          <div className="sec">Image Model · via Google AI Studio</div>
+          <select className="input" value={local.imageModel||"gemini-2.5-flash-image"} onChange={e=>set("imageModel",e.target.value)} style={{marginBottom:8}}>
             {IMAGE_MODELS.map(m=><option key={m.id} value={m.id}>{m.label}</option>)}
           </select>
           <div style={{fontSize:11.5,color:"var(--text3)",lineHeight:1.65}}>
-            Used for the DALL-E scene on flashcards. Requires the OpenAI API key below. DALL-E 3 is sharper; DALL-E 2 is ~2× cheaper.
+            Used for the mnemonic image on flashcards. Requires the Google AI Studio API key below. ~$0.039 per image, flat.
           </div>
         </div>
 
@@ -1449,17 +1446,17 @@ function SettingsScreen({settings,setSettings,onBack,usage,user,onSignOut,onRepl
             <div>
               <div style={{display:"flex",alignItems:"center",gap:7,marginBottom:4}}>
                 <span style={{fontSize:14}}>🖼</span>
-                <div style={{fontSize:12.5,fontWeight:700,color:"var(--text)",fontFamily:"monospace"}}>OpenAI API Key</div>
+                <div style={{fontSize:12.5,fontWeight:700,color:"var(--text)",fontFamily:"monospace"}}>Google AI Studio API Key</div>
               </div>
               <input
                 className="input"
                 type="password"
-                placeholder="sk-… (from platform.openai.com/api-keys)"
-                value={local.oaKey||""}
-                onChange={e=>set("oaKey",e.target.value)}
+                placeholder="AIza… (from aistudio.google.com/apikey)"
+                value={local.gKey||""}
+                onChange={e=>set("gKey",e.target.value)}
                 style={{fontSize:12,padding:"7px 10px",fontFamily:"monospace"}}
               />
-              <div style={{fontSize:11,color:"var(--text3)",marginTop:3}}>Optional — enables DALL-E image generation on flashcards.</div>
+              <div style={{fontSize:11,color:"var(--text3)",marginTop:3}}>Optional — enables Nano Banana image generation on flashcards.</div>
             </div>
           </div>
         </div>
@@ -2047,7 +2044,7 @@ Word: "${card.english}" · Arabic form "${arabicForm}" (${formLabel})
 Generate:
 1) ONE short Arabic sentence (6-12 words) using EXACTLY: ${arabicForm}
 2) English translation
-3) Vivid DALL-E scene (2-3 sentences, real everyday Arabic life, no Arabic text in scene)${avoidClause}
+3) A short mnemonic image idea (1-2 sentences) — ONE single iconic subject that visually captures the word's meaning. Think simple sticker-style flashcard art, not a busy scene. No Arabic text in the image.${avoidClause}
 
 QUALITY RULES — non-negotiable:
 - The sentence MUST sound natural and useful, like something a fluent speaker would actually say in daily life. No textbook-stiff phrasing, no contrived "the cat sat on the mat" filler.
@@ -2062,9 +2059,9 @@ Return ONLY valid JSON: {"sentence":"...","translation":"...","imagePrompt":"...
       const parsed=extractJSON(raw);
       setGen({...parsed,imageUrl:null});
       setGenLoading(false);
-      // Generate real DALL-E image in background
+      // Generate real image in background (Nano Banana)
       setImgLoading(true);
-      const url=await generateDalleImage(parsed.imagePrompt);
+      const url=await generateImage(parsed.imagePrompt);
       if(id!==genRef.current) return;
       setGen(prev=>prev?{...prev,imageUrl:url}:prev);
       setImgLoading(false);
@@ -2168,10 +2165,10 @@ Return ONLY valid JSON: {"sentence":"...","translation":"...","imagePrompt":"...
             </button>
             {gen&&!genLoading&&(
               <div className="gen-appear" style={{display:"flex",flexDirection:"column",gap:10}}>
-                {/* Image — real DALL-E or scene description fallback */}
+                {/* Image — Nano Banana generated, or scene description fallback */}
                 {imgLoading?(
                   <div style={{background:"var(--surface2)",border:"1px solid var(--border)",borderRadius:"var(--rs)",padding:"18px 16px",display:"flex",alignItems:"center",gap:9,fontSize:13,color:"var(--text2)"}}>
-                    <RefreshCw size={14} className="spin"/> Generating image with DALL-E 3…
+                    <RefreshCw size={14} className="spin"/> Generating image with Nano Banana…
                   </div>
                 ):gen.imageUrl?(
                   <img src={gen.imageUrl} alt={`Scene for ${card.english}`} style={{width:"100%",display:"block",borderRadius:"var(--rs)",border:"1px solid var(--border)"}}/>
@@ -4115,7 +4112,7 @@ export default function App() {
   const [cardStates,setCardStates]=useState(SEED_CARDS);
   const [activeDeck,setActiveDeck]=useState(null);
   const [activeCard,setActiveCard]=useState(null);
-  const [settings,setSettings]=useState({orKey:"",oaKey:"",model:"openai/gpt-4o-mini"});
+  const [settings,setSettings]=useState({orKey:"",gKey:"",model:"openai/gpt-4o-mini"});
   const [user,setUser]=useState(undefined); // undefined = loading, null = signed out
   const [dataLoaded,setDataLoaded]=useState(false);
   const [authLoading,setAuthLoading]=useState(false);
@@ -4262,14 +4259,14 @@ export default function App() {
     return ()=>window.removeEventListener("importDeck",handler);
   },[]);
 
-  // Keep module-level refs in sync — picked up automatically by callClaude / generateDalleImage
+  // Keep module-level refs in sync — picked up automatically by callClaude / generateImage
   useEffect(()=>{
     _defaultModel = settings.model || "openai/gpt-4o-mini";
     _modelByTag = {...(settings.models||{})};
-    _imageModel = settings.imageModel || "dall-e-3";
+    _imageModel = settings.imageModel || "gemini-2.5-flash-image";
     _orKey = settings.orKey||"";
-    _oaKey = settings.oaKey||"";
-  },[settings.model,settings.models,settings.imageModel,settings.orKey,settings.oaKey]);
+    _gKey = settings.gKey||"";
+  },[settings.model,settings.models,settings.imageModel,settings.orKey,settings.gKey]);
   const go=s=>setScreen(s);
 
   // Usage tracker function passed to all Claude calls
