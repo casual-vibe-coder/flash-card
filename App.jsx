@@ -326,9 +326,9 @@ const OR_MODELS = [
   {id:"meta-llama/llama-3.3-70b-instruct",label:"Llama 3.3 70B  · Open source"},
 ];
 
-// Image generation model — Google's Gemini 2.5 Flash Image ("Nano Banana")
+// Image generation model — Google's Gemini 3.1 Flash Image ("Nano Banana 2")
 const IMAGE_MODELS = [
-  {id:"gemini-2.5-flash-image", label:"Nano Banana  · Gemini 2.5 Flash Image"},
+  {id:"gemini-3.1-flash-image-preview", label:"Nano Banana 2  · Gemini 3.1 Flash Image"},
 ];
 
 // Per-feature model override list — each entry maps a usage tag to a Settings dropdown
@@ -522,7 +522,7 @@ textarea.input{resize:vertical;min-height:110px;line-height:1.7}
 // Avoids threading model as a prop through every screen component.
 let _defaultModel = "openai/gpt-4o-mini";
 let _modelByTag = {}; // per-feature override: tag -> modelId
-let _imageModel = "gemini-2.5-flash-image";
+let _imageModel = "gemini-3.1-flash-image-preview";
 let _orKey = ""; // OpenRouter key — synced from settings
 let _gKey = ""; // Google AI Studio key for Nano Banana image gen — synced from settings
 
@@ -1413,7 +1413,7 @@ function SettingsScreen({settings,setSettings,onBack,usage,user,onSignOut,onRepl
         {/* Image model */}
         <div style={{background:"var(--surface)",border:"1.5px solid var(--border)",borderRadius:"var(--r)",padding:"15px 17px"}}>
           <div className="sec">Image Model · via Google AI Studio</div>
-          <select className="input" value={local.imageModel||"gemini-2.5-flash-image"} onChange={e=>set("imageModel",e.target.value)} style={{marginBottom:8}}>
+          <select className="input" value={local.imageModel||"gemini-3.1-flash-image-preview"} onChange={e=>set("imageModel",e.target.value)} style={{marginBottom:8}}>
             {IMAGE_MODELS.map(m=><option key={m.id} value={m.id}>{m.label}</option>)}
           </select>
           <div style={{fontSize:11.5,color:"var(--text3)",lineHeight:1.65}}>
@@ -4263,7 +4263,7 @@ export default function App() {
   useEffect(()=>{
     _defaultModel = settings.model || "openai/gpt-4o-mini";
     _modelByTag = {...(settings.models||{})};
-    _imageModel = settings.imageModel || "gemini-2.5-flash-image";
+    _imageModel = settings.imageModel || "gemini-3.1-flash-image-preview";
     _orKey = settings.orKey||"";
     _gKey = settings.gKey||"";
   },[settings.model,settings.models,settings.imageModel,settings.orKey,settings.gKey]);
