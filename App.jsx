@@ -3403,10 +3403,11 @@ function ConversationScreen({decks,cardStates,onBack,onFinish,trackUsage,onLogSt
   const [messages,setMessages]=useState(saved.messages||[]);
   const [input,setInput]=useState("");
   const [loading,setLoading]=useState(false);
-  // Voice mode defaults to ON for a natural hands-free conversation: the AI
-  // speaks, the mic auto-listens, the user replies, repeat. Respect a saved
-  // false (user has explicitly turned it off in a prior session).
-  const [voiceMode,setVoiceMode]=useState(()=>typeof saved.voiceMode==="boolean"?saved.voiceMode:true);
+  // Voice mode is a per-entry default — every fresh visit to the conversation
+  // screen starts hands-free, regardless of what the user toggled last
+  // session. We intentionally do NOT persist this to the screen save blob
+  // (see saveScreen call below) so old "false" values don't haunt new entries.
+  const [voiceMode,setVoiceMode]=useState(true);
   const [listening,setListening]=useState(false);
   const [speaking,setSpeaking]=useState(false);
   const [wordPopup,setWordPopup]=useState(null);
@@ -3424,13 +3425,14 @@ function ConversationScreen({decks,cardStates,onBack,onFinish,trackUsage,onLogSt
   const [showVoiceTranscript,setShowVoiceTranscript]=useState(!!saved.showVoiceTranscript); // default off
 
   useEffect(()=>{
+    // voiceMode intentionally omitted — see voiceMode useState comment above.
     saveScreen(SCREEN_NAME,{
       selDeckIds:[...selDeckIds],selCardIds:[...selCardIds],
-      phase,messages,voiceMode,topics,selectedTopic,
+      phase,messages,topics,selectedTopic,
       missionWords,usedMissionWords:[...usedMissionWords],corrections,
       sessionFeedback,showVoiceTranscript,
     });
-  },[selDeckIds,selCardIds,phase,messages,voiceMode,topics,selectedTopic,missionWords,usedMissionWords,corrections,sessionFeedback,showVoiceTranscript,SCREEN_NAME]);
+  },[selDeckIds,selCardIds,phase,messages,topics,selectedTopic,missionWords,usedMissionWords,corrections,sessionFeedback,showVoiceTranscript,SCREEN_NAME]);
   const chatRef=useRef(null);
   const recognitionRef=useRef(null);
   const silenceTimerRef=useRef(null);
@@ -3447,6 +3449,24 @@ function ConversationScreen({decks,cardStates,onBack,onFinish,trackUsage,onLogSt
   useEffect(()=>{phaseRef.current=phase;},[phase]);
   useEffect(()=>{listeningRef.current=listening;},[listening]);
   useEffect(()=>{loadingRef.current=loading;},[loading]);
+  // Resuming an existing chat (messages already in state) won't trigger the
+  // hands-free chain via speakArabic.onEnd because no fresh audio plays.
+  // So when we mount into the chat phase with voice mode on, kick off the
+  // mic ourselves after a short beat. Once-per-mount via the guard ref.
+  const handsFreeBootedRef=useRef(false);
+  useEffect(()=>{
+    if(handsFreeBootedRef.current) return;
+    if(phase!=="chat") return;
+    if(!voiceMode) return;
+    if(loading||listening||speaking) return;
+    if(!messages.length) return; // brand-new chat — startWithTopic will own the chain
+    handsFreeBootedRef.current=true;
+    setTimeout(()=>{
+      if(phaseRef.current==="chat"&&voiceModeRef.current&&!listeningRef.current&&!loadingRef.current){
+        startListening();
+      }
+    },500);
+  },[phase,voiceMode,messages.length,loading,listening,speaking]);
   // Pulled from settings (synced via module refs) so the sliders in Settings
   // take effect on the next mic press without remounting this screen.
   const SILENCE_MS=_convSilenceMs||2500;
