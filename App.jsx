@@ -623,7 +623,7 @@ async function generateImage(prompt, trackFn=null) {
       headers:{"Content-Type":"application/json"},
       body:JSON.stringify({
         model,
-        prompt:`${prompt} Style: minimalist flat sticker illustration, single bold subject centered on a plain white background, vivid simple colors, thick clean outlines, slightly exaggerated for memorability, no text or letters anywhere in the image.`,
+        prompt:`${prompt} Style: minimalist flat sticker illustration, single bold subject centered on a plain white background, vivid simple colors, thick clean outlines, slightly exaggerated for memorability, no text or letters anywhere in the image. STRICT RELIGIOUS CONSTRAINT — non-negotiable: absolutely NO eyes anywhere in the image. No human faces, no animal faces, no eyes of any kind (no dots, no slits, no glint, no abstract eye shapes). If a person or animal must appear, depict only from behind or as a featureless silhouette with no facial features at all. Prefer objects, symbols, scenery, or hands over people and animals.`,
         ..._gKey ? {apiKey:_gKey} : {},
       }),
     });
@@ -2073,7 +2073,7 @@ Word: "${card.english}" · Arabic form "${arabicForm}" (${formLabel})
 Generate:
 1) ONE short Arabic sentence (6-12 words) using EXACTLY: ${arabicForm}
 2) English translation
-3) A short mnemonic image idea (1-2 sentences) — ONE single iconic subject that visually captures the word's meaning. Think simple sticker-style flashcard art, not a busy scene. No Arabic text in the image.${avoidClause}
+3) A short mnemonic image idea (1-2 sentences) — ONE single iconic subject that visually captures the word's meaning. Think simple sticker-style flashcard art, not a busy scene. RELIGIOUS CONSTRAINT: do NOT describe people's faces, animal faces, or eyes of any kind. Prefer objects, symbols, scenery, hands, or back-views/silhouettes. Never mention eyes. No Arabic text in the image.${avoidClause}
 
 QUALITY RULES — non-negotiable:
 - The sentence MUST sound natural and useful, like something a fluent speaker would actually say in daily life. No textbook-stiff phrasing, no contrived "the cat sat on the mat" filler.
