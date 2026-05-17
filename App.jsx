@@ -1052,13 +1052,19 @@ Return ONLY valid JSON no markdown. Include full tashkeel on all Arabic text:
 function UsageMeter({usage, settings, onReset}) {
   const [open,setOpen]=useState(false);
   const [showCalc,setShowCalc]=useState(false);
-  // Resolve which text model is being used per usage tag. Falls back to the
-  // global default, then to the fallback price band, so cost numbers reflect
-  // what OpenRouter actually charges instead of always assuming Sonnet.
-  const priceForTag=(tag)=>{
-    const m = settings?.models?.[tag] || settings?.model || "openai/gpt-4o-mini";
-    return MODEL_PRICES[m] || PRICE_FALLBACK;
+  // Resolve which text model is being used per usage tag. Per-feature
+  // overrides (settings.models[tag]) win; otherwise the global default.
+  // All cost numbers, daily projections, and "via X" indicators flow from
+  // this single resolver — so changing the dropdowns above instantly
+  // re-prices everything.
+  const modelForTag=(tag)=>{
+    return settings?.models?.[tag] || settings?.model || "openai/gpt-4o-mini";
   };
+  const priceForTag=(tag)=>{
+    return MODEL_PRICES[modelForTag(tag)] || PRICE_FALLBACK;
+  };
+  // Display-friendly short model name ("claude-sonnet-4-5" not "anthropic/...").
+  const shortModel=(m)=>m?(m.split("/").pop()||m):"—";
   const costForTag=(tag,v)=>{
     const imgModel=TAG_TO_IMAGE_MODEL[tag];
     if(imgModel) return v.calls*(IMAGE_PRICES[imgModel]||0);
@@ -1066,6 +1072,15 @@ function UsageMeter({usage, settings, onReset}) {
     if(tag==="sttWhisper") return v.inputTokens * STT_PRICE_PER_SECOND;  // inputTokens = seconds
     const p = priceForTag(tag);
     return v.inputTokens*p.in/1_000_000 + v.outputTokens*p.out/1_000_000;
+  };
+  // Provider label for non-text tags so the user can see where each row's
+  // cost flows even without a text model.
+  const providerForTag=(tag)=>{
+    if(tag==="imageNB1") return "nano banana 1";
+    if(tag==="imageNB2") return "nano banana 2";
+    if(tag==="ttsGoogle") return "google tts";
+    if(tag==="sttWhisper") return "whisper";
+    return shortModel(modelForTag(tag));
   };
   // For the header summary, only count tokens from real text tags.
   const totalInputTok  = Object.entries(usage.byTag).filter(([t])=>!NON_TEXT_TAGS.has(t)).reduce((s,[,v])=>s+v.inputTokens,0);
@@ -1132,9 +1147,16 @@ function UsageMeter({usage, settings, onReset}) {
           {Object.entries(usage.byTag).filter(([,v])=>v.calls>0).map(([tag,v])=>{
             const cost = costForTag(tag,v);
             const avg = v.calls>0 ? cost/v.calls : 0;
+            const isTextTag = !NON_TEXT_TAGS.has(tag);
+            const overridden = isTextTag && !!settings?.models?.[tag];
             return (
               <div key={tag} style={{display:"grid",gridTemplateColumns:"1.3fr 50px 60px 60px 60px",gap:4,fontSize:12.5,color:"var(--text2)",alignItems:"center"}}>
-                <span style={{color:"var(--text)"}}>{USAGE_LABELS[tag]||tag}</span>
+                <div style={{minWidth:0}}>
+                  <div style={{color:"var(--text)",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{USAGE_LABELS[tag]||tag}</div>
+                  <div style={{fontSize:10,color:overridden?"var(--accent)":"var(--text3)",fontFamily:"monospace",marginTop:1}}>
+                    via {providerForTag(tag)}{overridden?" (override)":""}
+                  </div>
+                </div>
                 <span style={{textAlign:"right",color:"var(--text3)"}}>{v.calls}</span>
                 <span style={{textAlign:"right",color:"var(--text3)"}}>{unitsLabel(tag,v)}</span>
                 <span style={{textAlign:"right",color:"var(--text3)",fontSize:11.5,fontFamily:"monospace"}}>${avg<0.01?avg.toFixed(4):avg.toFixed(3)}</span>
@@ -1184,14 +1206,23 @@ function UsageMeter({usage, settings, onReset}) {
             </div>
             {showCalc&&(
               <div style={{padding:"10px 12px",display:"flex",flexDirection:"column",gap:6}}>
-                {ACTIONS.map(a=>(
-                  <div key={a.key} style={{display:"grid",gridTemplateColumns:"1fr 70px 70px",gap:6,fontSize:12,alignItems:"center"}}>
-                    <span style={{color:"var(--text2)"}}>{a.label}</span>
-                    <input type="number" min="0" step="1" value={counts[a.key]} onChange={e=>setCounts(p=>({...p,[a.key]:Math.max(0,parseInt(e.target.value||"0",10))}))}
-                      style={{padding:"4px 6px",fontSize:12,border:"1px solid var(--border)",borderRadius:4,background:"var(--surface)",textAlign:"right",fontFamily:"monospace"}}/>
-                    <span style={{textAlign:"right",fontWeight:600,color:"var(--accent)",fontFamily:"monospace"}}>${calcOne(a).toFixed(4)}</span>
-                  </div>
-                ))}
+                {ACTIONS.map(a=>{
+                  const isTextTag = !NON_TEXT_TAGS.has(a.tag);
+                  const overridden = isTextTag && !!settings?.models?.[a.tag];
+                  return (
+                    <div key={a.key} style={{display:"grid",gridTemplateColumns:"1fr 60px 70px",gap:6,fontSize:12,alignItems:"center"}}>
+                      <div style={{minWidth:0}}>
+                        <div style={{color:"var(--text2)",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{a.label}</div>
+                        <div style={{fontSize:10,color:overridden?"var(--accent)":"var(--text3)",fontFamily:"monospace",marginTop:1}}>
+                          via {providerForTag(a.tag)}{overridden?" (override)":""}
+                        </div>
+                      </div>
+                      <input type="number" min="0" step="1" value={counts[a.key]} onChange={e=>setCounts(p=>({...p,[a.key]:Math.max(0,parseInt(e.target.value||"0",10))}))}
+                        style={{padding:"4px 6px",fontSize:12,border:"1px solid var(--border)",borderRadius:4,background:"var(--surface)",textAlign:"right",fontFamily:"monospace"}}/>
+                      <span style={{textAlign:"right",fontWeight:600,color:"var(--accent)",fontFamily:"monospace"}}>${calcOne(a).toFixed(4)}</span>
+                    </div>
+                  );
+                })}
                 <div className="divider" style={{margin:"4px 0"}}/>
                 <div style={{display:"flex",justifyContent:"space-between",fontSize:12.5,fontWeight:700}}>
                   <span>Daily total</span><span style={{color:"var(--accent)"}}>${dailyTotal.toFixed(3)}</span>
@@ -1200,7 +1231,7 @@ function UsageMeter({usage, settings, onReset}) {
                   <span>Monthly (×30)</span><span style={{color:"var(--accent)"}}>${(dailyTotal*30).toFixed(2)}</span>
                 </div>
                 <div style={{fontSize:10.5,color:"var(--text3)",marginTop:4,lineHeight:1.5}}>
-                  Numbers above assume your currently-selected text model ({activeModel.split("/").pop()}). Swap model in Settings → AI Models to see the impact.
+                  Each row is priced by the model assigned to that feature (default: <span style={{fontFamily:"monospace",color:"var(--text2)"}}>{activeModel.split("/").pop()}</span>). Change a per-feature dropdown higher up to see the impact ripple through here in real time — no save needed.
                 </div>
               </div>
             )}
@@ -1771,7 +1802,9 @@ function SettingsScreen({settings,setSettings,onBack,usage,user,onSignOut,onRepl
           </div>
         </div>
 
-        <UsageMeter usage={usage} settings={settings} onReset={onResetUsage}/>
+        {/* Pass `local` (the in-edit settings) so cost previews react as you
+            change model dropdowns above, before you've hit Save. */}
+        <UsageMeter usage={usage} settings={local} onReset={onResetUsage}/>
 
         {/* AI Models — default + per-feature overrides */}
         <div style={{background:"var(--surface)",border:"1.5px solid var(--border)",borderRadius:"var(--r)",padding:"15px 17px"}}>
