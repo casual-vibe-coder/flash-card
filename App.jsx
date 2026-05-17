@@ -613,6 +613,142 @@ function extractJSON(raw) {
   throw new Error("JSON extraction failed — the AI response may have been cut off. Try fewer words per batch.");
 }
 
+// ─────────────────────────────────────────────────────────────
+// Fuzzy string matching for speech-to-text vocabulary detection.
+// STT mis-hears Arabic constantly, so exact matching is far too strict.
+// Levenshtein distance + 80%-similarity threshold lets "close enough" count.
+// ─────────────────────────────────────────────────────────────
+function stripArabicDiacritics(s){return (s||"").replace(/[ً-ٰٟٱ]/g,"");}
+function normalizeForMatch(s){return stripArabicDiacritics((s||"").toLowerCase().trim()).replace(/\s+/g," ");}
+function levenshtein(a,b){
+  if(!a||!b) return Math.max(a?.length||0,b?.length||0);
+  if(a===b) return 0;
+  const m=a.length, n=b.length;
+  if(m===0||n===0) return Math.max(m,n);
+  let prev=Array(n+1).fill(0); for(let j=0;j<=n;j++) prev[j]=j;
+  let curr=Array(n+1).fill(0);
+  for(let i=1;i<=m;i++){
+    curr[0]=i;
+    for(let j=1;j<=n;j++){
+      const cost=a[i-1]===b[j-1]?0:1;
+      curr[j]=Math.min(prev[j]+1, curr[j-1]+1, prev[j-1]+cost);
+    }
+    [prev,curr]=[curr,prev];
+  }
+  return prev[n];
+}
+function similarity(a,b){
+  const A=normalizeForMatch(a), B=normalizeForMatch(b);
+  if(!A||!B) return 0;
+  if(A===B) return 1;
+  const dist=levenshtein(A,B);
+  const maxLen=Math.max(A.length,B.length);
+  return maxLen===0?1:1-(dist/maxLen);
+}
+// Fuzzy contains: returns true if `needle` appears in `haystack` with at least
+// `threshold` similarity to some sliding window of equal length.
+function fuzzyContains(haystack,needle,threshold=0.8){
+  const H=normalizeForMatch(haystack), N=normalizeForMatch(needle);
+  if(!H||!N) return false;
+  if(H.includes(N)) return true;
+  if(N.length<=2) return false; // too short to safely fuzzy-match
+  // Tokenize haystack and compare each token + adjacent bigrams to needle
+  const tokens=H.split(/\s+/);
+  for(let i=0;i<tokens.length;i++){
+    if(similarity(tokens[i],N)>=threshold) return true;
+    if(i<tokens.length-1){
+      const bi=tokens[i]+" "+tokens[i+1];
+      if(similarity(bi,N)>=threshold) return true;
+    }
+  }
+  return false;
+}
+
+// ─────────────────────────────────────────────────────────────
+// Text-to-Speech adapter (Google Cloud TTS via /api/tts proxy)
+// ─────────────────────────────────────────────────────────────
+// Pipeline:
+//  1. Cleaned text → hashKey
+//  2. Check localStorage cache (keeps 30 days, LRU-trimmed at 60 entries)
+//  3. POST to /api/tts; on success, play returned base64 MP3 via <audio>
+//  4. On {noKey:true} or any failure, fall back to window.speechSynthesis
+// Speaker selection + caching live here so the call sites stay one-liners.
+let _ttsCacheTrimmed = false;
+const TTS_CACHE_PREFIX = "arabic_fc_tts_";
+const TTS_CACHE_MAX = 60;
+const TTS_CACHE_TTL = 30*24*60*60*1000;
+function ttsHash(s){let h=5381;for(let i=0;i<s.length;i++) h=((h<<5)+h)^s.charCodeAt(i);return (h>>>0).toString(36);}
+function ttsCacheRead(key){
+  try{
+    const raw=localStorage.getItem(TTS_CACHE_PREFIX+key); if(!raw) return null;
+    const o=JSON.parse(raw);
+    if(Date.now()-(o.t||0)>TTS_CACHE_TTL){localStorage.removeItem(TTS_CACHE_PREFIX+key);return null;}
+    return o.audio||null;
+  }catch{return null;}
+}
+function ttsCacheWrite(key,audio){
+  try{
+    localStorage.setItem(TTS_CACHE_PREFIX+key,JSON.stringify({audio,t:Date.now()}));
+    if(!_ttsCacheTrimmed){
+      _ttsCacheTrimmed=true;
+      // LRU-ish trim: keep at most TTS_CACHE_MAX, drop oldest by timestamp
+      const keys=Object.keys(localStorage).filter(k=>k.startsWith(TTS_CACHE_PREFIX));
+      if(keys.length>TTS_CACHE_MAX){
+        const entries=keys.map(k=>{try{return [k,JSON.parse(localStorage.getItem(k)).t||0];}catch{return [k,0];}}).sort((a,b)=>a[1]-b[1]);
+        entries.slice(0,entries.length-TTS_CACHE_MAX).forEach(([k])=>localStorage.removeItem(k));
+      }
+    }
+  }catch{/* localStorage may be full or disabled; ignore */}
+}
+// Live <audio> element so we can stop a playing clip when a new one starts.
+let _ttsAudioEl=null;
+function stopTtsAudio(){
+  if(_ttsAudioEl){try{_ttsAudioEl.pause();_ttsAudioEl.src="";}catch{}_ttsAudioEl=null;}
+  if(typeof window!=="undefined"&&window.speechSynthesis) window.speechSynthesis.cancel();
+}
+// Strip translation parentheses and any leftover correction tags before speaking.
+function cleanArabicForSpeech(text){
+  if(!text) return "";
+  return text
+    .replace(/\n?\(.*?\)\s*$/s,"")
+    .replace(/\[تَصْحِيح.*?\]/gs,"")
+    .replace(/\[تصحيح.*?\]/gs,"")
+    .trim();
+}
+function browserSpeak(text,onEnd){
+  if(!window.speechSynthesis||!text){onEnd?.();return;}
+  window.speechSynthesis.cancel();
+  const utt=new SpeechSynthesisUtterance(text);
+  utt.lang="ar-SA"; utt.rate=0.85;
+  const v=window.speechSynthesis.getVoices().find(v=>v.lang.startsWith("ar")); if(v) utt.voice=v;
+  utt.onend=()=>onEnd?.(); utt.onerror=()=>onEnd?.();
+  window.speechSynthesis.speak(utt);
+}
+async function synthesizeArabic(rawText,{voice="ar-XA-Wavenet-C",speed=0.92,onStart,onEnd}={}){
+  const text=cleanArabicForSpeech(rawText);
+  if(!text){onEnd?.();return;}
+  stopTtsAudio();
+  const cacheKey=ttsHash(`${voice}|${speed}|${text}`);
+  const cached=ttsCacheRead(cacheKey);
+  const play=(src)=>{
+    const a=new Audio(src); _ttsAudioEl=a;
+    a.onplay=()=>onStart?.(); a.onended=()=>{_ttsAudioEl=null;onEnd?.();};
+    a.onerror=()=>{_ttsAudioEl=null;browserSpeak(text,onEnd);};
+    a.play().catch(()=>{_ttsAudioEl=null;browserSpeak(text,onEnd);});
+  };
+  if(cached){play(cached);return;}
+  try{
+    const res=await fetch("/api/tts",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({text,voice,speed,..._gKey?{apiKey:_gKey}:{}})});
+    const data=await res.json();
+    if(data.noKey||!data.audio){browserSpeak(text,onEnd);onStart?.();return;}
+    ttsCacheWrite(cacheKey,data.audio);
+    play(data.audio);
+  }catch{
+    browserSpeak(text,onEnd); onStart?.();
+  }
+}
+
 // Image generation via Nano Banana (Gemini Flash Image) — through /api/image proxy
 // Returns image URL (base64 data URL) or null (app shows scene description as fallback)
 async function generateImage(prompt, trackFn=null) {
@@ -719,10 +855,10 @@ function WordPopup({word,context,decks,cardStates,onClose,onAddToFlashcard,track
     (async()=>{
       try {
         const raw=await callClaudeWithTashkeel(
-          `Arabic language expert. Learner clicked word: "${word}" in: "${context}"
-Return ONLY valid JSON no markdown. Include full tashkeel on all Arabic text:
-{"word":"${word}","root":"3-letter Arabic root with tashkeel like كَتَبَ or empty","rootMeaning":"short root meaning or empty","meaning":"English meaning","partOfSpeech":"noun/verb/adjective/etc","note":"one short helpful tip or empty"}`,
-          500,"wordLookup",trackUsage
+          `Arabic language expert. Learner clicked word: "${word}" in context: "${context}"
+Tone: warm Bayna-Yadayk tutor. Return ONLY valid JSON no markdown. Include full tashkeel on all Arabic text:
+{"word":"${word}","root":"3-letter Arabic root with tashkeel like كَتَبَ or empty","rootMeaning":"short root meaning or empty","meaning":"English meaning","partOfSpeech":"noun/verb/adjective/etc","note":"one short helpful usage tip with everyday/cultural context, or empty"}`,
+          180,"wordLookup",trackUsage
         );
         setData(JSON.parse(raw.replace(/```json|```/g,"").trim()));
       } catch {
@@ -2068,21 +2204,23 @@ function StudyScreen({cards,currentIndex,onSwipe,onBack,canUndo,onExit,trackUsag
       const learnedPool=Object.values(cardStates).flat().filter(c=>c.status==="known"||c.status==="weak");
       const learnedSample=[...learnedPool].sort(()=>Math.random()-0.5).slice(0,60).map(c=>c.arabicBase).join("، ");
       const raw=await callClaudeWithTashkeel(
-        `Arabic teacher creating a flashcard learning aid.
+        `Arabic teacher creating a learning aid — modeled after the warm, contextual register of "العربية بين يديك" (Al-Arabiyya Bayna Yadayk): Modern Standard Arabic, full tashkeel, themed, drawn from everyday Arab/Muslim life.
+
 Word: "${card.english}" · Arabic form "${arabicForm}" (${formLabel})
+
 Generate:
 1) ONE short Arabic sentence (6-12 words) using EXACTLY: ${arabicForm}
 2) English translation
 3) A short mnemonic image idea (1-2 sentences) — ONE single iconic subject that visually captures the word's meaning. Think simple sticker-style flashcard art, not a busy scene. RELIGIOUS CONSTRAINT: do NOT describe people's faces, animal faces, or eyes of any kind. Prefer objects, symbols, scenery, hands, or back-views/silhouettes. Never mention eyes. No Arabic text in the image.${avoidClause}
 
 QUALITY RULES — non-negotiable:
-- The sentence MUST sound natural and useful, like something a fluent speaker would actually say in daily life. No textbook-stiff phrasing, no contrived "the cat sat on the mat" filler.
+- The sentence MUST sound natural and useful — like something a native speaker would actually say in daily life (at home, in the masjid, at the market, with family, while travelling). Bayna-Yadayk register: warm, contextual, culturally specific. Never textbook-stiff filler.
 - Weave in as many of the learner's already-studied words as fits naturally (do NOT force them — natural use only). Pool: ${learnedSample||"(none yet)"}
 - Grammatically correct and idiomatic Modern Standard Arabic.
 
 CRITICAL: Every single Arabic word MUST have full tashkeel — no bare letters.
 Return ONLY valid JSON: {"sentence":"...","translation":"...","imagePrompt":"..."}`,
-        700,"sentence",trackUsage
+        500,"sentence",trackUsage
       );
       if(id!==genRef.current) return;
       const parsed=extractJSON(raw);
@@ -2115,20 +2253,12 @@ Return ONLY valid JSON: {"sentence":"...","translation":"...","imagePrompt":"...
   },[flipped,card?.id,currentIndex,selForm]);
 
   // Stop audio on unmount or screen change
-  useEffect(()=>()=>{if(window.speechSynthesis) window.speechSynthesis.cancel();},[]);
+  useEffect(()=>()=>{stopTtsAudio();},[]);
 
   const playAudio=()=>{
-    if(!gen?.sentence||!window.speechSynthesis) return;
-    window.speechSynthesis.cancel();
-    if(playing){setPlaying(false);return;}
-    setTimeout(()=>{
-      const utt=new SpeechSynthesisUtterance(gen.sentence);
-      utt.lang="ar-SA";utt.rate=0.82;
-      const v=window.speechSynthesis.getVoices().find(v=>v.lang.startsWith("ar"));if(v) utt.voice=v;
-      utt.onend=()=>setPlaying(false);utt.onerror=()=>setPlaying(false);
-      setPlaying(true);
-      window.speechSynthesis.speak(utt);
-    },50);
+    if(!gen?.sentence) return;
+    if(playing){stopTtsAudio();setPlaying(false);return;}
+    synthesizeArabic(gen.sentence,{onStart:()=>setPlaying(true),onEnd:()=>setPlaying(false)});
   };
 
   return (
@@ -2474,7 +2604,7 @@ function ReadingScreen({decks,cardStates,onBack,onFinish,onAddToFlashcard,trackU
     const vocabSample=[...selectedCards].sort(()=>Math.random()-0.5).slice(0,25).map(c=>c.english).join(", ");
     let t;
     try {
-      const raw=await callClaude(`Generate 5 short conversation/reading topic titles (5-8 words each, in English) that would naturally use these vocabulary words: ${vocabSample}. Return ONLY a JSON array: ["topic1","topic2","topic3","topic4","topic5"]`,200,"other",trackUsage);
+      const raw=await callClaude(`Generate 5 short reading topic titles (5-8 words each, in English) for an Arabic learner. Use themes typical of the Al-Arabiyya Bayna Yadayk curriculum — everyday Arab/Muslim life: family, food, the masjid, the market, neighbors, travel, prayer times, hospitality, school, work, holidays. Topics should naturally use these vocabulary words: ${vocabSample}. Return ONLY a JSON array: ["topic1","topic2","topic3","topic4","topic5"]`,200,"other",trackUsage);
       const parsed=extractJSON(raw);
       t=Array.isArray(parsed)?parsed:["Daily life","A trip to the market","School and learning","Family gathering","City exploration"];
     } catch {
@@ -2504,16 +2634,17 @@ function ReadingScreen({decks,cardStates,onBack,onFinish,onAddToFlashcard,trackU
     const learnedSample=[...learnedPool].sort(()=>Math.random()-0.5).slice(0,80).map(c=>c.arabicBase).join("، ");
     try {
       const raw=await callClaudeWithTashkeel(
-        `Expert Arabic language teacher creating reading practice.
+        `Expert Arabic teacher creating a reading passage — register modelled after "العربية بين يديك" (Al-Arabiyya Bayna Yadayk): warm, themed, MSA, drawn from everyday Arab/Muslim life with cultural specificity (family, food, masjid, neighborhood, work, travel, prayer times, hospitality).
+
 Deck: ${deckNames}
 Required Arabic vocabulary (MUST use every word at least once): ${vocabCards.map(c=>c.arabicBase).join("، ")}${topicClause}
 
-Write a ${settings.difficulty}-level Arabic reading passage of exactly ~${targetLen} words.
+Write a ${settings.difficulty}-level Arabic reading passage of ~${targetLen} words. Make it feel like a real Bayna-Yadayk passage: a small scene, a character or two by name (use common Arab names like أَحْمَد، فَاطِمَة، عُمَر، خَدِيجَة), grounded in a specific setting, with natural narrative flow.
 
 QUALITY RULES — non-negotiable:
-- The passage MUST read naturally — like real prose a native speaker would write. No stilted, contrived, or "vocabulary-cramming" phrasing.
-- Include every word from the required vocabulary above at least once.
-- Beyond the required list, also weave in as many of the learner's other already-studied words as fits naturally — do NOT force them. Bonus pool: ${learnedSample||"(none)"}
+- Reads like real prose a native would write. No vocab-cramming feel.
+- Every required vocabulary word appears at least once.
+- Weave in the learner's other studied words where they fit naturally — do NOT force them. Bonus pool: ${learnedSample||"(none)"}
 - Grammatically correct, coherent, idiomatic Modern Standard Arabic.
 
 CRITICAL: Every single Arabic word MUST have full tashkeel — no bare letters.
@@ -2687,7 +2818,7 @@ function ListeningScreen({decks,cardStates,onBack,onFinish,onAddToFlashcard,trac
     const vocabSample=[...selectedCards].sort(()=>Math.random()-0.5).slice(0,25).map(c=>c.english).join(", ");
     let t;
     try {
-      const raw=await callClaude(`Generate 5 short listening topic titles (5-8 words, English) for these words: ${vocabSample}. Return ONLY JSON: ["t1","t2","t3","t4","t5"]`,200,"other",trackUsage);
+      const raw=await callClaude(`Generate 5 short listening topic titles (5-8 words, English) for an Arabic learner. Use themes typical of the Al-Arabiyya Bayna Yadayk curriculum — everyday Arab/Muslim life: family meals, the masjid, neighbors, the market, hospitality, travel, prayer, daily routines. Topics should naturally use these vocabulary words: ${vocabSample}. Return ONLY JSON: ["t1","t2","t3","t4","t5"]`,200,"other",trackUsage);
       t=extractJSON(raw);
     } catch {t=["Daily routine","At the market","Weather talk","Neighborhood life","School day"];}
     setTopics(t);setActiveTopic("");setTopicsLoading(false);
@@ -2712,16 +2843,17 @@ function ListeningScreen({decks,cardStates,onBack,onFinish,onAddToFlashcard,trac
     const learnedSample=[...learnedPool].sort(()=>Math.random()-0.5).slice(0,80).map(c=>c.arabicBase).join("، ");
     try {
       const raw=await callClaudeWithTashkeel(
-        `Arabic teacher creating listening practice.
+        `Arabic teacher creating a listening passage — register modelled after "العربية بين يديك" (Al-Arabiyya Bayna Yadayk): warm, themed, conversational MSA with cultural specifics from everyday Arab/Muslim life (family meals, prayer, the market, hospitality, travel).
+
 Deck: ${deckNames}
 Required Arabic vocabulary (MUST use every word at least once): ${vocabCards.map(c=>c.arabicBase).join("، ")}${topicClause}
 
-Write a ${settings.difficulty}-level spoken Arabic passage of exactly ~${targetLen} words.
+Write a ${settings.difficulty}-level spoken Arabic passage of ~${targetLen} words. Aim for the rhythm of someone actually speaking: short clauses, natural connectors (وَ، ثُمَّ، لَكِنْ، فَ)، small details that ground the scene. Use common Arab names where appropriate.
 
 QUALITY RULES — non-negotiable:
-- The passage MUST sound natural and conversational — like real spoken Arabic, not a vocabulary list dressed up as a paragraph.
-- Include every word from the required vocabulary above at least once.
-- Beyond the required list, weave in as many of the learner's other already-studied words as fits naturally — do NOT force them. Bonus pool: ${learnedSample||"(none)"}
+- Sounds like real spoken Arabic, not a paragraph dressed up. Natural pauses, natural transitions.
+- Every required vocabulary word appears at least once.
+- Weave in the learner's other studied words where they fit naturally — do NOT force them. Bonus pool: ${learnedSample||"(none)"}
 - Grammatically correct and idiomatic.
 
 CRITICAL: Every single Arabic word MUST have full tashkeel — no bare letters.
@@ -2739,18 +2871,13 @@ Return ONLY valid JSON: {"arabic":"...","translation":"...","vocabUsed":["base f
   };
 
   const doPlay=(rate)=>{
-    if(!content?.arabic||!window.speechSynthesis) return;
-    window.speechSynthesis.cancel();
-    const utt=new SpeechSynthesisUtterance(content.arabic);
-    utt.lang="ar-SA";utt.rate=rate||settings.speed;
-    const v=window.speechSynthesis.getVoices().find(v=>v.lang.startsWith("ar"));if(v) utt.voice=v;
-    utt.onstart=()=>setPlaying(true);utt.onend=()=>setPlaying(false);utt.onerror=()=>setPlaying(false);
-    window.speechSynthesis.speak(utt);
+    if(!content?.arabic) return;
+    synthesizeArabic(content.arabic,{speed:rate||settings.speed,onStart:()=>setPlaying(true),onEnd:()=>setPlaying(false)});
   };
 
   const togglePlay=()=>{
     if(!content?.arabic) return;
-    if(playing){window.speechSynthesis.cancel();setPlaying(false);}
+    if(playing){stopTtsAudio();setPlaying(false);}
     else doPlay(settings.speed);
   };
 
@@ -3041,15 +3168,26 @@ function ConversationScreen({decks,cardStates,onBack,onFinish,trackUsage,onLogSt
   const [corrections,setCorrections]=useState(saved.corrections||[]);
   const [sessionRating,setSessionRatingLocal]=useState(0);
 
+  // End-of-session generated feedback (rephrasings + missed opportunities)
+  const [sessionFeedback,setSessionFeedback]=useState(saved.sessionFeedback||null);
+  const [feedbackLoading,setFeedbackLoading]=useState(false);
+  // User preferences: show what the mic heard? show old-style inline corrections?
+  const [showVoiceTranscript,setShowVoiceTranscript]=useState(!!saved.showVoiceTranscript); // default off
+
   useEffect(()=>{
     saveScreen(SCREEN_NAME,{
       selDeckIds:[...selDeckIds],selCardIds:[...selCardIds],
       phase,messages,voiceMode,topics,selectedTopic,
       missionWords,usedMissionWords:[...usedMissionWords],corrections,
+      sessionFeedback,showVoiceTranscript,
     });
-  },[selDeckIds,selCardIds,phase,messages,voiceMode,topics,selectedTopic,missionWords,usedMissionWords,corrections,SCREEN_NAME]);
+  },[selDeckIds,selCardIds,phase,messages,voiceMode,topics,selectedTopic,missionWords,usedMissionWords,corrections,sessionFeedback,showVoiceTranscript,SCREEN_NAME]);
   const chatRef=useRef(null);
   const recognitionRef=useRef(null);
+  const silenceTimerRef=useRef(null);
+  const voiceTranscriptRef=useRef("");
+  const SILENCE_MS=1400; // auto-end turn after this much silence — natural turn-taking
+  const FUZZY_THRESHOLD=0.8;
 
   const SpeechRecognition=window.SpeechRecognition||window.webkitSpeechRecognition;
   const hasSpeechRecog=!!SpeechRecognition;
@@ -3064,37 +3202,74 @@ function ConversationScreen({decks,cardStates,onBack,onFinish,trackUsage,onLogSt
   const scrollBottom=()=>setTimeout(()=>chatRef.current?.scrollTo(0,chatRef.current.scrollHeight),50);
 
   const speakArabic=(text)=>{
-    if(!window.speechSynthesis||!text) return;
-    const arabicOnly=text.replace(/\n?\n?\(.*?\)\s*$/s,"").replace(/\[تَصْحِيح.*?\]/gs,"").trim();
-    if(!arabicOnly) return;
-    window.speechSynthesis.cancel();
-    const utt=new SpeechSynthesisUtterance(arabicOnly);
-    utt.lang="ar-SA";utt.rate=0.82;
-    const v=window.speechSynthesis.getVoices().find(v=>v.lang.startsWith("ar"));if(v) utt.voice=v;
-    utt.onstart=()=>setSpeaking(true);utt.onend=()=>setSpeaking(false);utt.onerror=()=>setSpeaking(false);
-    setSpeaking(true);window.speechSynthesis.speak(utt);
+    if(!text) return;
+    synthesizeArabic(text,{onStart:()=>setSpeaking(true),onEnd:()=>setSpeaking(false)});
   };
 
+  // Silence-detected auto-end + hidden transcript flow:
+  //  - continuous mode keeps the recognizer alive even between pauses
+  //  - each result resets a silence timer; when no new result lands within
+  //    SILENCE_MS we stop the mic and auto-submit the buffered transcript
+  //  - transcript is buffered in a ref; it only streams to the input field
+  //    when the user has explicitly enabled showVoiceTranscript
+  const clearSilenceTimer=()=>{if(silenceTimerRef.current){clearTimeout(silenceTimerRef.current);silenceTimerRef.current=null;}};
+  const armSilenceTimer=()=>{
+    clearSilenceTimer();
+    silenceTimerRef.current=setTimeout(()=>{
+      const t=voiceTranscriptRef.current.trim();
+      try{recognitionRef.current?.stop();}catch{}
+      setListening(false);
+      if(t) sendMessage(t,{fromVoice:true});
+      voiceTranscriptRef.current="";
+    },SILENCE_MS);
+  };
   const startListening=()=>{
     if(!SpeechRecognition){showToast("Speech recognition not supported","error");return;}
-    if(listening){recognitionRef.current?.stop();setListening(false);return;}
+    if(listening){
+      // Manual stop: submit whatever's been heard so far
+      clearSilenceTimer();
+      try{recognitionRef.current?.stop();}catch{}
+      const t=voiceTranscriptRef.current.trim();
+      setListening(false);
+      if(t) sendMessage(t,{fromVoice:true});
+      voiceTranscriptRef.current="";
+      return;
+    }
+    voiceTranscriptRef.current="";
+    if(!showVoiceTranscript) setInput("");
     const r=new SpeechRecognition();recognitionRef.current=r;
-    r.lang="ar-SA";r.interimResults=true;r.continuous=false;r.maxAlternatives=1;
-    r.onstart=()=>setListening(true);
-    r.onresult=(e)=>{setInput(Array.from(e.results).map(x=>x[0].transcript).join(""));if(e.results[e.results.length-1].isFinal) setListening(false);};
-    r.onerror=(e)=>{setListening(false);if(e.error==="no-speech") showToast("No speech detected","info");else if(e.error!=="aborted") showToast(`Mic error: ${e.error}`,"error");};
-    r.onend=()=>setListening(false);r.start();
+    r.lang="ar-SA";r.interimResults=true;r.continuous=true;r.maxAlternatives=1;
+    r.onstart=()=>{setListening(true);armSilenceTimer();};
+    r.onresult=(e)=>{
+      const full=Array.from(e.results).map(x=>x[0].transcript).join("");
+      voiceTranscriptRef.current=full;
+      if(showVoiceTranscript) setInput(full);
+      armSilenceTimer();
+    };
+    r.onerror=(e)=>{
+      clearSilenceTimer();
+      setListening(false);
+      if(e.error==="no-speech") showToast("No speech detected","info");
+      else if(e.error!=="aborted") showToast(`Mic error: ${e.error}`,"error");
+    };
+    r.onend=()=>{clearSilenceTimer();setListening(false);};
+    r.start();
   };
 
-  useEffect(()=>()=>{if(window.speechSynthesis) window.speechSynthesis.cancel();recognitionRef.current?.stop();},[]);
+  useEffect(()=>()=>{
+    if(window.speechSynthesis) window.speechSynthesis.cancel();
+    clearSilenceTimer();
+    try{recognitionRef.current?.stop();}catch{}
+  },[]);
 
-  // Check if user message used any mission words
+  // Fuzzy mission-word detection: STT mangles spelling, so exact match is too
+  // strict. Compare each mission word against the user's transcript using
+  // diacritic-stripped, lowercased normalization + Levenshtein similarity.
   const checkMissionWords=(text)=>{
-    const strip=s=>s.replace(/[\u064B-\u065F\u0670]/g,"");
-    const textStripped=strip(text);
     missionWords.forEach(mw=>{
-      const mwStripped=strip(mw.arabicBase);
-      if(textStripped.includes(mwStripped)||text.toLowerCase().includes(mw.english.toLowerCase())){
+      const arHit=fuzzyContains(text,mw.arabicBase,FUZZY_THRESHOLD);
+      const enHit=fuzzyContains(text,mw.english,FUZZY_THRESHOLD);
+      if(arHit||enHit){
         setUsedMissionWords(p=>{const n=new Set(p);n.add(mw.id);return n;});
       }
     });
@@ -3111,14 +3286,14 @@ function ConversationScreen({decks,cardStates,onBack,onFinish,trackUsage,onLogSt
     setMissionWords(mission);
     try {
       const raw=await callClaude(
-        `You are helping an Arabic language learner choose a conversation topic.
+        `Help an Arabic learner pick a conversation topic. Use themes typical of the Al-Arabiyya Bayna Yadayk curriculum — everyday Arab/Muslim life: family, food, masjid, neighbors, market, hospitality, travel, prayer, school, work, holidays. Avoid generic abstractions.
+
 Vocabulary available: ${vocabList}
 
-Generate exactly 4 conversation topics that would naturally use many of these words.
-Each topic should be a short title (5-8 words max) in English.
+Return exactly 4 conversation topics (5-8 word titles, English) that would naturally use many of these words.
 
 Return ONLY valid JSON array: ["topic 1","topic 2","topic 3","topic 4"]`,
-        200,"other",trackUsage
+        180,"other",trackUsage
       );
       const parsed=extractJSON(raw);
       setTopics(Array.isArray(parsed)?parsed:["Daily life","At the market","Travel plans","My neighborhood"]);
@@ -3129,26 +3304,27 @@ Return ONLY valid JSON array: ["topic 1","topic 2","topic 3","topic 4"]`,
 
   // Step 2: Start conversation with selected topic
   const startWithTopic=async(topic)=>{
-    setSelectedTopic(topic);setPhase("chat");setLoading(true);setMessages([]);setUsedMissionWords(new Set());setCorrections([]);
+    setSelectedTopic(topic);setPhase("chat");setLoading(true);setMessages([]);setUsedMissionWords(new Set());setCorrections([]);setSessionFeedback(null);
     const missionList=missionWords.map(c=>`${c.english} (${c.arabicBase})`).join(", ");
     const learnedPool=Object.values(cardStates).flat().filter(c=>c.status==="known"||c.status==="weak");
     const learnedSample=[...learnedPool].sort(()=>Math.random()-0.5).slice(0,60).map(c=>c.arabicBase).join("، ");
     try {
       const raw=await callClaudeWithTashkeel(
-        `You are a friendly Arabic conversation partner. Topic: "${topic}"
+        `You are a patient native Arabic speaker chatting with a learner — modeled after the warm, real-life register of the "العربية بين يديك" (Al-Arabiyya Bayna Yadayk) curriculum: Modern Standard Arabic, full tashkeel, themed and contextual, drawn from everyday Arab/Muslim life rather than textbook filler.
+
+Topic for this conversation: "${topic}"
 Key vocabulary the learner should practice (mission words): ${missionList}
 
-Start a natural conversation about "${topic}" in Arabic. Use 2-3 of the mission words.
-Write 2-3 short sentences. Keep it beginner-friendly.
-After your Arabic, add a line break and English translation in parentheses.
+Open the conversation about "${topic}" in Arabic. Use 2-3 of the mission words. Keep it 2-3 short, natural sentences a real native speaker would actually say in this situation. End by inviting the learner to respond (a question or open prompt).
 
-QUALITY RULES — non-negotiable:
-- Speak naturally — like a real friend chatting, not a textbook example.
-- Beyond the mission words, weave in the learner's other studied words where they fit naturally. Bonus pool: ${learnedSample||"(none)"}
+Then, on a new line, give a short English translation in parentheses.
 
-CRITICAL: Every Arabic word MUST have full tashkeel.
-Return plain text, NOT JSON.`,
-        500,"other",trackUsage
+NON-NEGOTIABLE RULES:
+- Speak like a warm, patient friend — never like a textbook drill. Use cultural specifics from the Arab world where natural (food, family, prayer times, daily routines, places).
+- Weave the learner's already-studied words in only where they fit naturally — do NOT force them. Bonus pool: ${learnedSample||"(none)"}
+- Every Arabic word MUST have full tashkeel (فَتْحَة ضَمَّة كَسْرَة سُكُون شَدَّة تَنْوِين).
+- Plain text only — no JSON.`,
+        450,"other",trackUsage
       );
       setMessages([{role:"ai",text:raw}]);
       if(voiceMode) speakArabic(raw);
@@ -3157,12 +3333,19 @@ Return plain text, NOT JSON.`,
     } finally { setLoading(false);scrollBottom(); }
   };
 
-  // Send message with correction request
-  const sendMessage=async(overrideText)=>{
+  // Send a user message. Inline corrections are NOT requested — corrections
+  // are collected at end-of-session via generateSessionFeedback() so the
+  // conversation flow isn't interrupted by red-flag callouts.
+  const sendMessage=async(overrideText,opts={})=>{
     const userMsg=(overrideText||input).trim();
     if(!userMsg||loading) return;
+    const fromVoice=!!opts.fromVoice;
     setInput("");
-    setMessages(p=>[...p,{role:"user",text:userMsg}]);
+    // hidden=true messages are kept in state for context + scoring but not
+    // rendered in the chat list (so the AI doesn't visibly echo the user
+    // mid-conversation). Toggle "Show what I said" surfaces them.
+    const hidden=fromVoice && !showVoiceTranscript;
+    setMessages(p=>[...p,{role:"user",text:userMsg,voice:fromVoice,hidden}]);
     checkMissionWords(userMsg);
     setLoading(true);scrollBottom();
 
@@ -3172,27 +3355,27 @@ Return plain text, NOT JSON.`,
     const learnedSample=[...learnedPool].sort(()=>Math.random()-0.5).slice(0,60).map(c=>c.arabicBase).join("، ");
     try {
       const raw=await callClaudeWithTashkeel(
-        `You are a friendly Arabic conversation partner. Topic: "${selectedTopic}"
-Mission vocabulary to encourage: ${missionList}
+        `You are a patient native Arabic speaker chatting with a learner — register modelled after "العربية بين يديك" (Al-Arabiyya Bayna Yadayk): warm Modern Standard Arabic, full tashkeel, themed and culturally grounded.
+
+Topic: "${selectedTopic}"
+Mission vocabulary to encourage (use where it fits): ${missionList}
 
 Conversation so far:
 ${history}
 User: ${userMsg}
 
-Instructions:
-1. First, if the user's Arabic has any mistakes, write a brief correction line starting with [تَصْحِيح]: showing the corrected sentence. Be medium strictness — fix grammar, word usage, sentence structure. Skip this if the message was in English or had no errors.
-2. Then continue the conversation naturally in Arabic (2-3 sentences). Try to use mission vocabulary AND weave in other words the learner has already studied where they fit naturally (do NOT force them). Bonus pool: ${learnedSample||"(none)"}
-3. End with English translation in parentheses.
+DO NOT correct the user inline. Their Arabic may have small errors — just continue the conversation naturally and, where helpful, model the correct form by using it yourself in your reply. No "[تَصْحِيح]", no red-flag callouts, no "خطأ".
 
-QUALITY RULE — non-negotiable: Speak naturally, like a real friend chatting. No textbook stiffness.
+Respond in 2-3 short, natural Arabic sentences a real native speaker would say. End with a question or open prompt that invites the learner to keep talking. Then a new line, English translation in parentheses.
 
-CRITICAL: Every Arabic word MUST have full tashkeel.
-Return plain text, NOT JSON.`,
-        650,"other",trackUsage
+NON-NEGOTIABLE RULES:
+- Friend, not teacher. Warmth and curiosity over correction.
+- Cultural specificity where natural (food, family, prayer, places, daily life in the Arab world).
+- Weave in the learner's other studied words only where they fit naturally. Bonus pool: ${learnedSample||"(none)"}
+- Every Arabic word MUST have full tashkeel.
+- Plain text — no JSON.`,
+        500,"other",trackUsage
       );
-      // Extract correction if present
-      const corrMatch=raw.match(/\[تَصْحِيح\][:：]\s*(.+?)(?:\n|$)/);
-      if(corrMatch) setCorrections(p=>[...p,{original:userMsg,corrected:corrMatch[1].trim()}]);
       setMessages(p=>[...p,{role:"ai",text:raw}]);
       if(voiceMode) speakArabic(raw);
     } catch {
@@ -3200,11 +3383,58 @@ Return plain text, NOT JSON.`,
     } finally { setLoading(false);scrollBottom(); }
   };
 
-  // Finish → score
+  // Generate end-of-session feedback in one batched LLM call: gentle
+  // rephrasings of sentences the user produced + mission words that
+  // never came up (could be queued for review).
+  const generateSessionFeedback=async(userTurns,missionMissedWords)=>{
+    if(!userTurns.length){setSessionFeedback({rephrasings:[],missedWords:missionMissedWords.map(m=>({english:m.english,arabic:m.arabicBase}))});return;}
+    setFeedbackLoading(true);
+    try {
+      const turnsBlock=userTurns.map((t,i)=>`${i+1}. "${t}"`).join("\n");
+      const missedList=missionMissedWords.map(m=>`${m.english} (${m.arabicBase})`).join(", ")||"(none)";
+      const raw=await callClaudeWithTashkeel(
+        `You are a kind Arabic tutor giving a learner a short, warm end-of-session debrief — same register as "العربية بين يديك" (Al-Arabiyya Bayna Yadayk).
+
+The learner said (possibly mistranscribed by speech-to-text — be charitable about small typos and assume natural speech intent):
+${turnsBlock}
+
+Mission words they did NOT manage to use this session: ${missedList}
+
+Produce JSON with up to 3 GENTLE rephrasings and a list of missed mission words. Pick rephrasings that genuinely improve fluency, grammar, or natural register — NOT trivial nitpicks. Frame each suggestion warmly, like "ربما من الأفضل أن تقول…" or "طريقة طبيعية أخرى…" — never "خطأ" or red-flag language.
+
+Return ONLY valid JSON, no markdown:
+{
+  "rephrasings": [
+    {"original":"<what the learner said>","suggested":"<gentle rephrasing in Arabic with full tashkeel>","why":"<one short English line, encouraging tone>"}
+  ],
+  "missedWords": [
+    {"english":"<en>","arabic":"<ar with tashkeel>"}
+  ]
+}
+
+CRITICAL: Every Arabic phrase must have full tashkeel.`,
+        700,"other",trackUsage
+      );
+      const parsed=extractJSON(raw);
+      setSessionFeedback({
+        rephrasings:Array.isArray(parsed?.rephrasings)?parsed.rephrasings.slice(0,3):[],
+        missedWords:Array.isArray(parsed?.missedWords)?parsed.missedWords:missionMissedWords.map(m=>({english:m.english,arabic:m.arabicBase})),
+      });
+    } catch {
+      setSessionFeedback({rephrasings:[],missedWords:missionMissedWords.map(m=>({english:m.english,arabic:m.arabicBase}))});
+    } finally { setFeedbackLoading(false); }
+  };
+
+  // Finish → score. Kick off async feedback generation (rephrasings + missed
+  // mission words) so the summary screen has something useful when it lands.
   const finishSession=()=>{
     if(window.speechSynthesis) window.speechSynthesis.cancel();
-    recognitionRef.current?.stop();
+    clearSilenceTimer();
+    try{recognitionRef.current?.stop();}catch{}
     setPhase("score");
+    const userTurns=messages.filter(m=>m.role==="user").map(m=>m.text);
+    const missed=missionWords.filter(mw=>!usedMissionWords.has(mw.id));
+    generateSessionFeedback(userTurns,missed);
   };
 
   // Calculate score
@@ -3296,18 +3526,45 @@ Return plain text, NOT JSON.`,
             })}
           </div>
         </div>
-        {/* Corrections summary */}
-        {corrections.length>0&&(
+        {/* Gentle end-of-session feedback (rephrasings + missed mission words) */}
+        {(feedbackLoading||sessionFeedback)&&(
           <div style={{background:"var(--surface)",border:"1.5px solid var(--border)",borderRadius:"var(--rs)",padding:"14px"}}>
-            <div className="sec">Corrections ({corrections.length})</div>
-            <div style={{display:"flex",flexDirection:"column",gap:8}}>
-              {corrections.map((c,i)=>(
-                <div key={i} style={{fontSize:13,lineHeight:1.6}}>
-                  <div style={{color:"var(--weak)",textDecoration:"line-through"}}>{c.original}</div>
-                  <div style={{color:"var(--know)"}}>{c.corrected}</div>
-                </div>
-              ))}
-            </div>
+            <div className="sec">Gentle Suggestions</div>
+            {feedbackLoading?(
+              <div style={{fontSize:13,color:"var(--text3)",display:"flex",alignItems:"center",gap:8,padding:"8px 0"}}>
+                <RefreshCw size={14} className="spin"/> Putting together a kind debrief…
+              </div>
+            ):(
+              <>
+                {sessionFeedback.rephrasings?.length>0?(
+                  <div style={{display:"flex",flexDirection:"column",gap:12}}>
+                    {sessionFeedback.rephrasings.map((r,i)=>(
+                      <div key={i} style={{fontSize:13,lineHeight:1.65,padding:"8px 10px",background:"var(--accent-bg)",border:"1px solid var(--accent-border)",borderRadius:"var(--rxs)"}}>
+                        <div style={{fontSize:11,color:"var(--text3)",marginBottom:3}}>You said:</div>
+                        <div style={{color:"var(--text2)",marginBottom:6}} dir={/[؀-ۿ]/.test(r.original)?"rtl":"ltr"}>{r.original}</div>
+                        <div style={{fontSize:11,color:"var(--accent)",marginBottom:3,fontWeight:600}}>Another natural way:</div>
+                        <div className="ar" style={{fontSize:16,color:"var(--text)",marginBottom:4}}>{r.suggested}</div>
+                        {r.why&&<div style={{fontSize:11.5,color:"var(--text3)",fontStyle:"italic"}}>{r.why}</div>}
+                      </div>
+                    ))}
+                  </div>
+                ):(
+                  <div style={{fontSize:13,color:"var(--text3)",padding:"6px 0"}}>Nothing to suggest — you sounded natural this round.</div>
+                )}
+                {sessionFeedback.missedWords?.length>0&&(
+                  <div style={{marginTop:12,paddingTop:12,borderTop:"1px solid var(--border)"}}>
+                    <div style={{fontSize:11.5,color:"var(--text3)",marginBottom:6}}>Words to try next time:</div>
+                    <div style={{display:"flex",flexWrap:"wrap",gap:6}}>
+                      {sessionFeedback.missedWords.map((w,i)=>(
+                        <span key={i} style={{fontSize:12,padding:"3px 9px",borderRadius:100,background:"var(--surface2)",border:"1px solid var(--border)",color:"var(--text2)"}}>
+                          {w.english} · <span className="ar" style={{fontSize:13}}>{w.arabic}</span>
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </>
+            )}
           </div>
         )}
         {/* Self rating */}
@@ -3339,9 +3596,16 @@ Return plain text, NOT JSON.`,
   // ── CHAT PHASE ──
   return (
     <div className="screen" style={{display:"flex",flexDirection:"column",paddingBottom:0}}>
-      <Hdr title={selectedTopic||"Conversation"} sub={master?"Master Speaking":"Speaking"} onBack={()=>{if(window.speechSynthesis) window.speechSynthesis.cancel();recognitionRef.current?.stop();onBack();}}
+      <Hdr title={selectedTopic||"Conversation"} sub={master?"Master Speaking":"Speaking"} onBack={()=>{if(window.speechSynthesis) window.speechSynthesis.cancel();clearSilenceTimer();try{recognitionRef.current?.stop();}catch{}onBack();}}
         right={
           <div style={{display:"flex",gap:6}}>
+            {voiceMode&&(
+              <button className={`btn btn-sm ${showVoiceTranscript?"btn-primary":""}`} onClick={()=>setShowVoiceTranscript(v=>!v)}
+                title={showVoiceTranscript?"Hide what the mic hears":"Show what the mic hears"}
+                style={showVoiceTranscript?{}:{background:"var(--surface2)",color:"var(--text2)"}}>
+                {showVoiceTranscript?"Show 👁":"Hide 🙈"}
+              </button>
+            )}
             <button className={`btn btn-sm ${voiceMode?"btn-primary":""}`} onClick={()=>{setVoiceMode(v=>!v);if(window.speechSynthesis) window.speechSynthesis.cancel();setSpeaking(false);}}
               style={voiceMode?{}:{background:"var(--surface2)",color:"var(--text2)"}}>
               {voiceMode?<><Volume2 size={13}/></>:<><Mic size={13}/></>}
@@ -3362,18 +3626,32 @@ Return plain text, NOT JSON.`,
           })}
           <span style={{fontSize:10,color:"var(--text3)",alignSelf:"center",marginLeft:"auto"}}>{usedMissionWords.size}/{missionWords.length}</span>
         </div>
-        {/* Chat messages */}
+        {/* Chat messages — hide voice transcripts unless the user toggled "show" */}
         <div ref={chatRef} style={{flex:1,overflowY:"auto",display:"flex",flexDirection:"column",gap:10,paddingTop:10,paddingBottom:12}}>
-          {messages.map((m,i)=>(
-            <div key={i} className={`chat-bubble chat-${m.role==="ai"?"ai":"user"}`} style={m.role==="ai"&&voiceMode?{cursor:"pointer"}:{}}>
-              {m.role==="ai"?(
-                <div onClick={voiceMode?()=>handleBubbleTap(m):undefined}>
-                  <ClickableArabic text={m.text} onWordClick={(word,ctx)=>setWordPopup({word,context:ctx})} fontSize={18}/>
-                  <div style={{fontSize:11,color:"var(--text3)",marginTop:4}}>Tap any word to look it up{voiceMode&&(speaking?" · 🔊":" · 🔈")}</div>
-                </div>
-              ):<div>{m.text}</div>}
+          {messages.map((m,i)=>{
+            if(m.role==="user"&&m.hidden&&!showVoiceTranscript) return null;
+            return (
+              <div key={i} className={`chat-bubble chat-${m.role==="ai"?"ai":"user"}`} style={m.role==="ai"&&voiceMode?{cursor:"pointer"}:{}}>
+                {m.role==="ai"?(
+                  <div onClick={voiceMode?()=>handleBubbleTap(m):undefined}>
+                    <ClickableArabic text={m.text} onWordClick={(word,ctx)=>setWordPopup({word,context:ctx})} fontSize={18}/>
+                    <div style={{fontSize:11,color:"var(--text3)",marginTop:4}}>Tap any word to look it up{voiceMode&&(speaking?" · 🔊":" · 🔈")}</div>
+                  </div>
+                ):(
+                  <div>
+                    {m.voice&&<div style={{fontSize:10,color:"var(--text3)",marginBottom:2,opacity:.7}}>🎙 transcribed</div>}
+                    {m.text}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+          {listening&&(
+            <div style={{alignSelf:"center",padding:"6px 14px",color:"var(--text3)",fontSize:12,background:"var(--surface2)",borderRadius:100,display:"flex",alignItems:"center",gap:6}}>
+              <span style={{width:6,height:6,borderRadius:"50%",background:"var(--weak)",display:"inline-block",animation:"pulse 1.2s infinite"}}/>
+              Listening… pause for {Math.round(SILENCE_MS/100)/10}s to send
             </div>
-          ))}
+          )}
           {loading&&<div style={{alignSelf:"flex-start",padding:"8px 12px",color:"var(--text3)",fontSize:13}}><RefreshCw size={13} className="spin" style={{marginRight:6}}/>Thinking…</div>}
         </div>
         {/* Input bar */}
@@ -3559,18 +3837,18 @@ function MasterReviewScreen({decks,cardStates,onBack,onSwipeCard,onUndoSwipe,tra
     const learnedSample=[...learnedPool].sort(()=>Math.random()-0.5).slice(0,60).map(c=>c.arabicBase).join("، ");
     try {
       const raw=await callClaudeWithTashkeel(
-        `Arabic teacher creating a flashcard learning aid.
+        `Arabic teacher creating a learning aid — register modelled after "العربية بين يديك" (Al-Arabiyya Bayna Yadayk): warm, contextual, drawn from everyday Arab/Muslim life.
 Word: "${card.english}" · Arabic form "${arabicForm}" (${FORM_LABELS[selForm]||selForm})
 Generate: 1) ONE short Arabic sentence (6-12 words) using EXACTLY: ${arabicForm}  2) English translation
 
 QUALITY RULES — non-negotiable:
-- Sentence MUST sound natural and useful — like real speech, not textbook filler.
+- Sentence sounds like a real native speaker in daily life (home, masjid, market, with family) — never textbook filler.
 - Weave in as many of the learner's already-studied words as fits naturally (do NOT force them). Pool: ${learnedSample||"(none yet)"}
 - Grammatically correct and idiomatic Modern Standard Arabic.
 
 CRITICAL: Every Arabic word MUST have full tashkeel.
 Return ONLY valid JSON: {"sentence":"...","translation":"..."}`,
-        500,"sentence",trackUsage
+        350,"sentence",trackUsage
       );
       if(id!==genRef.current) return;
       setGen(extractJSON(raw));
@@ -3580,14 +3858,9 @@ Return ONLY valid JSON: {"sentence":"...","translation":"..."}`,
     } finally { setGenLoading(false); }
   };
   const playMasterAudio=()=>{
-    if(!gen?.sentence||!window.speechSynthesis) return;
-    window.speechSynthesis.cancel();
-    if(mPlaying){setMPlaying(false);return;}
-    const utt=new SpeechSynthesisUtterance(gen.sentence);
-    utt.lang="ar-SA";utt.rate=0.82;
-    const v=window.speechSynthesis.getVoices().find(v=>v.lang.startsWith("ar"));if(v) utt.voice=v;
-    utt.onend=()=>setMPlaying(false);utt.onerror=()=>setMPlaying(false);
-    setMPlaying(true);window.speechSynthesis.speak(utt);
+    if(!gen?.sentence) return;
+    if(mPlaying){stopTtsAudio();setMPlaying(false);return;}
+    synthesizeArabic(gen.sentence,{onStart:()=>setMPlaying(true),onEnd:()=>setMPlaying(false)});
   };
 
   // Active study
