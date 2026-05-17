@@ -3433,12 +3433,17 @@ function ConversationScreen({decks,cardStates,onBack,onFinish,trackUsage,onLogSt
     synthesizeArabic(text,{onStart:()=>setSpeaking(true),onEnd:()=>setSpeaking(false)});
   };
 
-  // Silence-detected auto-end + hidden transcript flow:
-  //  - continuous mode keeps the recognizer alive even between pauses
-  //  - each result resets a silence timer; when no new result lands within
-  //    SILENCE_MS we stop the mic and auto-submit the buffered transcript
-  //  - transcript is buffered in a ref; it only streams to the input field
-  //    when the user has explicitly enabled showVoiceTranscript
+  // Two listening pipelines, picked dynamically by `startListening` below:
+  //  1. Web Speech API (default — free, instant interim results, browser-limited
+  //     accuracy on Arabic). Auto-stops after SILENCE_MS of silence via timer.
+  //  2. MediaRecorder + /api/stt (when Enhanced STT is toggled on and an
+  //     OpenAI key is set). Records audio, watches RMS volume for silence,
+  //     stops, posts the blob to Whisper, then submits the transcript.
+  //
+  // Both paths feed into sendMessage(transcript,{fromVoice:true}) so the rest
+  // of the screen — mission-word tracking, hidden bubbles, end-of-session
+  // feedback — works identically.
+  const [transcribing,setTranscribing]=useState(false);
   const clearSilenceTimer=()=>{if(silenceTimerRef.current){clearTimeout(silenceTimerRef.current);silenceTimerRef.current=null;}};
   const armSilenceTimer=()=>{
     clearSilenceTimer();
@@ -3450,18 +3455,82 @@ function ConversationScreen({decks,cardStates,onBack,onFinish,trackUsage,onLogSt
       voiceTranscriptRef.current="";
     },SILENCE_MS);
   };
-  const startListening=()=>{
-    if(!SpeechRecognition){showToast("Speech recognition not supported","error");return;}
-    if(listening){
-      // Manual stop: submit whatever's been heard so far
-      clearSilenceTimer();
-      try{recognitionRef.current?.stop();}catch{}
-      const t=voiceTranscriptRef.current.trim();
+  // ── Pipeline 2: MediaRecorder → /api/stt (OpenAI Whisper)
+  // Uses an AudioContext analyser to watch RMS volume; once the user has
+  // produced speech and then stayed below the silence threshold for
+  // SILENCE_MS, the recording stops and the blob is sent for transcription.
+  const startWhisperListening=async()=>{
+    let stream;
+    try { stream = await navigator.mediaDevices.getUserMedia({audio:true}); }
+    catch { showToast("Microphone access denied","error"); return; }
+    const AC = window.AudioContext || window.webkitAudioContext;
+    const ctx = new AC();
+    const source = ctx.createMediaStreamSource(stream);
+    const analyser = ctx.createAnalyser();
+    analyser.fftSize = 512;
+    source.connect(analyser);
+    const buf = new Uint8Array(analyser.fftSize);
+    const SILENCE_RMS = 0.018; // empirical — below this counts as silence
+
+    // Pick a supported MIME type. webm/opus is widely supported; Safari needs mp4.
+    const tryTypes = ["audio/webm;codecs=opus","audio/webm","audio/mp4","audio/ogg;codecs=opus"];
+    const mimeType = tryTypes.find(t=>window.MediaRecorder?.isTypeSupported?.(t)) || "";
+    const recorder = new MediaRecorder(stream, mimeType ? {mimeType} : {});
+    const chunks = [];
+    recorder.ondataavailable = e => { if (e.data.size > 0) chunks.push(e.data); };
+
+    let stopped = false;
+    let speechDetected = false;
+    let silenceStartedAt = null;
+    const cleanup = () => {
+      stream.getTracks().forEach(t=>t.stop());
+      ctx.close().catch(()=>{});
+    };
+    const stop = () => {
+      if (stopped) return;
+      stopped = true;
+      try { recorder.stop(); } catch {}
+    };
+    recognitionRef.current = { stop };
+
+    recorder.onstop = async () => {
+      cleanup();
       setListening(false);
-      if(t) sendMessage(t,{fromVoice:true});
-      voiceTranscriptRef.current="";
-      return;
-    }
+      const blob = new Blob(chunks, { type: recorder.mimeType || mimeType || "audio/webm" });
+      if (blob.size < 800) return; // user didn't really say anything
+      setTranscribing(true);
+      try {
+        const transcript = await transcribeAudio(blob);
+        if (transcript && transcript.trim()) {
+          sendMessage(transcript.trim(), { fromVoice: true });
+        } else {
+          showToast("Couldn't transcribe — check OpenAI key & credits","error");
+        }
+      } finally { setTranscribing(false); }
+    };
+
+    recorder.start();
+    setListening(true);
+
+    const tick = () => {
+      if (stopped) return;
+      analyser.getByteTimeDomainData(buf);
+      let sum = 0;
+      for (let i=0; i<buf.length; i++) { const v=(buf[i]-128)/128; sum += v*v; }
+      const rms = Math.sqrt(sum / buf.length);
+      if (rms > SILENCE_RMS) { speechDetected = true; silenceStartedAt = null; }
+      else if (speechDetected) {
+        if (silenceStartedAt === null) silenceStartedAt = Date.now();
+        else if (Date.now() - silenceStartedAt >= SILENCE_MS) { stop(); return; }
+      }
+      requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  };
+
+  // ── Pipeline 1: browser Web Speech API
+  const startWebSpeechListening=()=>{
+    if(!SpeechRecognition){showToast("Speech recognition not supported","error");return;}
     voiceTranscriptRef.current="";
     if(!showVoiceTranscript) setInput("");
     const r=new SpeechRecognition();recognitionRef.current=r;
@@ -3481,6 +3550,23 @@ function ConversationScreen({decks,cardStates,onBack,onFinish,trackUsage,onLogSt
     };
     r.onend=()=>{clearSilenceTimer();setListening(false);};
     r.start();
+  };
+
+  // Dispatcher: picks the pipeline based on user settings. Both paths share
+  // the same "tap mic again to stop early" handling.
+  const startListening=()=>{
+    if(listening){
+      clearSilenceTimer();
+      try{recognitionRef.current?.stop();}catch{}
+      const t=voiceTranscriptRef.current.trim();
+      setListening(false);
+      if(t) sendMessage(t,{fromVoice:true});
+      voiceTranscriptRef.current="";
+      return;
+    }
+    const useWhisper = _sttEnabled && _sttKey;
+    if (useWhisper) startWhisperListening();
+    else startWebSpeechListening();
   };
 
   useEffect(()=>()=>{
@@ -3882,7 +3968,12 @@ CRITICAL: Every Arabic phrase must have full tashkeel.`,
           {listening&&(
             <div style={{alignSelf:"center",padding:"6px 14px",color:"var(--text3)",fontSize:12,background:"var(--surface2)",borderRadius:100,display:"flex",alignItems:"center",gap:6}}>
               <span style={{width:6,height:6,borderRadius:"50%",background:"var(--weak)",display:"inline-block",animation:"pulse 1.2s infinite"}}/>
-              Listening… pause for {Math.round(SILENCE_MS/100)/10}s to send
+              Listening{_sttEnabled&&_sttKey?" (Whisper)":""}… pause for {Math.round(SILENCE_MS/100)/10}s to send
+            </div>
+          )}
+          {transcribing&&(
+            <div style={{alignSelf:"center",padding:"6px 14px",color:"var(--accent)",fontSize:12,background:"var(--accent-bg)",borderRadius:100,display:"flex",alignItems:"center",gap:6}}>
+              <RefreshCw size={11} className="spin"/> Transcribing with Whisper…
             </div>
           )}
           {loading&&<div style={{alignSelf:"flex-start",padding:"8px 12px",color:"var(--text3)",fontSize:13}}><RefreshCw size={13} className="spin" style={{marginRight:6}}/>Thinking…</div>}
