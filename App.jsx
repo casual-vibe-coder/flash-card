@@ -570,7 +570,7 @@ let _ttsVoice = "ar-XA-Wavenet-C";
 let _ttsSpeed = 0.92;
 let _sttKey = ""; // OpenAI key, sent to /api/stt for Whisper
 let _sttEnabled = false; // user has explicitly opted in to enhanced STT
-let _convSilenceMs = 1400;
+let _convSilenceMs = 2500;
 let _convFuzzyThreshold = 0.8;
 
 function pickModelForTag(tag){return _modelByTag[tag]||_defaultModel;}
@@ -1788,10 +1788,10 @@ function SettingsScreen({settings,setSettings,onBack,usage,user,onSignOut,onRepl
             <div>
               <div style={{display:"flex",justifyContent:"space-between",marginBottom:5}}>
                 <label className="lbl" style={{margin:0}}>Silence Threshold</label>
-                <span style={{fontSize:11,color:"var(--text3)",fontFamily:"monospace"}}>{((local.convSilenceMs??1400)/1000).toFixed(1)}s</span>
+                <span style={{fontSize:11,color:"var(--text3)",fontFamily:"monospace"}}>{((local.convSilenceMs??2500)/1000).toFixed(1)}s</span>
               </div>
-              <input type="range" min="800" max="3000" step="100" value={local.convSilenceMs??1400} onChange={e=>set("convSilenceMs",parseInt(e.target.value,10))} style={{width:"100%"}}/>
-              <div style={{fontSize:11,color:"var(--text3)",marginTop:2}}>How long the mic waits in silence before auto-submitting your turn. Default: 1.4s.</div>
+              <input type="range" min="800" max="5000" step="100" value={local.convSilenceMs??2500} onChange={e=>set("convSilenceMs",parseInt(e.target.value,10))} style={{width:"100%"}}/>
+              <div style={{fontSize:11,color:"var(--text3)",marginTop:2}}>How long the mic waits in silence before auto-submitting your turn. Higher = more forgiving of natural mid-thought pauses. Default: 2.5s. Max: 5.0s.</div>
             </div>
             <div>
               <div style={{display:"flex",justifyContent:"space-between",marginBottom:5}}>
@@ -3403,7 +3403,10 @@ function ConversationScreen({decks,cardStates,onBack,onFinish,trackUsage,onLogSt
   const [messages,setMessages]=useState(saved.messages||[]);
   const [input,setInput]=useState("");
   const [loading,setLoading]=useState(false);
-  const [voiceMode,setVoiceMode]=useState(saved.voiceMode||false);
+  // Voice mode defaults to ON for a natural hands-free conversation: the AI
+  // speaks, the mic auto-listens, the user replies, repeat. Respect a saved
+  // false (user has explicitly turned it off in a prior session).
+  const [voiceMode,setVoiceMode]=useState(()=>typeof saved.voiceMode==="boolean"?saved.voiceMode:true);
   const [listening,setListening]=useState(false);
   const [speaking,setSpeaking]=useState(false);
   const [wordPopup,setWordPopup]=useState(null);
@@ -3432,9 +3435,21 @@ function ConversationScreen({decks,cardStates,onBack,onFinish,trackUsage,onLogSt
   const recognitionRef=useRef(null);
   const silenceTimerRef=useRef(null);
   const voiceTranscriptRef=useRef("");
+  // Refs that mirror state so the hands-free auto-listen chain (fired from
+  // an audio.onended callback) reads the latest values instead of a stale
+  // closure captured when speakArabic was set up.
+  const voiceModeRef=useRef(voiceMode);
+  const phaseRef=useRef(phase);
+  const listeningRef=useRef(false);
+  const loadingRef=useRef(false);
+  const handsFreeAbortedRef=useRef(false); // set when user manually stops mid-chain
+  useEffect(()=>{voiceModeRef.current=voiceMode;},[voiceMode]);
+  useEffect(()=>{phaseRef.current=phase;},[phase]);
+  useEffect(()=>{listeningRef.current=listening;},[listening]);
+  useEffect(()=>{loadingRef.current=loading;},[loading]);
   // Pulled from settings (synced via module refs) so the sliders in Settings
   // take effect on the next mic press without remounting this screen.
-  const SILENCE_MS=_convSilenceMs||1400;
+  const SILENCE_MS=_convSilenceMs||2500;
   const FUZZY_THRESHOLD=_convFuzzyThreshold||0.8;
 
   const SpeechRecognition=window.SpeechRecognition||window.webkitSpeechRecognition;
@@ -3449,9 +3464,33 @@ function ConversationScreen({decks,cardStates,onBack,onFinish,trackUsage,onLogSt
 
   const scrollBottom=()=>setTimeout(()=>chatRef.current?.scrollTo(0,chatRef.current.scrollHeight),50);
 
+  // Speak the AI's reply, then auto-hand the turn back to the user by
+  // re-arming the mic. This is the heart of the hands-free flow: you talk,
+  // it listens; it talks, the mic restarts when it's done — no taps in
+  // between. Aborts cleanly if the user finished the session, navigated
+  // away, manually stopped, or is still mid-AI-fetch.
   const speakArabic=(text)=>{
     if(!text) return;
-    synthesizeArabic(text,{onStart:()=>setSpeaking(true),onEnd:()=>setSpeaking(false)});
+    handsFreeAbortedRef.current=false;
+    synthesizeArabic(text,{
+      onStart:()=>setSpeaking(true),
+      onEnd:()=>{
+        setSpeaking(false);
+        // Only chain to listening if we're still in the chat phase with voice
+        // mode on and we aren't already listening / waiting for the AI.
+        if(!voiceModeRef.current) return;
+        if(phaseRef.current!=="chat") return;
+        if(listeningRef.current) return;
+        if(loadingRef.current) return;
+        if(handsFreeAbortedRef.current) return;
+        // Small gap so the AI's last syllable doesn't leak into the mic.
+        setTimeout(()=>{
+          if(voiceModeRef.current&&phaseRef.current==="chat"&&!listeningRef.current&&!loadingRef.current&&!handsFreeAbortedRef.current){
+            startListening();
+          }
+        },350);
+      },
+    });
   };
 
   // Two listening pipelines, picked dynamically by `startListening` below:
@@ -3574,7 +3613,9 @@ function ConversationScreen({decks,cardStates,onBack,onFinish,trackUsage,onLogSt
   };
 
   // Dispatcher: picks the pipeline based on user settings. Both paths share
-  // the same "tap mic again to stop early" handling.
+  // the same "tap mic again to stop early" handling. Tapping during AI
+  // speech acts as a natural barge-in: cuts off the AI audio and opens the
+  // mic immediately.
   const startListening=()=>{
     if(listening){
       clearSilenceTimer();
@@ -3585,6 +3626,8 @@ function ConversationScreen({decks,cardStates,onBack,onFinish,trackUsage,onLogSt
       voiceTranscriptRef.current="";
       return;
     }
+    // Barge-in: silence any AI speech so the mic doesn't pick it up.
+    if(speaking){ stopTtsAudio(); setSpeaking(false); }
     const useWhisper = _sttEnabled && _sttKey;
     if (useWhisper) startWhisperListening();
     else startWebSpeechListening();
@@ -3768,9 +3811,11 @@ CRITICAL: Every Arabic phrase must have full tashkeel.`,
   // Finish → score. Kick off async feedback generation (rephrasings + missed
   // mission words) so the summary screen has something useful when it lands.
   const finishSession=()=>{
-    if(window.speechSynthesis) window.speechSynthesis.cancel();
+    handsFreeAbortedRef.current=true;
+    stopTtsAudio();
     clearSilenceTimer();
     try{recognitionRef.current?.stop();}catch{}
+    setListening(false); setSpeaking(false);
     setPhase("score");
     const userTurns=messages.filter(m=>m.role==="user").map(m=>m.text);
     const missed=missionWords.filter(mw=>!usedMissionWords.has(mw.id));
@@ -3946,7 +3991,20 @@ CRITICAL: Every Arabic phrase must have full tashkeel.`,
                 {showVoiceTranscript?"Show 👁":"Hide 🙈"}
               </button>
             )}
-            <button className={`btn btn-sm ${voiceMode?"btn-primary":""}`} onClick={()=>{setVoiceMode(v=>!v);if(window.speechSynthesis) window.speechSynthesis.cancel();setSpeaking(false);}}
+            <button className={`btn btn-sm ${voiceMode?"btn-primary":""}`} onClick={()=>{
+              const next=!voiceMode;
+              setVoiceMode(next);
+              if(!next){
+                // Turning voice mode off mid-chain: abort everything.
+                handsFreeAbortedRef.current=true;
+                stopTtsAudio();
+                clearSilenceTimer();
+                try{recognitionRef.current?.stop();}catch{}
+                setSpeaking(false); setListening(false);
+              } else {
+                handsFreeAbortedRef.current=false;
+              }
+            }}
               style={voiceMode?{}:{background:"var(--surface2)",color:"var(--text2)"}}>
               {voiceMode?<><Volume2 size={13}/></>:<><Mic size={13}/></>}
             </button>
@@ -3956,6 +4014,23 @@ CRITICAL: Every Arabic phrase must have full tashkeel.`,
           </div>
         }/>
       <div style={{flex:1,display:"flex",flexDirection:"column",padding:"0 20px",overflow:"hidden"}}>
+        {/* Turn-status banner — only when voice mode is on, so the user
+            knows whether to wait or speak without staring at the mic icon. */}
+        {voiceMode&&(
+          <div style={{padding:"6px 0",display:"flex",justifyContent:"center"}}>
+            <div style={{display:"inline-flex",alignItems:"center",gap:8,padding:"4px 12px",borderRadius:100,fontSize:11.5,fontWeight:600,
+              background:speaking?"var(--accent-bg)":listening?"var(--weak-bg)":loading||transcribing?"var(--surface2)":"var(--surface2)",
+              border:`1px solid ${speaking?"var(--accent-border)":listening?"var(--weak-border)":"var(--border)"}`,
+              color:speaking?"var(--accent)":listening?"var(--weak)":"var(--text3)"}}>
+              {speaking?<><Volume2 size={11}/> AI is speaking…</>
+                :listening?<><Mic size={11}/> Your turn — speak naturally</>
+                :transcribing?<><RefreshCw size={11} className="spin"/> Transcribing…</>
+                :loading?<><RefreshCw size={11} className="spin"/> Thinking…</>
+                :<><Mic size={11} style={{opacity:.5}}/> Hands-free · waiting</>
+              }
+            </div>
+          </div>
+        )}
         {/* Mission words bar */}
         <div style={{padding:"8px 0",display:"flex",gap:5,flexWrap:"wrap",borderBottom:"1px solid var(--border)"}}>
           {missionWords.map(mw=>{
@@ -4921,7 +4996,7 @@ export default function App() {
     _ttsSpeed = typeof settings.ttsSpeed==="number"?settings.ttsSpeed:0.92;
     _sttKey = settings.sttKey||"";
     _sttEnabled = !!settings.sttEnabled;
-    _convSilenceMs = typeof settings.convSilenceMs==="number"?settings.convSilenceMs:1400;
+    _convSilenceMs = typeof settings.convSilenceMs==="number"?settings.convSilenceMs:2500;
     _convFuzzyThreshold = typeof settings.convFuzzyThreshold==="number"?settings.convFuzzyThreshold:0.8;
   },[settings.model,settings.models,settings.imageModel,settings.orKey,settings.gKey,settings.ttsKey,settings.ttsVoice,settings.ttsSpeed,settings.sttKey,settings.sttEnabled,settings.convSilenceMs,settings.convFuzzyThreshold]);
   const go=s=>setScreen(s);
