@@ -328,14 +328,16 @@ const OR_MODELS = [
 
 // Image generation models — Google's Gemini Flash Image family ("Nano Banana")
 const IMAGE_MODELS = [
-  {id:"gemini-2.5-flash-image", label:"Nano Banana 1  · Gemini 2.5 (fast, GA)"},
-  {id:"gemini-3.1-flash-image-preview", label:"Nano Banana 2  · Gemini 3.1 (slower, sharper, preview)"},
+  {id:"gemini-2.5-flash-image", label:"Nano Banana 1  · Gemini 2.5 · $0.039/img · fast, GA"},
+  {id:"gemini-3.1-flash-image-preview", label:"Nano Banana 2  · Gemini 3.1 · $0.067/img · sharper, preview"},
 ];
 
-// Flat per-image cost for each Gemini image model (USD). Values are estimates from public Gemini pricing.
+// Flat per-image cost for each Gemini image model (USD), 1024x1024 resolution.
+// Source: ai.google.dev/gemini-api/docs/pricing (verified Mar 2026).
+// Nano Banana 2 has resolution-tiered pricing; values here are the 1K rate.
 const IMAGE_PRICES = {
-  "gemini-2.5-flash-image": 0.039,
-  "gemini-3.1-flash-image-preview": 0.039,
+  "gemini-2.5-flash-image": 0.039,            // 1290 output tokens × $30/M
+  "gemini-3.1-flash-image-preview": 0.067,    // 1K — climbs to $0.10 at 2K, $0.15 at 4K
 };
 
 // Per-feature model override list — each entry maps a usage tag to a Settings dropdown
@@ -841,7 +843,7 @@ function UsageMeter({usage}) {
             <span style={{color:barColor}}>${totalCost.toFixed(4)}</span>
           </div>
           <div style={{fontSize:11,color:"var(--text3)",lineHeight:1.6}}>
-            Text cost is estimated from token counts (Claude 3.5 Sonnet pricing). Image cost is flat per generation (~$0.039). Actual cost depends on selected models — check openrouter.ai/models and ai.google.dev/pricing for exact rates.
+            Text cost is estimated from token counts (Claude 3.5 Sonnet pricing). Image cost is flat per generation: Nano Banana 1 ≈ $0.039, Nano Banana 2 ≈ $0.067 at 1K (climbs to $0.10 at 2K, $0.15 at 4K). Verify exact rates at openrouter.ai/models and ai.google.dev/pricing.
           </div>
         </div>
       )}
