@@ -565,6 +565,13 @@ let _modelByTag = {}; // per-feature override: tag -> modelId
 let _imageModel = "gemini-2.5-flash-image";
 let _orKey = ""; // OpenRouter key — synced from settings
 let _gKey = ""; // Google AI Studio key for Nano Banana image gen — synced from settings
+let _ttsKey = ""; // Google Cloud TTS key (optional, separate from AI Studio key)
+let _ttsVoice = "ar-XA-Wavenet-C";
+let _ttsSpeed = 0.92;
+let _sttKey = ""; // OpenAI key, sent to /api/stt for Whisper
+let _sttEnabled = false; // user has explicitly opted in to enhanced STT
+let _convSilenceMs = 1400;
+let _convFuzzyThreshold = 0.8;
 
 function pickModelForTag(tag){return _modelByTag[tag]||_defaultModel;}
 
@@ -748,9 +755,12 @@ function browserSpeak(text,onEnd){
   utt.onend=()=>onEnd?.(); utt.onerror=()=>onEnd?.();
   window.speechSynthesis.speak(utt);
 }
-async function synthesizeArabic(rawText,{voice="ar-XA-Wavenet-C",speed=0.92,onStart,onEnd}={}){
+async function synthesizeArabic(rawText,opts={}){
   const text=cleanArabicForSpeech(rawText);
-  if(!text){onEnd?.();return;}
+  if(!text){opts.onEnd?.();return;}
+  const voice=opts.voice||_ttsVoice||"ar-XA-Wavenet-C";
+  const speed=opts.speed??_ttsSpeed??0.92;
+  const {onStart,onEnd}=opts;
   stopTtsAudio();
   const cacheKey=ttsHash(`${voice}|${speed}|${text}`);
   const cached=ttsCacheRead(cacheKey);
@@ -762,8 +772,11 @@ async function synthesizeArabic(rawText,{voice="ar-XA-Wavenet-C",speed=0.92,onSt
   };
   if(cached){play(cached);return;}
   try{
+    // Prefer the dedicated Google Cloud TTS key, fall back to AI Studio key
+    // (works if Cloud TTS is enabled on the same project), then to nothing.
+    const apiKey=_ttsKey||_gKey||"";
     const res=await fetch("/api/tts",{method:"POST",headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({text,voice,speed,..._gKey?{apiKey:_gKey}:{}})});
+      body:JSON.stringify({text,voice,speed,...(apiKey?{apiKey}:{})})});
     const data=await res.json();
     if(data.noKey||!data.audio){browserSpeak(text,onEnd);onStart?.();return;}
     ttsCacheWrite(cacheKey,data.audio);
@@ -771,6 +784,24 @@ async function synthesizeArabic(rawText,{voice="ar-XA-Wavenet-C",speed=0.92,onSt
   }catch{
     browserSpeak(text,onEnd); onStart?.();
   }
+}
+
+// Send a recorded audio Blob to /api/stt for transcription.
+// Returns transcript string, or null when the proxy can't transcribe (no key
+// configured / network failure) so the caller can fall back to browser STT.
+async function transcribeAudio(blob){
+  if(!_sttEnabled||!_sttKey) return null;
+  try{
+    const buf=await blob.arrayBuffer();
+    let bin=""; const bytes=new Uint8Array(buf);
+    for(let i=0;i<bytes.length;i++) bin+=String.fromCharCode(bytes[i]);
+    const audio=btoa(bin);
+    const res=await fetch("/api/stt",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({audio,mime:blob.type||"audio/webm",language:"ar",openaiKey:_sttKey})});
+    const data=await res.json();
+    if(data.noKey||!data.transcript) return null;
+    return data.transcript;
+  }catch{return null;}
 }
 
 // Image generation via Nano Banana (Gemini Flash Image) — through /api/image proxy
@@ -910,7 +941,11 @@ Return ONLY valid JSON no markdown. Include full tashkeel on all Arabic text:
           <button className="btn btn-ghost" onClick={onClose} style={{width:32,height:32}}><X size={14}/></button>
         </div>
         {loading ? (
-          <div style={{display:"flex",alignItems:"center",gap:8,padding:"12px 0",color:"var(--text2)",fontSize:13}}><RefreshCw size={14} className="spin"/> Looking up…</div>
+          <div style={{display:"flex",flexDirection:"column",alignItems:"center",gap:10,padding:"16px 0"}}>
+            <RefreshCw size={18} className="spin" color="var(--accent)"/>
+            <div style={{fontSize:13,color:"var(--text2)",fontWeight:500}}>Looking up root, meaning & usage…</div>
+            <div style={{fontSize:11,color:"var(--text3)"}}>Usually 1-2 seconds</div>
+          </div>
         ) : (
           <div style={{display:"flex",flexDirection:"column",gap:12}}>
             {data.root&&(
@@ -1661,6 +1696,93 @@ function SettingsScreen({settings,setSettings,onBack,usage,user,onSignOut,onRepl
           </div>
         </div>
 
+        {/* Voice & STT */}
+        <div style={{background:"var(--surface)",border:"1.5px solid var(--border)",borderRadius:"var(--r)",padding:"15px 17px"}}>
+          <div style={{display:"flex",alignItems:"center",gap:7,marginBottom:10}}><Volume2 size={14} color="var(--accent)"/><div className="sec" style={{margin:0}}>Voice (TTS & STT)</div></div>
+          <div style={{fontSize:12,color:"var(--text3)",lineHeight:1.6,marginBottom:12}}>
+            When set, Arabic playback uses Google Cloud Wavenet voices (better tashkeel handling) and speech-to-text uses OpenAI Whisper (much better Arabic accuracy). Without keys, the app falls back to the browser's built-in voices/recognition.
+          </div>
+          <div style={{display:"flex",flexDirection:"column",gap:14}}>
+            {/* TTS voice */}
+            <div>
+              <label className="lbl" style={{marginBottom:5}}>TTS Voice</label>
+              <select className="input" value={local.ttsVoice||"ar-XA-Wavenet-C"} onChange={e=>set("ttsVoice",e.target.value)} style={{fontSize:13}}>
+                <option value="ar-XA-Wavenet-A">Wavenet-A · female</option>
+                <option value="ar-XA-Wavenet-B">Wavenet-B · male</option>
+                <option value="ar-XA-Wavenet-C">Wavenet-C · male (recommended)</option>
+                <option value="ar-XA-Wavenet-D">Wavenet-D · female</option>
+              </select>
+              <div style={{fontSize:11,color:"var(--text3)",marginTop:4}}>Used by Google Cloud TTS. Falls back to browser voice if no Cloud TTS key.</div>
+            </div>
+            {/* TTS speed */}
+            <div>
+              <div style={{display:"flex",justifyContent:"space-between",marginBottom:5}}>
+                <label className="lbl" style={{margin:0}}>TTS Speed</label>
+                <span style={{fontSize:11,color:"var(--text3)",fontFamily:"monospace"}}>{(local.ttsSpeed??0.92).toFixed(2)}×</span>
+              </div>
+              <input type="range" min="0.7" max="1.2" step="0.02" value={local.ttsSpeed??0.92} onChange={e=>set("ttsSpeed",parseFloat(e.target.value))} style={{width:"100%"}}/>
+              <div style={{fontSize:11,color:"var(--text3)",marginTop:2}}>0.92× is the default — clear MSA pacing for learners.</div>
+            </div>
+            {/* Google TTS key */}
+            <div>
+              <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:5}}>
+                <div style={{display:"flex",alignItems:"center",gap:7}}>
+                  <span style={{fontSize:14}}>🎙</span>
+                  <div style={{fontSize:13,fontWeight:700,color:"var(--text)"}}>Google Cloud TTS Key</div>
+                  <span style={{fontSize:10,fontWeight:600,color:"var(--text3)",background:"var(--surface2)",border:"1px solid var(--border)",padding:"1px 6px",borderRadius:100}}>Optional</span>
+                </div>
+                <a href="https://console.cloud.google.com/apis/library/texttospeech.googleapis.com" target="_blank" rel="noopener noreferrer" style={{fontSize:11,color:"var(--accent)",textDecoration:"none",fontWeight:600}}>Enable API →</a>
+              </div>
+              <input className="input" type="password" placeholder="AIza... (or leave blank to use AI Studio key)" value={local.ttsKey||""} onChange={e=>set("ttsKey",e.target.value)} style={{fontSize:12,padding:"8px 10px",fontFamily:"monospace"}}/>
+              <div style={{fontSize:11,color:"var(--text3)",marginTop:4,lineHeight:1.5}}>Free tier covers 1M chars/month — personal use is effectively free with caching.</div>
+            </div>
+            {/* Enhanced STT toggle */}
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:10}}>
+              <div style={{flex:1}}>
+                <div style={{fontSize:13,fontWeight:700,color:"var(--text)"}}>Enhanced STT (Whisper)</div>
+                <div style={{fontSize:11,color:"var(--text3)",marginTop:2,lineHeight:1.5}}>When on, your mic audio is sent to OpenAI Whisper for Arabic transcription instead of the browser. Much higher accuracy. Costs ~$0.006/minute.</div>
+              </div>
+              <div className={`chk ${local.sttEnabled?"on":""}`} onClick={()=>set("sttEnabled",!local.sttEnabled)}>{local.sttEnabled&&<Check size={11} color="white"/>}</div>
+            </div>
+            {/* OpenAI key for STT */}
+            <div>
+              <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:5}}>
+                <div style={{display:"flex",alignItems:"center",gap:7}}>
+                  <span style={{fontSize:14}}>🎧</span>
+                  <div style={{fontSize:13,fontWeight:700,color:"var(--text)"}}>OpenAI API Key (Whisper)</div>
+                  <span style={{fontSize:10,fontWeight:600,color:"var(--text3)",background:"var(--surface2)",border:"1px solid var(--border)",padding:"1px 6px",borderRadius:100}}>Optional</span>
+                </div>
+                <a href="https://platform.openai.com/api-keys" target="_blank" rel="noopener noreferrer" style={{fontSize:11,color:"var(--accent)",textDecoration:"none",fontWeight:600}}>Get key →</a>
+              </div>
+              <input className="input" type="password" placeholder="sk-..." value={local.sttKey||""} onChange={e=>set("sttKey",e.target.value)} style={{fontSize:12,padding:"8px 10px",fontFamily:"monospace"}}/>
+              <div style={{fontSize:11,color:"var(--text3)",marginTop:4,lineHeight:1.5}}>Powers Enhanced STT. No effect unless the toggle above is on.</div>
+            </div>
+          </div>
+        </div>
+
+        {/* Conversation tunables */}
+        <div style={{background:"var(--surface)",border:"1.5px solid var(--border)",borderRadius:"var(--r)",padding:"15px 17px"}}>
+          <div style={{display:"flex",alignItems:"center",gap:7,marginBottom:10}}><MessageCircle size={14} color="var(--accent)"/><div className="sec" style={{margin:0}}>Conversation</div></div>
+          <div style={{display:"flex",flexDirection:"column",gap:14}}>
+            <div>
+              <div style={{display:"flex",justifyContent:"space-between",marginBottom:5}}>
+                <label className="lbl" style={{margin:0}}>Silence Threshold</label>
+                <span style={{fontSize:11,color:"var(--text3)",fontFamily:"monospace"}}>{((local.convSilenceMs??1400)/1000).toFixed(1)}s</span>
+              </div>
+              <input type="range" min="800" max="3000" step="100" value={local.convSilenceMs??1400} onChange={e=>set("convSilenceMs",parseInt(e.target.value,10))} style={{width:"100%"}}/>
+              <div style={{fontSize:11,color:"var(--text3)",marginTop:2}}>How long the mic waits in silence before auto-submitting your turn. Default: 1.4s.</div>
+            </div>
+            <div>
+              <div style={{display:"flex",justifyContent:"space-between",marginBottom:5}}>
+                <label className="lbl" style={{margin:0}}>Vocabulary Match Strictness</label>
+                <span style={{fontSize:11,color:"var(--text3)",fontFamily:"monospace"}}>{Math.round((local.convFuzzyThreshold??0.8)*100)}%</span>
+              </div>
+              <input type="range" min="0.6" max="0.95" step="0.05" value={local.convFuzzyThreshold??0.8} onChange={e=>set("convFuzzyThreshold",parseFloat(e.target.value))} style={{width:"100%"}}/>
+              <div style={{fontSize:11,color:"var(--text3)",marginTop:2}}>Lower = more forgiving (STT typos still count). Higher = stricter exact-match. Default: 80%.</div>
+            </div>
+          </div>
+        </div>
+
         {/* Study Targets */}
         <div style={{background:"var(--surface)",border:"1.5px solid var(--border)",borderRadius:"var(--r)",padding:"15px 17px"}}>
           <div className="sec">Study Targets</div>
@@ -2389,7 +2511,21 @@ Return ONLY valid JSON: {"sentence":"...","translation":"...","imagePrompt":"...
                     <div style={{fontSize:10,color:"var(--text3)",opacity:.7}}>usually 3-5 seconds</div>
                   </div>
                 ):gen.imageUrl?(
-                  <img src={gen.imageUrl} alt={`Scene for ${card.english}`} style={{width:"100%",display:"block",borderRadius:"var(--rs)",border:"1px solid var(--border)"}}/>
+                  <div style={{position:"relative"}}>
+                    <img src={gen.imageUrl} alt={`Scene for ${card.english}`} style={{width:"100%",display:"block",borderRadius:"var(--rs)",border:"1px solid var(--border)"}}/>
+                    <button
+                      onClick={async()=>{
+                        if(!gen.imagePrompt) return;
+                        setImgLoading(true);
+                        const url=await generateImage(gen.imagePrompt,trackUsage);
+                        setGen(prev=>prev?{...prev,imageUrl:url}:prev);
+                        setImgLoading(false);
+                      }}
+                      title={`Regenerate this image · costs ~$${(IMAGE_PRICES[_imageModel]||0.039).toFixed(3)}`}
+                      style={{position:"absolute",top:8,right:8,width:32,height:32,borderRadius:"50%",background:"rgba(0,0,0,.55)",color:"white",border:"none",cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",backdropFilter:"blur(4px)"}}>
+                      <RefreshCw size={14}/>
+                    </button>
+                  </div>
                 ):(
                   <SceneCard imagePrompt={gen.imagePrompt} word={card.forms[selForm]||card.arabicBase}/>
                 )}
@@ -3275,8 +3411,10 @@ function ConversationScreen({decks,cardStates,onBack,onFinish,trackUsage,onLogSt
   const recognitionRef=useRef(null);
   const silenceTimerRef=useRef(null);
   const voiceTranscriptRef=useRef("");
-  const SILENCE_MS=1400; // auto-end turn after this much silence — natural turn-taking
-  const FUZZY_THRESHOLD=0.8;
+  // Pulled from settings (synced via module refs) so the sliders in Settings
+  // take effect on the next mic press without remounting this screen.
+  const SILENCE_MS=_convSilenceMs||1400;
+  const FUZZY_THRESHOLD=_convFuzzyThreshold||0.8;
 
   const SpeechRecognition=window.SpeechRecognition||window.webkitSpeechRecognition;
   const hasSpeechRecog=!!SpeechRecognition;
@@ -3751,7 +3889,7 @@ CRITICAL: Every Arabic phrase must have full tashkeel.`,
         </div>
         {/* Input bar */}
         <div style={{padding:"10px 0 16px",display:"flex",gap:8,borderTop:"1px solid var(--border)",alignItems:"center"}}>
-          <input className="input" value={input} onChange={e=>setInput(e.target.value)} placeholder={listening?"Listening…":voiceMode?"Tap mic or type…":"Type in Arabic or English…"}
+          <input className="input" value={input} onChange={e=>setInput(e.target.value)} placeholder={listening?`Listening… (pause ${(SILENCE_MS/1000).toFixed(1)}s to send)`:voiceMode?"Tap mic, or type Arabic / English…":"Type Arabic or English…"}
             onKeyDown={e=>e.key==="Enter"&&input.trim()&&sendMessage()} style={{flex:1,fontSize:15,padding:"12px 14px"}}
             dir={/[\u0600-\u06FF]/.test(input)?"rtl":"ltr"}/>
           {voiceMode&&hasSpeechRecog&&(
@@ -4658,14 +4796,22 @@ export default function App() {
     return ()=>window.removeEventListener("importDeck",handler);
   },[]);
 
-  // Keep module-level refs in sync — picked up automatically by callClaude / generateImage
+  // Keep module-level refs in sync — picked up automatically by callClaude /
+  // generateImage / synthesizeArabic / transcribeAudio.
   useEffect(()=>{
     _defaultModel = settings.model || "openai/gpt-4o-mini";
     _modelByTag = {...(settings.models||{})};
     _imageModel = settings.imageModel || "gemini-2.5-flash-image";
     _orKey = settings.orKey||"";
     _gKey = settings.gKey||"";
-  },[settings.model,settings.models,settings.imageModel,settings.orKey,settings.gKey]);
+    _ttsKey = settings.ttsKey||"";
+    _ttsVoice = settings.ttsVoice||"ar-XA-Wavenet-C";
+    _ttsSpeed = typeof settings.ttsSpeed==="number"?settings.ttsSpeed:0.92;
+    _sttKey = settings.sttKey||"";
+    _sttEnabled = !!settings.sttEnabled;
+    _convSilenceMs = typeof settings.convSilenceMs==="number"?settings.convSilenceMs:1400;
+    _convFuzzyThreshold = typeof settings.convFuzzyThreshold==="number"?settings.convFuzzyThreshold:0.8;
+  },[settings.model,settings.models,settings.imageModel,settings.orKey,settings.gKey,settings.ttsKey,settings.ttsVoice,settings.ttsSpeed,settings.sttKey,settings.sttEnabled,settings.convSilenceMs,settings.convFuzzyThreshold]);
   const go=s=>setScreen(s);
 
   // Usage tracker function passed to all Claude calls
