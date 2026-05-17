@@ -365,6 +365,28 @@ const TAG_TO_IMAGE_MODEL = {
 };
 
 // ─────────────────────────────────────────────────────────────
+// AL-ARABIYYA BAYNA YADAYK STYLE CONTEXT
+// Distilled from a structured scan of the 4-volume curriculum.
+// Threaded into every text-generation prompt so the AI mirrors the
+// register, themes, character cast, and level progression of the book.
+// ─────────────────────────────────────────────────────────────
+const BAYNA_YADAYK_STYLE = `STYLE GUIDE — match "العربية بين يديك" (Al-Arabiyya Bayna Yadayk):
+
+• Voice: Modern Standard Arabic only. Warm, contextual, real-life. Never textbook-stiff drill prose.
+• Diacritics: Every Arabic word MUST carry full tashkeel (فَتْحَة ضَمَّة كَسْرَة سُكُون شَدَّة تَنْوِين). No bare letters anywhere.
+• Cultural anchor: Saudi/Gulf/Muslim everyday life — family, masjid, prayer times, marketplace, hospitality, Hajj/Umrah, Mecca/Medina.
+• Recurring character cast (use these when you need a name in a passage or dialog):
+   Men/boys: عَبْدُ اللَّهِ، عَمَّار، سَامِي، إِبْرَاهِيم، إِلْيَاس، خَالِد، أَحْمَد، عَلِيّ، أَمِين، عَلَاء، مُحَمَّد، صَالِح، حَمْزَة، عُمَر
+   Women/girls: إِيمَان، أَمَل، وَرْدَة، زَيْنَب، فَاطِمَة، عَبِير، خَدِيجَة، عَائِشَة
+• Dialog patterns: vocatives like "...يَا أَحْمَد"; photo-card style introductions ("هَذَا/هَذِهِ"); imperative ↔ prohibition pairs; natural connectives (وَ، فَ، ثُمَّ، لَكِنْ، لِأَنَّ).
+• Level-to-theme mapping (use the band that matches the learner's vocabulary level):
+   Beginner: family, housing, studies, work, food, shopping, weather, prayer, daily routines.
+   Low-intermediate: vacation, travel, health, food choices, market interactions, hobbies.
+   Intermediate: civic life, helping a pilgrim (مُعْتَمِر/حَاجّ), world geography, social customs, religious occasions.
+   Advanced: economics, agriculture, history, science, civilization, abstract reasoning.`;
+
+
+// ─────────────────────────────────────────────────────────────
 // SEED DATA
 // ─────────────────────────────────────────────────────────────
 const SEED_DECKS = [
@@ -857,8 +879,11 @@ function WordPopup({word,context,decks,cardStates,onClose,onAddToFlashcard,track
     (async()=>{
       try {
         const raw=await callClaudeWithTashkeel(
-          `Arabic language expert. Learner clicked word: "${word}" in context: "${context}"
-Tone: warm Bayna-Yadayk tutor. Return ONLY valid JSON no markdown. Include full tashkeel on all Arabic text:
+          `${BAYNA_YADAYK_STYLE}
+
+You are an Arabic language expert answering a word-lookup in this register.
+Learner clicked word: "${word}" in context: "${context}"
+Return ONLY valid JSON no markdown. Include full tashkeel on all Arabic text:
 {"word":"${word}","root":"3-letter Arabic root with tashkeel like كَتَبَ or empty","rootMeaning":"short root meaning or empty","meaning":"English meaning","partOfSpeech":"noun/verb/adjective/etc","note":"one short helpful usage tip with everyday/cultural context, or empty"}`,
           180,"wordLookup",trackUsage
         );
@@ -2219,7 +2244,9 @@ function StudyScreen({cards,currentIndex,onSwipe,onBack,canUndo,onExit,trackUsag
       const learnedPool=Object.values(cardStates).flat().filter(c=>c.status==="known"||c.status==="weak");
       const learnedSample=[...learnedPool].sort(()=>Math.random()-0.5).slice(0,60).map(c=>c.arabicBase).join("، ");
       const raw=await callClaudeWithTashkeel(
-        `Arabic teacher creating a learning aid — modeled after the warm, contextual register of "العربية بين يديك" (Al-Arabiyya Bayna Yadayk): Modern Standard Arabic, full tashkeel, themed, drawn from everyday Arab/Muslim life.
+        `${BAYNA_YADAYK_STYLE}
+
+You are creating a flashcard learning aid in this register.
 
 Word: "${card.english}" · Arabic form "${arabicForm}" (${formLabel})
 
@@ -2667,12 +2694,14 @@ function ReadingScreen({decks,cardStates,onBack,onFinish,onAddToFlashcard,trackU
     const learnedSample=[...learnedPool].sort(()=>Math.random()-0.5).slice(0,80).map(c=>c.arabicBase).join("، ");
     try {
       const raw=await callClaudeWithTashkeel(
-        `Expert Arabic teacher creating a reading passage — register modelled after "العربية بين يديك" (Al-Arabiyya Bayna Yadayk): warm, themed, MSA, drawn from everyday Arab/Muslim life with cultural specificity (family, food, masjid, neighborhood, work, travel, prayer times, hospitality).
+        `${BAYNA_YADAYK_STYLE}
+
+You are writing a Bayna-Yadayk-style reading passage.
 
 Deck: ${deckNames}
 Required Arabic vocabulary (MUST use every word at least once): ${vocabCards.map(c=>c.arabicBase).join("، ")}${topicClause}
 
-Write a ${settings.difficulty}-level Arabic reading passage of ~${targetLen} words. Make it feel like a real Bayna-Yadayk passage: a small scene, a character or two by name (use common Arab names like أَحْمَد، فَاطِمَة، عُمَر، خَدِيجَة), grounded in a specific setting, with natural narrative flow.
+Write a ${settings.difficulty}-level Arabic reading passage of ~${targetLen} words. Make it feel like a real Bayna-Yadayk passage: a small scene featuring 1-2 characters by name from the cast above, grounded in a specific setting from the level-appropriate theme band, with natural narrative flow.
 
 QUALITY RULES — non-negotiable:
 - Reads like real prose a native would write. No vocab-cramming feel.
@@ -2889,12 +2918,14 @@ function ListeningScreen({decks,cardStates,onBack,onFinish,onAddToFlashcard,trac
     const learnedSample=[...learnedPool].sort(()=>Math.random()-0.5).slice(0,80).map(c=>c.arabicBase).join("، ");
     try {
       const raw=await callClaudeWithTashkeel(
-        `Arabic teacher creating a listening passage — register modelled after "العربية بين يديك" (Al-Arabiyya Bayna Yadayk): warm, themed, conversational MSA with cultural specifics from everyday Arab/Muslim life (family meals, prayer, the market, hospitality, travel).
+        `${BAYNA_YADAYK_STYLE}
+
+You are writing a Bayna-Yadayk-style listening passage (read aloud, so write for the ear).
 
 Deck: ${deckNames}
 Required Arabic vocabulary (MUST use every word at least once): ${vocabCards.map(c=>c.arabicBase).join("، ")}${topicClause}
 
-Write a ${settings.difficulty}-level spoken Arabic passage of ~${targetLen} words. Aim for the rhythm of someone actually speaking: short clauses, natural connectors (وَ، ثُمَّ، لَكِنْ، فَ)، small details that ground the scene. Use common Arab names where appropriate.
+Write a ${settings.difficulty}-level spoken Arabic passage of ~${targetLen} words. Use the rhythm of real speech: short clauses, vocatives (يَا ...) when characters address each other, small grounding details. Pick 1-2 characters from the cast above. Theme must fit the learner's level band.
 
 QUALITY RULES — non-negotiable:
 - Sounds like real spoken Arabic, not a paragraph dressed up. Natural pauses, natural transitions.
@@ -3368,12 +3399,14 @@ Return ONLY valid JSON array: ["topic 1","topic 2","topic 3","topic 4"]`,
     const learnedSample=[...learnedPool].sort(()=>Math.random()-0.5).slice(0,60).map(c=>c.arabicBase).join("، ");
     try {
       const raw=await callClaudeWithTashkeel(
-        `You are a patient native Arabic speaker chatting with a learner — modeled after the warm, real-life register of the "العربية بين يديك" (Al-Arabiyya Bayna Yadayk) curriculum: Modern Standard Arabic, full tashkeel, themed and contextual, drawn from everyday Arab/Muslim life rather than textbook filler.
+        `${BAYNA_YADAYK_STYLE}
+
+You are a patient native Arabic speaker opening a conversation with a learner in this register.
 
 Topic for this conversation: "${topic}"
 Key vocabulary the learner should practice (mission words): ${missionList}
 
-Open the conversation about "${topic}" in Arabic. Use 2-3 of the mission words. Keep it 2-3 short, natural sentences a real native speaker would actually say in this situation. End by inviting the learner to respond (a question or open prompt).
+Open the conversation about "${topic}" in Arabic. Use 2-3 of the mission words. Keep it 2-3 short, natural sentences a real native speaker would actually say in this situation. If you address the learner, use a vocative like "يَا صَدِيقِي / يَا أَخِي". End by inviting the learner to respond (a question or open prompt).
 
 Then, on a new line, give a short English translation in parentheses.
 
@@ -3413,7 +3446,9 @@ NON-NEGOTIABLE RULES:
     const learnedSample=[...learnedPool].sort(()=>Math.random()-0.5).slice(0,60).map(c=>c.arabicBase).join("، ");
     try {
       const raw=await callClaudeWithTashkeel(
-        `You are a patient native Arabic speaker chatting with a learner — register modelled after "العربية بين يديك" (Al-Arabiyya Bayna Yadayk): warm Modern Standard Arabic, full tashkeel, themed and culturally grounded.
+        `${BAYNA_YADAYK_STYLE}
+
+You are a patient native Arabic speaker continuing a conversation with a learner in this register.
 
 Topic: "${selectedTopic}"
 Mission vocabulary to encourage (use where it fits): ${missionList}
@@ -3451,7 +3486,9 @@ NON-NEGOTIABLE RULES:
       const turnsBlock=userTurns.map((t,i)=>`${i+1}. "${t}"`).join("\n");
       const missedList=missionMissedWords.map(m=>`${m.english} (${m.arabicBase})`).join(", ")||"(none)";
       const raw=await callClaudeWithTashkeel(
-        `You are a kind Arabic tutor giving a learner a short, warm end-of-session debrief — same register as "العربية بين يديك" (Al-Arabiyya Bayna Yadayk).
+        `${BAYNA_YADAYK_STYLE}
+
+You are a kind Arabic tutor giving the learner a short, warm end-of-session debrief in this register.
 
 The learner said (possibly mistranscribed by speech-to-text — be charitable about small typos and assume natural speech intent):
 ${turnsBlock}
@@ -3895,7 +3932,9 @@ function MasterReviewScreen({decks,cardStates,onBack,onSwipeCard,onUndoSwipe,tra
     const learnedSample=[...learnedPool].sort(()=>Math.random()-0.5).slice(0,60).map(c=>c.arabicBase).join("، ");
     try {
       const raw=await callClaudeWithTashkeel(
-        `Arabic teacher creating a learning aid — register modelled after "العربية بين يديك" (Al-Arabiyya Bayna Yadayk): warm, contextual, drawn from everyday Arab/Muslim life.
+        `${BAYNA_YADAYK_STYLE}
+
+You are creating a master-review sentence aid in this register.
 Word: "${card.english}" · Arabic form "${arabicForm}" (${FORM_LABELS[selForm]||selForm})
 Generate: 1) ONE short Arabic sentence (6-12 words) using EXACTLY: ${arabicForm}  2) English translation
 
