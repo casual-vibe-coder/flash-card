@@ -4211,7 +4211,7 @@ export default function App() {
           if(typeof saved.currentIdx==="number") setCurrentIdx(saved.currentIdx);
         }
         if(saved.sessionRes) sessionRes.current={...saved.sessionRes};
-        if(saved.screen&&SESSION_SCREENS.has(saved.screen)) setScreen(saved.screen);
+        // Always land on home screen — user can tap "Resume Session" if they want to continue
       }
     }
     setSessionRestored(true);
