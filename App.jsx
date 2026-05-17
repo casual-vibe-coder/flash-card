@@ -1048,7 +1048,7 @@ Return ONLY valid JSON no markdown. Include full tashkeel on all Arabic text:
 // ─────────────────────────────────────────────────────────────
 // USAGE METER component
 // ─────────────────────────────────────────────────────────────
-function UsageMeter({usage, settings}) {
+function UsageMeter({usage, settings, onReset}) {
   const [open,setOpen]=useState(false);
   const [showCalc,setShowCalc]=useState(false);
   // Resolve which text model is being used per usage tag. Falls back to the
@@ -1125,16 +1125,18 @@ function UsageMeter({usage, settings}) {
 
       {open&&(
         <div style={{borderTop:"1px solid var(--border)",padding:"12px 16px",display:"flex",flexDirection:"column",gap:10}}>
-          <div style={{fontSize:11,fontWeight:700,color:"var(--text3)",letterSpacing:".1em",textTransform:"uppercase",marginBottom:4,display:"grid",gridTemplateColumns:"1fr 60px 70px 70px",gap:4}}>
-            <span>Feature</span><span style={{textAlign:"right"}}>Calls</span><span style={{textAlign:"right"}}>Units</span><span style={{textAlign:"right"}}>Cost</span>
+          <div style={{fontSize:11,fontWeight:700,color:"var(--text3)",letterSpacing:".08em",textTransform:"uppercase",marginBottom:4,display:"grid",gridTemplateColumns:"1.3fr 50px 60px 60px 60px",gap:4}}>
+            <span>Feature</span><span style={{textAlign:"right"}}>Calls</span><span style={{textAlign:"right"}}>Units</span><span style={{textAlign:"right"}}>Avg</span><span style={{textAlign:"right"}}>Cost</span>
           </div>
           {Object.entries(usage.byTag).filter(([,v])=>v.calls>0).map(([tag,v])=>{
             const cost = costForTag(tag,v);
+            const avg = v.calls>0 ? cost/v.calls : 0;
             return (
-              <div key={tag} style={{display:"grid",gridTemplateColumns:"1fr 60px 70px 70px",gap:4,fontSize:12.5,color:"var(--text2)",alignItems:"center"}}>
+              <div key={tag} style={{display:"grid",gridTemplateColumns:"1.3fr 50px 60px 60px 60px",gap:4,fontSize:12.5,color:"var(--text2)",alignItems:"center"}}>
                 <span style={{color:"var(--text)"}}>{USAGE_LABELS[tag]||tag}</span>
                 <span style={{textAlign:"right",color:"var(--text3)"}}>{v.calls}</span>
                 <span style={{textAlign:"right",color:"var(--text3)"}}>{unitsLabel(tag,v)}</span>
+                <span style={{textAlign:"right",color:"var(--text3)",fontSize:11.5,fontFamily:"monospace"}}>${avg<0.01?avg.toFixed(4):avg.toFixed(3)}</span>
                 <span style={{textAlign:"right",fontWeight:600,color:"var(--accent)"}}>${cost.toFixed(4)}</span>
               </div>
             );
@@ -1143,6 +1145,20 @@ function UsageMeter({usage, settings}) {
           <div style={{display:"flex",justifyContent:"space-between",fontSize:13,fontWeight:700}}>
             <span>Total (est.)</span>
             <span style={{color:barColor}}>${totalCost.toFixed(4)}</span>
+          </div>
+
+          {/* Tracking window + reset */}
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",fontSize:11.5,color:"var(--text3)",marginTop:2}}>
+            <span>
+              Tracking since {usage.trackingSince
+                ? new Date(usage.trackingSince).toLocaleDateString(undefined,{month:"short",day:"numeric"}) + ", " + new Date(usage.trackingSince).toLocaleTimeString(undefined,{hour:"numeric",minute:"2-digit"})
+                : "first call"}
+            </span>
+            {onReset&&(
+              <button onClick={onReset} style={{background:"transparent",border:"none",color:"var(--weak)",fontSize:11,fontWeight:600,cursor:"pointer",padding:"4px 8px",borderRadius:"var(--rxs)"}}>
+                ⟲ Reset counters
+              </button>
+            )}
           </div>
 
           {/* Provider billing block */}
@@ -1727,7 +1743,7 @@ function DuplicateFinder({decks,cardStates,setCardStates}) {
   );
 }
 
-function SettingsScreen({settings,setSettings,onBack,usage,user,onSignOut,onReplayOnboarding,studyLog,onUpdateTargets,decks,cardStates,setCardStates,trackUsage}) {
+function SettingsScreen({settings,setSettings,onBack,usage,user,onSignOut,onReplayOnboarding,studyLog,onUpdateTargets,decks,cardStates,setCardStates,trackUsage,onResetUsage}) {
   const [local,setLocal]=useState(settings);
   const [saved,setSaved]=useState(false);
   const set=(k,v)=>setLocal(p=>({...p,[k]:v}));
@@ -1754,7 +1770,7 @@ function SettingsScreen({settings,setSettings,onBack,usage,user,onSignOut,onRepl
           </div>
         </div>
 
-        <UsageMeter usage={usage} settings={settings}/>
+        <UsageMeter usage={usage} settings={settings} onReset={onResetUsage}/>
 
         {/* AI Models — default + per-feature overrides */}
         <div style={{background:"var(--surface)",border:"1.5px solid var(--border)",borderRadius:"var(--r)",padding:"15px 17px"}}>
@@ -4966,7 +4982,7 @@ function initUsage() {
   // reuse the existing shape but treat inputTokens as "units" (chars for
   // TTS, seconds for STT) — costForTag below knows which formula to use.
   tags.forEach(t=>{byTag[t]={calls:0,inputTokens:0,outputTokens:0};});
-  return {byTag};
+  return {byTag, trackingSince: Date.now()};
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -5176,6 +5192,15 @@ export default function App() {
     return () => { _voiceTracker = null; };
   },[trackUsage]);
 
+  // Reset all usage counters to zero. Useful for watching a clean window
+  // (e.g. "what did today actually cost?"). Doesn't touch real provider
+  // bills — just clears the in-app meter. The new trackingSince becomes
+  // the starting point for the next round of counting.
+  const resetUsageCounters=useCallback(()=>{
+    if(typeof window!=="undefined"&&!window.confirm("Reset usage counters to zero? This won't affect your real provider bills — it just clears what this meter shows. Start tracking from now.")) return;
+    setUsage(initUsage());
+  },[]);
+
   const openDeck=deck=>{setActiveDeck(deck);go("deck");};
   const createDeck=title=>{
     const id=`d${Date.now()}`;const deck={id,title,createdAt:Date.now()};
@@ -5304,7 +5329,7 @@ export default function App() {
 
   const screens={
     home:<HomeScreen {...commonProps} onOpenDeck={openDeck} onSettings={()=>go("settings")} onCreateDeck={()=>go("createDeck")} onReading={()=>go("reading")} onListening={()=>go("listening")} onConversation={()=>go("conversation")} onSearch={()=>setShowSearch(true)} onProgress={()=>go("progress")} onMasterReview={()=>go("masterReview")} darkMode={darkMode} onToggleDark={()=>setDarkMode(d=>!d)} studyLog={studyLog}/>,
-    settings:<SettingsScreen settings={settings} setSettings={setSettings} onBack={()=>go("home")} usage={usage} user={user} onSignOut={handleSignOut} onReplayOnboarding={()=>setShowOnboarding(true)} studyLog={studyLog} onUpdateTargets={(t)=>setStudyLog(sl=>({...sl,targets:t}))} decks={decks} cardStates={cardStates} setCardStates={setCardStates} trackUsage={trackUsage}/>,
+    settings:<SettingsScreen settings={settings} setSettings={setSettings} onBack={()=>go("home")} usage={usage} user={user} onSignOut={handleSignOut} onReplayOnboarding={()=>setShowOnboarding(true)} studyLog={studyLog} onUpdateTargets={(t)=>setStudyLog(sl=>({...sl,targets:t}))} decks={decks} cardStates={cardStates} setCardStates={setCardStates} trackUsage={trackUsage} onResetUsage={resetUsageCounters}/>,
     createDeck:<CreateDeckScreen onBack={()=>go("home")} onCreate={createDeck}/>,
     addCards:activeDeck&&<AddCardsScreen deck={activeDeck} onBack={()=>go("deck")} onSave={saveCards} trackUsage={trackUsage}/>,
     deck:activeDeck&&<DeckScreen deck={activeDeck} cards={cardStates[activeDeck.id]||[]} onStartStudy={startStudy} onBack={()=>go("home")} onAddCards={()=>go("addCards")} onEditCard={c=>{setActiveCard(c);go("editCard");}} onDeleteCard={deleteCard} onRenameDeck={renameDeck} onDeleteDeck={deleteDeck} savedIdx={savedIdx.current[activeDeck.id+"_all"]||0}/>,
