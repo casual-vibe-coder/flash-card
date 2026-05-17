@@ -332,6 +332,27 @@ const IMAGE_MODELS = [
   {id:"gemini-3.1-flash-image-preview", label:"Nano Banana 2  · Gemini 3.1 · $0.067/img · sharper, preview"},
 ];
 
+// Per-model USD pricing per 1M tokens (input / output). Used by the usage
+// meter to estimate text-generation cost. Sourced from openrouter.ai/models;
+// approximate, treat as estimates. Fallback used when the user's chosen
+// model isn't in the table (e.g. they typed in a custom override).
+const MODEL_PRICES = {
+  "openai/gpt-4o-mini":        { in:0.15, out:0.60 },
+  "openai/gpt-4o":             { in:2.50, out:10.0 },
+  "openai/gpt-4.1-mini":       { in:0.40, out:1.60 },
+  "anthropic/claude-3.5-sonnet":{ in:3.0,  out:15.0 },
+  "anthropic/claude-3-haiku":  { in:0.25, out:1.25 },
+  "anthropic/claude-sonnet-4-5":{ in:3.0,  out:15.0 },
+  "google/gemini-flash-1.5":   { in:0.075,out:0.30 },
+  "google/gemini-pro-1.5":     { in:1.25, out:5.0 },
+  "meta-llama/llama-3.3-70b-instruct":{ in:0.40, out:0.40 },
+};
+const PRICE_FALLBACK = { in:0.15, out:0.60 }; // gpt-4o-mini
+
+// Voice provider per-unit pricing (verify periodically at the linked pages).
+const TTS_PRICE_PER_CHAR = 16 / 1_000_000;     // Google Cloud TTS Wavenet: $16 / 1M chars
+const STT_PRICE_PER_SECOND = 0.006 / 60;       // OpenAI Whisper: $0.006 / minute
+
 // Flat per-image cost for each Gemini image model (USD), 1024x1024 resolution.
 // Source: ai.google.dev/gemini-api/docs/pricing (verified Mar 2026).
 // Nano Banana 2 has resolution-tiered pricing; values here are the 1K rate.
@@ -356,7 +377,12 @@ const USAGE_LABELS = {
   reading:"Reading Passage", listening:"Listening Content",
   wordLookup:"Word Lookup", regen:"Form Regeneration",
   imageNB1:"Image · Nano Banana 1", imageNB2:"Image · Nano Banana 2",
+  ttsGoogle:"Voice · Google TTS", sttWhisper:"Voice · OpenAI Whisper",
 };
+
+// Tags that aren't billed per-token. Used by UsageMeter to switch to
+// flat/per-unit cost calculation.
+const NON_TEXT_TAGS = new Set(["imageNB1","imageNB2","ttsGoogle","sttWhisper"]);
 
 // Map a usage tag to the underlying image model id (for cost lookup).
 const TAG_TO_IMAGE_MODEL = {
@@ -731,6 +757,11 @@ function ttsCacheWrite(key,audio){
     }
   }catch{/* localStorage may be full or disabled; ignore */}
 }
+// Voice usage tracker injected by the App root (kept on a module ref so the
+// module-level synthesizeArabic / transcribeAudio helpers can record cost
+// against the global usage state).
+let _voiceTracker = null;
+
 // Live <audio> element so we can stop a playing clip when a new one starts.
 // _ttsRequestId is bumped on every new synthesize call AND on external stop —
 // any in-flight callback checks `myId === _ttsRequestId` before doing anything,
@@ -801,6 +832,8 @@ async function synthesizeArabic(rawText,opts={}){
     if(!isCurrent()) return;
     if(data.noKey||!data.audio){browserSpeak(text,onEnd);onStart?.();return;}
     ttsCacheWrite(cacheKey,data.audio);
+    // Track only NEW synthesis (cache hits cost nothing).
+    if(_voiceTracker) _voiceTracker("ttsGoogle", text.length, 0);
     play(data.audio);
   }catch{
     if(isCurrent()){browserSpeak(text,onEnd); onStart?.();}
@@ -810,7 +843,7 @@ async function synthesizeArabic(rawText,opts={}){
 // Send a recorded audio Blob to /api/stt for transcription.
 // Returns transcript string, or null when the proxy can't transcribe (no key
 // configured / network failure) so the caller can fall back to browser STT.
-async function transcribeAudio(blob){
+async function transcribeAudio(blob, durationSec=null){
   if(!_sttEnabled||!_sttKey) return null;
   try{
     const buf=await blob.arrayBuffer();
@@ -821,6 +854,12 @@ async function transcribeAudio(blob){
       body:JSON.stringify({audio,mime:blob.type||"audio/webm",language:"ar",openaiKey:_sttKey})});
     const data=await res.json();
     if(data.noKey||!data.transcript) return null;
+    // Track usage. Prefer measured durationSec; if not provided, estimate
+    // from blob size (~16kB/sec for opus). Whisper bills per second, rounded.
+    if(_voiceTracker){
+      const secs = Math.max(1, Math.round(durationSec || (blob.size/16000)));
+      _voiceTracker("sttWhisper", secs, 0);
+    }
     return data.transcript;
   }catch{return null;}
 }
@@ -1009,19 +1048,64 @@ Return ONLY valid JSON no markdown. Include full tashkeel on all Arabic text:
 // ─────────────────────────────────────────────────────────────
 // USAGE METER component
 // ─────────────────────────────────────────────────────────────
-function UsageMeter({usage}) {
+function UsageMeter({usage, settings}) {
   const [open,setOpen]=useState(false);
+  const [showCalc,setShowCalc]=useState(false);
+  // Resolve which text model is being used per usage tag. Falls back to the
+  // global default, then to the fallback price band, so cost numbers reflect
+  // what OpenRouter actually charges instead of always assuming Sonnet.
+  const priceForTag=(tag)=>{
+    const m = settings?.models?.[tag] || settings?.model || "openai/gpt-4o-mini";
+    return MODEL_PRICES[m] || PRICE_FALLBACK;
+  };
   const costForTag=(tag,v)=>{
     const imgModel=TAG_TO_IMAGE_MODEL[tag];
     if(imgModel) return v.calls*(IMAGE_PRICES[imgModel]||0);
-    return v.inputTokens*3/1_000_000 + v.outputTokens*15/1_000_000;
+    if(tag==="ttsGoogle") return v.inputTokens * TTS_PRICE_PER_CHAR;     // inputTokens = chars
+    if(tag==="sttWhisper") return v.inputTokens * STT_PRICE_PER_SECOND;  // inputTokens = seconds
+    const p = priceForTag(tag);
+    return v.inputTokens*p.in/1_000_000 + v.outputTokens*p.out/1_000_000;
   };
-  const totalInputTok  = Object.entries(usage.byTag).filter(([t])=>!TAG_TO_IMAGE_MODEL[t]).reduce((s,[,v])=>s+v.inputTokens,0);
-  const totalOutputTok = Object.entries(usage.byTag).filter(([t])=>!TAG_TO_IMAGE_MODEL[t]).reduce((s,[,v])=>s+v.outputTokens,0);
+  // For the header summary, only count tokens from real text tags.
+  const totalInputTok  = Object.entries(usage.byTag).filter(([t])=>!NON_TEXT_TAGS.has(t)).reduce((s,[,v])=>s+v.inputTokens,0);
+  const totalOutputTok = Object.entries(usage.byTag).filter(([t])=>!NON_TEXT_TAGS.has(t)).reduce((s,[,v])=>s+v.outputTokens,0);
   const totalCost = Object.entries(usage.byTag).reduce((s,[t,v])=>s+costForTag(t,v),0);
   const totalCalls = Object.values(usage.byTag).reduce((s,v)=>s+v.calls,0);
 
   const barColor = totalCost<0.10?"var(--know)":totalCost<0.50?"#C07000":"var(--weak)";
+  const activeModel = settings?.model || "openai/gpt-4o-mini";
+  const unitsLabel=(tag,v)=>{
+    if(NON_TEXT_TAGS.has(tag)){
+      if(tag==="ttsGoogle") return `${v.inputTokens.toLocaleString()} ch`;
+      if(tag==="sttWhisper") return `${Math.round(v.inputTokens)}s`;
+      return "—";
+    }
+    return (v.inputTokens+v.outputTokens).toLocaleString();
+  };
+
+  // Daily-use calculator presets. inputs / outputs / images / chars / seconds
+  // per single action. Adjust to roughly match observed averages.
+  const ACTIONS = [
+    {key:"flashcards", label:"New flashcards", tag:"flashcard", tokenIn:300, tokenOut:600, perDay:10},
+    {key:"sentences",  label:"Sentence aids",  tag:"sentence",  tokenIn:200, tokenOut:300, perDay:10},
+    {key:"lookups",    label:"Word lookups",   tag:"wordLookup",tokenIn:80,  tokenOut:120, perDay:15},
+    {key:"reading",    label:"Reading passages", tag:"reading", tokenIn:300, tokenOut:1500,perDay:1},
+    {key:"listening",  label:"Listening passages",tag:"listening",tokenIn:300,tokenOut:1200,perDay:1},
+    {key:"convoTurns", label:"Conversation turns", tag:"other", tokenIn:400, tokenOut:500, perDay:20},
+    {key:"images",     label:"Nano Banana images", tag:"imageNB1", perDay:5},
+    {key:"ttsPlays",   label:"TTS plays (~120 ch each, first-time only)", tag:"ttsGoogle", chars:120, perDay:10},
+    {key:"sttMinutes", label:"Whisper STT minutes", tag:"sttWhisper", seconds:60, perDay:5},
+  ];
+  const [counts,setCounts]=useState(()=>Object.fromEntries(ACTIONS.map(a=>[a.key,a.perDay])));
+  const calcOne = (a)=>{
+    const n = counts[a.key] || 0;
+    if(a.tag==="imageNB1") return n*(IMAGE_PRICES["gemini-2.5-flash-image"]||0.039);
+    if(a.tag==="ttsGoogle") return n*(a.chars||120)*TTS_PRICE_PER_CHAR;
+    if(a.tag==="sttWhisper") return n*(a.seconds||60)*STT_PRICE_PER_SECOND;
+    const p=priceForTag(a.tag);
+    return n*(a.tokenIn*p.in + a.tokenOut*p.out)/1_000_000;
+  };
+  const dailyTotal = ACTIONS.reduce((s,a)=>s+calcOne(a),0);
 
   return (
     <div style={{background:"var(--surface)",border:"1.5px solid var(--border)",borderRadius:"var(--r)",overflow:"hidden"}}>
@@ -1032,7 +1116,7 @@ function UsageMeter({usage}) {
             <div className="sec" style={{margin:0,color:barColor}}>AI Credit Usage</div>
             <div style={{fontSize:14,fontWeight:700,color:"var(--text)",marginTop:1}}>
               ~${totalCost.toFixed(4)}
-              <span style={{fontSize:11,fontWeight:400,color:"var(--text3)",marginLeft:6}}>{totalCalls} calls · {(totalInputTok+totalOutputTok).toLocaleString()} tokens</span>
+              <span style={{fontSize:11,fontWeight:400,color:"var(--text3)",marginLeft:6}}>{totalCalls} calls · priced for {activeModel.split("/").pop()}</span>
             </div>
           </div>
         </div>
@@ -1040,18 +1124,17 @@ function UsageMeter({usage}) {
       </div>
 
       {open&&(
-        <div style={{borderTop:"1px solid var(--border)",padding:"12px 16px",display:"flex",flexDirection:"column",gap:8}}>
-          <div style={{fontSize:11,fontWeight:700,color:"var(--text3)",letterSpacing:".1em",textTransform:"uppercase",marginBottom:4,display:"grid",gridTemplateColumns:"1fr 60px 60px 70px",gap:4}}>
-            <span>Feature</span><span style={{textAlign:"right"}}>Calls</span><span style={{textAlign:"right"}}>Tokens</span><span style={{textAlign:"right"}}>Cost</span>
+        <div style={{borderTop:"1px solid var(--border)",padding:"12px 16px",display:"flex",flexDirection:"column",gap:10}}>
+          <div style={{fontSize:11,fontWeight:700,color:"var(--text3)",letterSpacing:".1em",textTransform:"uppercase",marginBottom:4,display:"grid",gridTemplateColumns:"1fr 60px 70px 70px",gap:4}}>
+            <span>Feature</span><span style={{textAlign:"right"}}>Calls</span><span style={{textAlign:"right"}}>Units</span><span style={{textAlign:"right"}}>Cost</span>
           </div>
           {Object.entries(usage.byTag).filter(([,v])=>v.calls>0).map(([tag,v])=>{
             const cost = costForTag(tag,v);
-            const isImg = !!TAG_TO_IMAGE_MODEL[tag];
             return (
-              <div key={tag} style={{display:"grid",gridTemplateColumns:"1fr 60px 60px 70px",gap:4,fontSize:12.5,color:"var(--text2)",alignItems:"center"}}>
+              <div key={tag} style={{display:"grid",gridTemplateColumns:"1fr 60px 70px 70px",gap:4,fontSize:12.5,color:"var(--text2)",alignItems:"center"}}>
                 <span style={{color:"var(--text)"}}>{USAGE_LABELS[tag]||tag}</span>
                 <span style={{textAlign:"right",color:"var(--text3)"}}>{v.calls}</span>
-                <span style={{textAlign:"right",color:"var(--text3)"}}>{isImg?"—":(v.inputTokens+v.outputTokens).toLocaleString()}</span>
+                <span style={{textAlign:"right",color:"var(--text3)"}}>{unitsLabel(tag,v)}</span>
                 <span style={{textAlign:"right",fontWeight:600,color:"var(--accent)"}}>${cost.toFixed(4)}</span>
               </div>
             );
@@ -1061,8 +1144,53 @@ function UsageMeter({usage}) {
             <span>Total (est.)</span>
             <span style={{color:barColor}}>${totalCost.toFixed(4)}</span>
           </div>
+
+          {/* Provider billing block */}
+          <div style={{marginTop:6,padding:"10px 12px",background:"var(--info-bg)",border:"1px solid var(--info-border)",borderRadius:"var(--rxs)"}}>
+            <div style={{fontSize:11,fontWeight:700,color:"var(--info)",letterSpacing:".08em",textTransform:"uppercase",marginBottom:6}}>Where you're billed</div>
+            <div style={{display:"flex",flexDirection:"column",gap:4,fontSize:12,color:"var(--text2)"}}>
+              <div style={{display:"flex",justifyContent:"space-between"}}><span>Text generation</span><a href="https://openrouter.ai/credits" target="_blank" rel="noopener noreferrer" style={{color:"var(--accent)",fontWeight:600}}>OpenRouter →</a></div>
+              <div style={{display:"flex",justifyContent:"space-between"}}><span>Nano Banana images</span><a href="https://aistudio.google.com/" target="_blank" rel="noopener noreferrer" style={{color:"var(--accent)",fontWeight:600}}>Google AI Studio →</a></div>
+              <div style={{display:"flex",justifyContent:"space-between"}}><span>Google TTS voice</span><a href="https://console.cloud.google.com/billing" target="_blank" rel="noopener noreferrer" style={{color:"var(--accent)",fontWeight:600}}>Google Cloud →</a></div>
+              <div style={{display:"flex",justifyContent:"space-between"}}><span>Whisper STT</span><a href="https://platform.openai.com/usage" target="_blank" rel="noopener noreferrer" style={{color:"var(--accent)",fontWeight:600}}>OpenAI →</a></div>
+            </div>
+          </div>
+
+          {/* Daily-use calculator */}
+          <div style={{marginTop:4,border:"1px solid var(--border)",borderRadius:"var(--rxs)",overflow:"hidden"}}>
+            <div onClick={()=>setShowCalc(v=>!v)} style={{padding:"10px 12px",cursor:"pointer",display:"flex",justifyContent:"space-between",alignItems:"center",background:"var(--surface2)"}}>
+              <div style={{fontSize:12,fontWeight:700,color:"var(--text)"}}>
+                💡 Daily-use calculator
+                <span style={{fontSize:11,fontWeight:400,color:"var(--text3)",marginLeft:8}}>~${dailyTotal.toFixed(3)}/day · ~${(dailyTotal*30).toFixed(2)}/month</span>
+              </div>
+              {showCalc?<ChevronUp size={13} color="var(--text3)"/>:<ChevronDown size={13} color="var(--text3)"/>}
+            </div>
+            {showCalc&&(
+              <div style={{padding:"10px 12px",display:"flex",flexDirection:"column",gap:6}}>
+                {ACTIONS.map(a=>(
+                  <div key={a.key} style={{display:"grid",gridTemplateColumns:"1fr 70px 70px",gap:6,fontSize:12,alignItems:"center"}}>
+                    <span style={{color:"var(--text2)"}}>{a.label}</span>
+                    <input type="number" min="0" step="1" value={counts[a.key]} onChange={e=>setCounts(p=>({...p,[a.key]:Math.max(0,parseInt(e.target.value||"0",10))}))}
+                      style={{padding:"4px 6px",fontSize:12,border:"1px solid var(--border)",borderRadius:4,background:"var(--surface)",textAlign:"right",fontFamily:"monospace"}}/>
+                    <span style={{textAlign:"right",fontWeight:600,color:"var(--accent)",fontFamily:"monospace"}}>${calcOne(a).toFixed(4)}</span>
+                  </div>
+                ))}
+                <div className="divider" style={{margin:"4px 0"}}/>
+                <div style={{display:"flex",justifyContent:"space-between",fontSize:12.5,fontWeight:700}}>
+                  <span>Daily total</span><span style={{color:"var(--accent)"}}>${dailyTotal.toFixed(3)}</span>
+                </div>
+                <div style={{display:"flex",justifyContent:"space-between",fontSize:12.5,fontWeight:700}}>
+                  <span>Monthly (×30)</span><span style={{color:"var(--accent)"}}>${(dailyTotal*30).toFixed(2)}</span>
+                </div>
+                <div style={{fontSize:10.5,color:"var(--text3)",marginTop:4,lineHeight:1.5}}>
+                  Numbers above assume your currently-selected text model ({activeModel.split("/").pop()}). Swap model in Settings → AI Models to see the impact.
+                </div>
+              </div>
+            )}
+          </div>
+
           <div style={{fontSize:11,color:"var(--text3)",lineHeight:1.6}}>
-            Text cost is estimated from token counts (Claude 3.5 Sonnet pricing). Image cost is flat per generation: Nano Banana 1 ≈ $0.039, Nano Banana 2 ≈ $0.067 at 1K (climbs to $0.10 at 2K, $0.15 at 4K). Verify exact rates at openrouter.ai/models and ai.google.dev/pricing.
+            Text cost uses your selected model's OpenRouter pricing. Image: $0.039 (NB1) / $0.067 (NB2 at 1K). TTS: $16/1M chars (Google Wavenet, cached after first play). STT: $0.006/min (OpenAI Whisper). Verify at openrouter.ai/models, ai.google.dev/pricing, cloud.google.com/text-to-speech/pricing, openai.com/api/pricing.
           </div>
         </div>
       )}
@@ -1626,7 +1754,7 @@ function SettingsScreen({settings,setSettings,onBack,usage,user,onSignOut,onRepl
           </div>
         </div>
 
-        <UsageMeter usage={usage}/>
+        <UsageMeter usage={usage} settings={settings}/>
 
         {/* AI Models — default + per-feature overrides */}
         <div style={{background:"var(--surface)",border:"1.5px solid var(--border)",borderRadius:"var(--r)",padding:"15px 17px"}}>
@@ -3562,6 +3690,7 @@ function ConversationScreen({decks,cardStates,onBack,onFinish,trackUsage,onLogSt
     let stopped = false;
     let speechDetected = false;
     let silenceStartedAt = null;
+    const recordingStartedAt = Date.now();
     const cleanup = () => {
       stream.getTracks().forEach(t=>t.stop());
       ctx.close().catch(()=>{});
@@ -3577,10 +3706,11 @@ function ConversationScreen({decks,cardStates,onBack,onFinish,trackUsage,onLogSt
       cleanup();
       setListening(false);
       const blob = new Blob(chunks, { type: recorder.mimeType || mimeType || "audio/webm" });
+      const durationSec = (Date.now() - recordingStartedAt) / 1000;
       if (blob.size < 800) return; // user didn't really say anything
       setTranscribing(true);
       try {
-        const transcript = await transcribeAudio(blob);
+        const transcript = await transcribeAudio(blob, durationSec);
         if (transcript && transcript.trim()) {
           sendMessage(transcript.trim(), { fromVoice: true });
         } else {
@@ -4830,8 +4960,11 @@ function SRSSettingsPanel({srsSettings,onChange}) {
 // ROOT
 // ─────────────────────────────────────────────────────────────
 function initUsage() {
-  const tags=["flashcard","sentence","reading","listening","wordLookup","regen","other","imageNB1","imageNB2"];
+  const tags=["flashcard","sentence","reading","listening","wordLookup","regen","other","imageNB1","imageNB2","ttsGoogle","sttWhisper"];
   const byTag={};
+  // For text tags, the meaningful counters are tokens. For voice tags we
+  // reuse the existing shape but treat inputTokens as "units" (chars for
+  // TTS, seconds for STT) — costForTag below knows which formula to use.
   tags.forEach(t=>{byTag[t]={calls:0,inputTokens:0,outputTokens:0};});
   return {byTag};
 }
@@ -5024,7 +5157,7 @@ export default function App() {
   // Usage tracker function passed to all Claude calls
   const trackUsage=useCallback((tag,inputChars,outputChars,inputTokens,outputTokens)=>{
     setUsage(prev=>{
-      const t=prev.byTag[tag]||prev.byTag["other"];
+      const t=prev.byTag[tag]||prev.byTag["other"]||{calls:0,inputTokens:0,outputTokens:0};
       return {
         ...prev,
         byTag:{
@@ -5034,6 +5167,14 @@ export default function App() {
       };
     });
   },[]);
+
+  // Expose trackUsage to the module-level synthesizeArabic / transcribeAudio
+  // helpers so they can record TTS chars + STT seconds against the meter.
+  // Two-arg signature: (tag, units) → forwarded as inputTokens for accumulation.
+  useEffect(()=>{
+    _voiceTracker = (tag, units) => trackUsage(tag, 0, 0, units, 0);
+    return () => { _voiceTracker = null; };
+  },[trackUsage]);
 
   const openDeck=deck=>{setActiveDeck(deck);go("deck");};
   const createDeck=title=>{
