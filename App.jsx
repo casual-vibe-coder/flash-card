@@ -732,10 +732,21 @@ function ttsCacheWrite(key,audio){
   }catch{/* localStorage may be full or disabled; ignore */}
 }
 // Live <audio> element so we can stop a playing clip when a new one starts.
+// _ttsRequestId is bumped on every new synthesize call AND on external stop —
+// any in-flight callback checks `myId === _ttsRequestId` before doing anything,
+// so rapid taps cleanly cancel rather than pile up.
 let _ttsAudioEl=null;
-function stopTtsAudio(){
-  if(_ttsAudioEl){try{_ttsAudioEl.pause();_ttsAudioEl.src="";}catch{}_ttsAudioEl=null;}
+let _ttsRequestId=0;
+function _killCurrentAudio(){
+  if(_ttsAudioEl){
+    try{_ttsAudioEl.pause();_ttsAudioEl.removeAttribute("src");_ttsAudioEl.load();}catch{}
+    _ttsAudioEl=null;
+  }
   if(typeof window!=="undefined"&&window.speechSynthesis) window.speechSynthesis.cancel();
+}
+function stopTtsAudio(){
+  _ttsRequestId++; // invalidate any pending synthesize() calls
+  _killCurrentAudio();
 }
 // Strip translation parentheses and any leftover correction tags before speaking.
 function cleanArabicForSpeech(text){
@@ -761,14 +772,22 @@ async function synthesizeArabic(rawText,opts={}){
   const voice=opts.voice||_ttsVoice||"ar-XA-Wavenet-C";
   const speed=opts.speed??_ttsSpeed??0.92;
   const {onStart,onEnd}=opts;
-  stopTtsAudio();
+  // Claim this synthesize as the active request, kill any previous audio.
+  // Every async branch below checks `myId === _ttsRequestId` before acting
+  // so superseded calls become no-ops (no overlapping playback, no double
+  // onStart/onEnd callbacks).
+  const myId=++_ttsRequestId;
+  _killCurrentAudio();
+  const isCurrent=()=>myId===_ttsRequestId;
   const cacheKey=ttsHash(`${voice}|${speed}|${text}`);
   const cached=ttsCacheRead(cacheKey);
   const play=(src)=>{
+    if(!isCurrent()){onEnd?.();return;}
     const a=new Audio(src); _ttsAudioEl=a;
-    a.onplay=()=>onStart?.(); a.onended=()=>{_ttsAudioEl=null;onEnd?.();};
-    a.onerror=()=>{_ttsAudioEl=null;browserSpeak(text,onEnd);};
-    a.play().catch(()=>{_ttsAudioEl=null;browserSpeak(text,onEnd);});
+    a.onplay=()=>{if(isCurrent()) onStart?.();};
+    a.onended=()=>{if(isCurrent()){_ttsAudioEl=null;onEnd?.();}};
+    a.onerror=()=>{if(isCurrent()){_ttsAudioEl=null;browserSpeak(text,onEnd);}};
+    a.play().catch(()=>{if(isCurrent()){_ttsAudioEl=null;browserSpeak(text,onEnd);}});
   };
   if(cached){play(cached);return;}
   try{
@@ -777,12 +796,14 @@ async function synthesizeArabic(rawText,opts={}){
     const apiKey=_ttsKey||_gKey||"";
     const res=await fetch("/api/tts",{method:"POST",headers:{"Content-Type":"application/json"},
       body:JSON.stringify({text,voice,speed,...(apiKey?{apiKey}:{})})});
+    if(!isCurrent()) return;
     const data=await res.json();
+    if(!isCurrent()) return;
     if(data.noKey||!data.audio){browserSpeak(text,onEnd);onStart?.();return;}
     ttsCacheWrite(cacheKey,data.audio);
     play(data.audio);
   }catch{
-    browserSpeak(text,onEnd); onStart?.();
+    if(isCurrent()){browserSpeak(text,onEnd); onStart?.();}
   }
 }
 
