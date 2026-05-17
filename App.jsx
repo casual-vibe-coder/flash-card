@@ -513,6 +513,8 @@ textarea.input{resize:vertical;min-height:110px;line-height:1.7}
 .onboarding-dot{width:8px;height:8px;border-radius:50%;background:var(--border);transition:all .2s}
 .onboarding-dot.active{background:var(--accent);width:20px;border-radius:4px}
 @keyframes pulse{0%,100%{box-shadow:0 0 0 4px var(--weak-bg)}50%{box-shadow:0 0 0 10px var(--weak-bg)}}
+@keyframes shimmer{0%{background-position:-200% 0}100%{background-position:200% 0}}
+@keyframes loadbar{0%{width:0%}40%{width:55%}80%{width:88%}100%{width:96%}}
 .bar-chart{display:flex;align-items:flex-end;gap:4px;height:80px;padding:4px 0}
 .bar-col{display:flex;flex-direction:column;align-items:center;flex:1;gap:2px}
 .bar-fill{width:100%;border-radius:3px 3px 0 0;min-height:1px;transition:height .3s ease}
@@ -1592,36 +1594,44 @@ function SettingsScreen({settings,setSettings,onBack,usage,user,onSignOut,onRepl
           <div style={{fontSize:13,color:"var(--text2)",lineHeight:1.7,marginBottom:12}}>
             Your API keys are stored securely in your account. Each user needs their own keys.
           </div>
-          <div style={{display:"flex",flexDirection:"column",gap:12}}>
+          <div style={{display:"flex",flexDirection:"column",gap:14}}>
             <div>
-              <div style={{display:"flex",alignItems:"center",gap:7,marginBottom:4}}>
-                <span style={{fontSize:14}}>🔑</span>
-                <div style={{fontSize:12.5,fontWeight:700,color:"var(--text)",fontFamily:"monospace"}}>OpenRouter API Key</div>
+              <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:5}}>
+                <div style={{display:"flex",alignItems:"center",gap:7}}>
+                  <span style={{fontSize:14}}>🔑</span>
+                  <div style={{fontSize:13,fontWeight:700,color:"var(--text)"}}>OpenRouter API Key</div>
+                  <span style={{fontSize:10,fontWeight:600,color:"var(--weak)",background:"var(--weak-bg)",border:"1px solid var(--weak-border)",padding:"1px 6px",borderRadius:100}}>Required</span>
+                </div>
+                <a href="https://openrouter.ai/keys" target="_blank" rel="noopener noreferrer" style={{fontSize:11,color:"var(--accent)",textDecoration:"none",fontWeight:600}}>Get key →</a>
               </div>
               <input
                 className="input"
                 type="password"
-                placeholder="sk-or-… (from openrouter.ai/keys)"
+                placeholder="sk-or-..."
                 value={local.orKey||""}
                 onChange={e=>set("orKey",e.target.value)}
-                style={{fontSize:12,padding:"7px 10px",fontFamily:"monospace"}}
+                style={{fontSize:12,padding:"8px 10px",fontFamily:"monospace"}}
               />
-              <div style={{fontSize:11,color:"var(--text3)",marginTop:3}}>Required for all AI text generation (flashcards, sentences, reading, listening).</div>
+              <div style={{fontSize:11,color:"var(--text3)",marginTop:4,lineHeight:1.5}}>Powers all text generation: flashcards, sentences, reading, listening, conversation.</div>
             </div>
             <div>
-              <div style={{display:"flex",alignItems:"center",gap:7,marginBottom:4}}>
-                <span style={{fontSize:14}}>🖼</span>
-                <div style={{fontSize:12.5,fontWeight:700,color:"var(--text)",fontFamily:"monospace"}}>Google AI Studio API Key</div>
+              <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:5}}>
+                <div style={{display:"flex",alignItems:"center",gap:7}}>
+                  <span style={{fontSize:14}}>🖼</span>
+                  <div style={{fontSize:13,fontWeight:700,color:"var(--text)"}}>Google AI Studio API Key</div>
+                  <span style={{fontSize:10,fontWeight:600,color:"var(--text3)",background:"var(--surface2)",border:"1px solid var(--border)",padding:"1px 6px",borderRadius:100}}>Optional</span>
+                </div>
+                <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener noreferrer" style={{fontSize:11,color:"var(--accent)",textDecoration:"none",fontWeight:600}}>Get key →</a>
               </div>
               <input
                 className="input"
                 type="password"
-                placeholder="AIza… (from aistudio.google.com/apikey)"
+                placeholder="AIza..."
                 value={local.gKey||""}
                 onChange={e=>set("gKey",e.target.value)}
-                style={{fontSize:12,padding:"7px 10px",fontFamily:"monospace"}}
+                style={{fontSize:12,padding:"8px 10px",fontFamily:"monospace"}}
               />
-              <div style={{fontSize:11,color:"var(--text3)",marginTop:3}}>Optional — enables Nano Banana image generation on flashcards.</div>
+              <div style={{fontSize:11,color:"var(--text3)",marginTop:4,lineHeight:1.5}}>Enables Nano Banana mnemonic images on flashcards. ~$0.04 per image. App works fine without it.</div>
             </div>
           </div>
         </div>
@@ -1950,6 +1960,11 @@ function DeckScreen({deck,cards,onStartStudy,onBack,onAddCards,onEditCard,onDele
             <div style={{position:"relative",marginBottom:10}}>
               <svg style={{position:"absolute",left:12,top:"50%",transform:"translateY(-50%)",opacity:.4}} width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
               <input className="search-input" placeholder="Search cards…" value={search} onChange={e=>setSearch(e.target.value)}/>
+              {search&&(
+                <div style={{position:"absolute",right:12,top:"50%",transform:"translateY(-50%)",fontSize:11,color:"var(--text3)",background:"var(--surface2)",padding:"2px 8px",borderRadius:100,fontWeight:600}}>
+                  {filteredCards.length} match{filteredCards.length===1?"":"es"}
+                </div>
+              )}
             </div>
             <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
               {[["all",`All (${cards.length})`],["new","New"],["weak","Weak"],["known","Known"],["due",`Due (${dueCount})`]].map(([k,label])=>(
@@ -2232,10 +2247,13 @@ Return ONLY valid JSON: {"sentence":"...","translation":"...","imagePrompt":"...
       if(id!==genRef.current) return;
       setGen(prev=>prev?{...prev,imageUrl:url}:prev);
       setImgLoading(false);
-    } catch {
+    } catch (err) {
       if(id!==genRef.current) return;
-      setGen({sentence:arabicForm,translation:card.english,imagePrompt:`A warm everyday scene representing "${card.english}" in Arabic-speaking daily life, natural lighting.`,imageUrl:null});
+      // Visible failure with a retry path, instead of a silent fallback
+      // that hides "your API key is empty / out of credits / model down."
+      setGen({sentence:arabicForm,translation:card.english,imagePrompt:`A warm everyday scene representing "${card.english}" in Arabic-speaking daily life, natural lighting.`,imageUrl:null,error:err?.message||"Generation failed"});
       setGenLoading(false);setImgLoading(false);
+      showToast(`Couldn't generate: ${err?.message||"unknown error"} — check your OpenRouter key in Settings.`,"error");
     }
   };
 
@@ -2324,10 +2342,24 @@ Return ONLY valid JSON: {"sentence":"...","translation":"...","imagePrompt":"...
             </button>
             {gen&&!genLoading&&(
               <div className="gen-appear" style={{display:"flex",flexDirection:"column",gap:10}}>
-                {/* Image — Nano Banana generated, or scene description fallback */}
+                {gen.error&&(
+                  <div style={{background:"var(--weak-bg)",border:"1px solid var(--weak-border)",borderRadius:"var(--rs)",padding:"10px 13px",display:"flex",alignItems:"center",gap:10,fontSize:13}}>
+                    <span style={{fontSize:18}}>⚠️</span>
+                    <div style={{flex:1,color:"var(--weak)",lineHeight:1.5}}>
+                      <div style={{fontWeight:600,marginBottom:2}}>Couldn't generate fully</div>
+                      <div style={{fontSize:12,color:"var(--text3)"}}>{gen.error}</div>
+                    </div>
+                    <button className="btn" onClick={()=>generate(null)} style={{background:"var(--weak)",color:"white",fontSize:12,padding:"6px 12px",borderRadius:"var(--rxs)"}}>
+                      <RefreshCw size={12}/> Retry
+                    </button>
+                  </div>
+                )}
+                {/* Image — Nano Banana generated, skeleton while loading, or scene description fallback */}
                 {imgLoading?(
-                  <div style={{background:"var(--surface2)",border:"1px solid var(--border)",borderRadius:"var(--rs)",padding:"18px 16px",display:"flex",alignItems:"center",gap:9,fontSize:13,color:"var(--text2)"}}>
-                    <RefreshCw size={14} className="spin"/> Generating image with Nano Banana…
+                  <div style={{position:"relative",width:"100%",aspectRatio:"1",background:"linear-gradient(110deg,var(--surface2) 30%,var(--border) 50%,var(--surface2) 70%)",backgroundSize:"200% 100%",animation:"shimmer 2s linear infinite",border:"1px solid var(--border)",borderRadius:"var(--rs)",display:"flex",alignItems:"center",justifyContent:"center",flexDirection:"column",gap:8}}>
+                    <RefreshCw size={20} className="spin" color="var(--text3)"/>
+                    <div style={{fontSize:12,color:"var(--text3)",fontWeight:500}}>Drawing with Nano Banana…</div>
+                    <div style={{fontSize:10,color:"var(--text3)",opacity:.7}}>usually 3-5 seconds</div>
                   </div>
                 ):gen.imageUrl?(
                   <img src={gen.imageUrl} alt={`Scene for ${card.english}`} style={{width:"100%",display:"block",borderRadius:"var(--rs)",border:"1px solid var(--border)"}}/>
@@ -2568,6 +2600,7 @@ function ReadingScreen({decks,cardStates,onBack,onFinish,onAddToFlashcard,trackU
   const [passage,setPassage]=useState(saved.passage||null);
   const [generating,setGenerating]=useState(false);
   const [showTranslation,setShowTranslation]=useState(false);
+  const passageRef=useRef(null);
   const [wordPopup,setWordPopup]=useState(null);
   const [showMiniRating,setShowMiniRating]=useState(false);
   const [topics,setTopics]=useState(saved.topics||[]);
@@ -2653,8 +2686,11 @@ Return ONLY valid JSON: {"arabic":"...","translation":"...","vocabUsed":["base f
         maxTok,"reading",trackUsage
       );
       setPassage(extractJSON(raw));
-    } catch {
+      setTimeout(()=>passageRef.current?.scrollIntoView({behavior:"smooth",block:"start"}),120);
+      showToast("Passage ready","success");
+    } catch (err) {
       setPassage({arabic:"حَدَثَ خَطَأٌ. يُرْجَى الْمُحَاوَلَةُ مَرَّةً أُخْرَى.",translation:"A generation error occurred.",vocabUsed:[]});
+      showToast(`Couldn't generate passage: ${err?.message||"unknown error"}`,"error");
     } finally { setGenerating(false); }
   };
 
@@ -2708,12 +2744,21 @@ Return ONLY valid JSON: {"arabic":"...","translation":"...","vocabUsed":["base f
                 <FileText size={14}/> Generate: {activeTopic}
               </button>
             )}
-            {generating&&<div style={{textAlign:"center",padding:"12px 0",color:"var(--text3)",fontSize:13}}><RefreshCw size={13} className="spin" style={{marginRight:6}}/>Generating passage…</div>}
+            {generating&&(
+              <div style={{background:"var(--surface2)",border:"1px solid var(--border)",borderRadius:"var(--rs)",padding:"16px",display:"flex",flexDirection:"column",alignItems:"center",gap:10,marginTop:10}}>
+                <RefreshCw size={20} className="spin" color="var(--read)"/>
+                <div style={{fontSize:13.5,fontWeight:600,color:"var(--text)"}}>Writing your passage…</div>
+                <div style={{fontSize:11.5,color:"var(--text3)",textAlign:"center",lineHeight:1.5}}>Usually 8-15 seconds depending on length.<br/>Sit tight — full tashkeel takes a moment.</div>
+                <div style={{width:"100%",height:3,background:"var(--border)",borderRadius:2,overflow:"hidden",marginTop:4}}>
+                  <div style={{height:"100%",background:"var(--read)",animation:"loadbar 12s linear forwards"}}/>
+                </div>
+              </div>
+            )}
           </div>
         )}
 
         {passage&&!generating&&(
-          <div className="gen-appear" style={{display:"flex",flexDirection:"column",gap:12}}>
+          <div ref={passageRef} className="gen-appear" style={{display:"flex",flexDirection:"column",gap:12,scrollMarginTop:14}}>
             <div style={{background:"var(--surface)",border:"1.5px solid var(--read-border)",borderRadius:"var(--r)",padding:"20px 18px"}}>
               <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}>
                 <div className="sec" style={{margin:0,color:"var(--read)"}}>Arabic Passage</div>
@@ -2787,6 +2832,7 @@ function ListeningScreen({decks,cardStates,onBack,onFinish,onAddToFlashcard,trac
   const [content,setContent]=useState(saved.content||null);
   const [generating,setGenerating]=useState(false);
   const [showArabic,setShowArabic]=useState(false);
+  const contentRef=useRef(null);
   const [showEnglish,setShowEnglish]=useState(false);
   const [playing,setPlaying]=useState(false);
   const [wordPopup,setWordPopup]=useState(null);
@@ -2863,10 +2909,13 @@ Return ONLY valid JSON: {"arabic":"...","translation":"...","vocabUsed":["base f
       );
       const parsed=extractJSON(raw);
       setContent(parsed);
+      setTimeout(()=>contentRef.current?.scrollIntoView({behavior:"smooth",block:"start"}),120);
+      showToast("Listening passage ready","success");
       // Auto-play audio
       setTimeout(()=>{if(parsed.arabic) doPlay(settings.speed);},300);
-    } catch {
+    } catch (err) {
       setContent({arabic:"حَدَثَ خَطَأٌ.",translation:"An error occurred."});
+      showToast(`Couldn't generate: ${err?.message||"unknown error"}`,"error");
     } finally { setGenerating(false); }
   };
 
@@ -2940,12 +2989,21 @@ Return ONLY valid JSON: {"arabic":"...","translation":"...","vocabUsed":["base f
                 <Headphones size={14}/> Generate: {activeTopic}
               </button>
             )}
-            {generating&&<div style={{textAlign:"center",padding:"12px 0",color:"var(--text3)",fontSize:13}}><RefreshCw size={13} className="spin" style={{marginRight:6}}/>Generating…</div>}
+            {generating&&(
+              <div style={{background:"var(--surface2)",border:"1px solid var(--border)",borderRadius:"var(--rs)",padding:"16px",display:"flex",flexDirection:"column",alignItems:"center",gap:10,marginTop:10}}>
+                <RefreshCw size={20} className="spin" color="var(--listen)"/>
+                <div style={{fontSize:13.5,fontWeight:600,color:"var(--text)"}}>Composing your listening passage…</div>
+                <div style={{fontSize:11.5,color:"var(--text3)",textAlign:"center",lineHeight:1.5}}>Usually 8-15 seconds. We'll auto-play it when ready.</div>
+                <div style={{width:"100%",height:3,background:"var(--border)",borderRadius:2,overflow:"hidden",marginTop:4}}>
+                  <div style={{height:"100%",background:"var(--listen)",animation:"loadbar 12s linear forwards"}}/>
+                </div>
+              </div>
+            )}
           </div>
         )}
 
         {content&&!generating&&(
-          <div className="gen-appear" style={{display:"flex",flexDirection:"column",gap:12}}>
+          <div ref={contentRef} className="gen-appear" style={{display:"flex",flexDirection:"column",gap:12,scrollMarginTop:14}}>
             <div style={{background:"var(--listen-bg)",border:"1.5px solid var(--listen-border)",borderRadius:"var(--r)",padding:"20px 18px",textAlign:"center"}}>
               <div className="sec" style={{margin:0,marginBottom:14,color:"var(--listen)"}}>Listening Exercise</div>
               <div style={{display:"flex",justifyContent:"center",gap:12,marginBottom:16}}>
