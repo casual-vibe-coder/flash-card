@@ -326,10 +326,17 @@ const OR_MODELS = [
   {id:"meta-llama/llama-3.3-70b-instruct",label:"Llama 3.3 70B  · Open source"},
 ];
 
-// Image generation model — Google's Gemini 2.5 Flash Image ("Nano Banana")
+// Image generation models — Google's Gemini Flash Image family ("Nano Banana")
 const IMAGE_MODELS = [
-  {id:"gemini-2.5-flash-image", label:"Nano Banana  · Gemini 2.5 Flash Image"},
+  {id:"gemini-2.5-flash-image", label:"Nano Banana 1  · Gemini 2.5 (fast, GA)"},
+  {id:"gemini-3.1-flash-image-preview", label:"Nano Banana 2  · Gemini 3.1 (slower, sharper, preview)"},
 ];
+
+// Flat per-image cost for each Gemini image model (USD). Values are estimates from public Gemini pricing.
+const IMAGE_PRICES = {
+  "gemini-2.5-flash-image": 0.039,
+  "gemini-3.1-flash-image-preview": 0.039,
+};
 
 // Per-feature model override list — each entry maps a usage tag to a Settings dropdown
 const MODEL_FEATURES = [
@@ -346,6 +353,13 @@ const USAGE_LABELS = {
   flashcard:"Flashcard Generation", sentence:"Sentence / Learning Aid",
   reading:"Reading Passage", listening:"Listening Content",
   wordLookup:"Word Lookup", regen:"Form Regeneration",
+  imageNB1:"Image · Nano Banana 1", imageNB2:"Image · Nano Banana 2",
+};
+
+// Map a usage tag to the underlying image model id (for cost lookup).
+const TAG_TO_IMAGE_MODEL = {
+  imageNB1: "gemini-2.5-flash-image",
+  imageNB2: "gemini-3.1-flash-image-preview",
 };
 
 // ─────────────────────────────────────────────────────────────
@@ -597,21 +611,28 @@ function extractJSON(raw) {
   throw new Error("JSON extraction failed — the AI response may have been cut off. Try fewer words per batch.");
 }
 
-// Image generation via Nano Banana (Gemini 2.5 Flash Image) — through /api/image proxy
+// Image generation via Nano Banana (Gemini Flash Image) — through /api/image proxy
 // Returns image URL (base64 data URL) or null (app shows scene description as fallback)
-async function generateImage(prompt) {
+async function generateImage(prompt, trackFn=null) {
+  const model = _imageModel || "gemini-2.5-flash-image";
   try {
     const res = await fetch("/api/image", {
       method:"POST",
       headers:{"Content-Type":"application/json"},
       body:JSON.stringify({
+        model,
         prompt:`${prompt} Style: minimalist flat sticker illustration, single bold subject centered on a plain white background, vivid simple colors, thick clean outlines, slightly exaggerated for memorability, no text or letters anywhere in the image.`,
         ..._gKey ? {apiKey:_gKey} : {},
       }),
     });
     const data = await res.json();
     if (data.noKey) return null;
-    return data.data?.[0]?.url || null;
+    const url = data.data?.[0]?.url || null;
+    if (url && trackFn) {
+      const tag = model.includes("3.1") ? "imageNB2" : "imageNB1";
+      trackFn(tag, 0, 0, 0, 0);
+    }
+    return url;
   } catch { return null; }
 }
 
@@ -769,9 +790,14 @@ Return ONLY valid JSON no markdown. Include full tashkeel on all Arabic text:
 // ─────────────────────────────────────────────────────────────
 function UsageMeter({usage}) {
   const [open,setOpen]=useState(false);
-  const totalInputTok  = Object.values(usage.byTag).reduce((s,v)=>s+v.inputTokens,0);
-  const totalOutputTok = Object.values(usage.byTag).reduce((s,v)=>s+v.outputTokens,0);
-  const totalCost = totalInputTok*3/1_000_000 + totalOutputTok*15/1_000_000;
+  const costForTag=(tag,v)=>{
+    const imgModel=TAG_TO_IMAGE_MODEL[tag];
+    if(imgModel) return v.calls*(IMAGE_PRICES[imgModel]||0);
+    return v.inputTokens*3/1_000_000 + v.outputTokens*15/1_000_000;
+  };
+  const totalInputTok  = Object.entries(usage.byTag).filter(([t])=>!TAG_TO_IMAGE_MODEL[t]).reduce((s,[,v])=>s+v.inputTokens,0);
+  const totalOutputTok = Object.entries(usage.byTag).filter(([t])=>!TAG_TO_IMAGE_MODEL[t]).reduce((s,[,v])=>s+v.outputTokens,0);
+  const totalCost = Object.entries(usage.byTag).reduce((s,[t,v])=>s+costForTag(t,v),0);
   const totalCalls = Object.values(usage.byTag).reduce((s,v)=>s+v.calls,0);
 
   const barColor = totalCost<0.10?"var(--know)":totalCost<0.50?"#C07000":"var(--weak)";
@@ -798,12 +824,13 @@ function UsageMeter({usage}) {
             <span>Feature</span><span style={{textAlign:"right"}}>Calls</span><span style={{textAlign:"right"}}>Tokens</span><span style={{textAlign:"right"}}>Cost</span>
           </div>
           {Object.entries(usage.byTag).filter(([,v])=>v.calls>0).map(([tag,v])=>{
-            const cost = v.inputTokens*3/1_000_000 + v.outputTokens*15/1_000_000;
+            const cost = costForTag(tag,v);
+            const isImg = !!TAG_TO_IMAGE_MODEL[tag];
             return (
               <div key={tag} style={{display:"grid",gridTemplateColumns:"1fr 60px 60px 70px",gap:4,fontSize:12.5,color:"var(--text2)",alignItems:"center"}}>
                 <span style={{color:"var(--text)"}}>{USAGE_LABELS[tag]||tag}</span>
                 <span style={{textAlign:"right",color:"var(--text3)"}}>{v.calls}</span>
-                <span style={{textAlign:"right",color:"var(--text3)"}}>{(v.inputTokens+v.outputTokens).toLocaleString()}</span>
+                <span style={{textAlign:"right",color:"var(--text3)"}}>{isImg?"—":(v.inputTokens+v.outputTokens).toLocaleString()}</span>
                 <span style={{textAlign:"right",fontWeight:600,color:"var(--accent)"}}>${cost.toFixed(4)}</span>
               </div>
             );
@@ -814,7 +841,7 @@ function UsageMeter({usage}) {
             <span style={{color:barColor}}>${totalCost.toFixed(4)}</span>
           </div>
           <div style={{fontSize:11,color:"var(--text3)",lineHeight:1.6}}>
-            Estimated from token counts. Actual cost depends on selected model — check openrouter.ai/models for per-model pricing. Resets on page refresh.
+            Text cost is estimated from token counts (Claude 3.5 Sonnet pricing). Image cost is flat per generation (~$0.039). Actual cost depends on selected models — check openrouter.ai/models and ai.google.dev/pricing for exact rates.
           </div>
         </div>
       )}
@@ -2061,7 +2088,7 @@ Return ONLY valid JSON: {"sentence":"...","translation":"...","imagePrompt":"...
       setGenLoading(false);
       // Generate real image in background (Nano Banana)
       setImgLoading(true);
-      const url=await generateImage(parsed.imagePrompt);
+      const url=await generateImage(parsed.imagePrompt,trackUsage);
       if(id!==genRef.current) return;
       setGen(prev=>prev?{...prev,imageUrl:url}:prev);
       setImgLoading(false);
@@ -4086,7 +4113,7 @@ function SRSSettingsPanel({srsSettings,onChange}) {
 // ROOT
 // ─────────────────────────────────────────────────────────────
 function initUsage() {
-  const tags=["flashcard","sentence","reading","listening","wordLookup","regen","other"];
+  const tags=["flashcard","sentence","reading","listening","wordLookup","regen","other","imageNB1","imageNB2"];
   const byTag={};
   tags.forEach(t=>{byTag[t]={calls:0,inputTokens:0,outputTokens:0};});
   return {byTag};
