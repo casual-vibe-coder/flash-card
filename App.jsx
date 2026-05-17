@@ -598,6 +598,7 @@ let _sttKey = ""; // OpenAI key, sent to /api/stt for Whisper
 let _sttEnabled = false; // user has explicitly opted in to enhanced STT
 let _convSilenceMs = 2500;
 let _convFuzzyThreshold = 0.8;
+let _autoGenerateImage = false; // opt-in per learning aid; off by default
 
 function pickModelForTag(tag){return _modelByTag[tag]||_defaultModel;}
 
@@ -1808,8 +1809,15 @@ function SettingsScreen({settings,setSettings,onBack,usage,user,onSignOut,onRepl
           <select className="input" value={local.imageModel||"gemini-2.5-flash-image"} onChange={e=>set("imageModel",e.target.value)} style={{marginBottom:8}}>
             {IMAGE_MODELS.map(m=><option key={m.id} value={m.id}>{m.label}</option>)}
           </select>
-          <div style={{fontSize:11.5,color:"var(--text3)",lineHeight:1.65}}>
-            Used for the mnemonic image on flashcards. Requires the Google AI Studio API key below. ~$0.039 per image, flat.
+          <div style={{fontSize:11.5,color:"var(--text3)",lineHeight:1.65,marginBottom:12}}>
+            Used for the optional mnemonic image on flashcards. Requires the Google AI Studio API key below.
+          </div>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:10,paddingTop:10,borderTop:"1px solid var(--border)"}}>
+            <div style={{flex:1}}>
+              <div style={{fontSize:13,fontWeight:700,color:"var(--text)"}}>Auto-generate images</div>
+              <div style={{fontSize:11.5,color:"var(--text3)",marginTop:2,lineHeight:1.5}}>When on, every "Generate Learning Aid" tap also draws an image (~$0.039 each). When off (default), you'll see an "Add image" button on each card so you only spend when you want to.</div>
+            </div>
+            <div className={`chk ${local.autoGenerateImage?"on":""}`} onClick={()=>set("autoGenerateImage",!local.autoGenerateImage)}>{local.autoGenerateImage&&<Check size={11} color="white"/>}</div>
           </div>
         </div>
 
@@ -2555,12 +2563,16 @@ Return ONLY valid JSON: {"sentence":"...","translation":"...","imagePrompt":"...
       const parsed=extractJSON(raw);
       setGen({...parsed,imageUrl:null});
       setGenLoading(false);
-      // Generate real image in background (Nano Banana)
-      setImgLoading(true);
-      const url=await generateImage(parsed.imagePrompt,trackUsage);
-      if(id!==genRef.current) return;
-      setGen(prev=>prev?{...prev,imageUrl:url}:prev);
-      setImgLoading(false);
+      // Image generation is opt-in (Settings → Image Model → "Auto-generate
+      // images"). When off, we show an "Add image" button on the card and
+      // only spend the $0.039 if the user explicitly asks for it.
+      if(_autoGenerateImage){
+        setImgLoading(true);
+        const url=await generateImage(parsed.imagePrompt,trackUsage);
+        if(id!==genRef.current) return;
+        setGen(prev=>prev?{...prev,imageUrl:url}:prev);
+        setImgLoading(false);
+      }
     } catch (err) {
       if(id!==genRef.current) return;
       // Visible failure with a retry path, instead of a silent fallback
@@ -2691,9 +2703,22 @@ Return ONLY valid JSON: {"sentence":"...","translation":"...","imagePrompt":"...
                       <RefreshCw size={14}/>
                     </button>
                   </div>
-                ):(
-                  <SceneCard imagePrompt={gen.imagePrompt} word={card.forms[selForm]||card.arabicBase}/>
-                )}
+                ):gen.imagePrompt?(
+                  // No image yet — opt-in button so the user only spends
+                  // ~$0.039 when they actually want a picture for this card.
+                  <button
+                    onClick={async()=>{
+                      if(!gen.imagePrompt) return;
+                      setImgLoading(true);
+                      const url=await generateImage(gen.imagePrompt,trackUsage);
+                      setGen(prev=>prev?{...prev,imageUrl:url}:prev);
+                      setImgLoading(false);
+                    }}
+                    style={{background:"var(--surface2)",border:"1px dashed var(--border)",borderRadius:"var(--rs)",padding:"14px 16px",cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",gap:8,fontSize:13,color:"var(--text2)",fontWeight:500,width:"100%"}}>
+                    <ImageIcon size={15}/> Add a mnemonic image
+                    <span style={{fontSize:11,color:"var(--text3)",fontWeight:400,fontFamily:"monospace"}}>~${(IMAGE_PRICES[_imageModel]||0.039).toFixed(3)}</span>
+                  </button>
+                ):null}
                 <div style={{background:"var(--accent-bg)",border:"1px solid var(--accent-border)",borderRadius:"var(--rs)",padding:"12px 14px"}}>
                   <div style={{fontSize:10,fontWeight:700,color:"var(--accent)",letterSpacing:".1em",textTransform:"uppercase",marginBottom:7}}>✦ Example Sentence</div>
                   <ClickableArabic text={gen.sentence} highlightWords={[card.forms[selForm]||card.arabicBase]} onWordClick={(word,ctx)=>setWordPopup({word,context:ctx})} fontSize={22}/>
@@ -5167,7 +5192,8 @@ export default function App() {
     _sttEnabled = !!settings.sttEnabled;
     _convSilenceMs = typeof settings.convSilenceMs==="number"?settings.convSilenceMs:2500;
     _convFuzzyThreshold = typeof settings.convFuzzyThreshold==="number"?settings.convFuzzyThreshold:0.8;
-  },[settings.model,settings.models,settings.imageModel,settings.orKey,settings.gKey,settings.ttsKey,settings.ttsVoice,settings.ttsSpeed,settings.sttKey,settings.sttEnabled,settings.convSilenceMs,settings.convFuzzyThreshold]);
+    _autoGenerateImage = !!settings.autoGenerateImage;
+  },[settings.model,settings.models,settings.imageModel,settings.orKey,settings.gKey,settings.ttsKey,settings.ttsVoice,settings.ttsSpeed,settings.sttKey,settings.sttEnabled,settings.convSilenceMs,settings.convFuzzyThreshold,settings.autoGenerateImage]);
   const go=s=>setScreen(s);
 
   // Usage tracker function passed to all Claude calls
