@@ -1144,7 +1144,7 @@ function UsageMeter({usage, settings, onReset}) {
           <div style={{fontSize:11,fontWeight:700,color:"var(--text3)",letterSpacing:".08em",textTransform:"uppercase",marginBottom:4,display:"grid",gridTemplateColumns:"1.3fr 50px 60px 60px 60px",gap:4}}>
             <span>Feature</span><span style={{textAlign:"right"}}>Calls</span><span style={{textAlign:"right"}}>Units</span><span style={{textAlign:"right"}}>Avg</span><span style={{textAlign:"right"}}>Cost</span>
           </div>
-          {Object.entries(usage.byTag).filter(([,v])=>v.calls>0).map(([tag,v])=>{
+          {Object.entries(usage.byTag).filter(([t,v])=>v.calls>0 || t==="sttWhisper" || t==="ttsGoogle").map(([tag,v])=>{
             const cost = costForTag(tag,v);
             const avg = v.calls>0 ? cost/v.calls : 0;
             const isTextTag = !NON_TEXT_TAGS.has(tag);
@@ -1867,6 +1867,9 @@ function SettingsScreen({settings,setSettings,onBack,usage,user,onSignOut,onRepl
                   <span style={{fontSize:14}}>🔑</span>
                   <div style={{fontSize:13,fontWeight:700,color:"var(--text)"}}>OpenRouter API Key</div>
                   <span style={{fontSize:10,fontWeight:600,color:"var(--weak)",background:"var(--weak-bg)",border:"1px solid var(--weak-border)",padding:"1px 6px",borderRadius:100}}>Required</span>
+                  {local.orKey?.trim()
+                    ? <span style={{fontSize:10,fontWeight:600,color:"var(--know)"}}>● set</span>
+                    : <span style={{fontSize:10,fontWeight:600,color:"var(--text3)"}}>○ not set</span>}
                 </div>
                 <a href="https://openrouter.ai/keys" target="_blank" rel="noopener noreferrer" style={{fontSize:11,color:"var(--accent)",textDecoration:"none",fontWeight:600}}>Get key →</a>
               </div>
@@ -1886,6 +1889,9 @@ function SettingsScreen({settings,setSettings,onBack,usage,user,onSignOut,onRepl
                   <span style={{fontSize:14}}>🖼</span>
                   <div style={{fontSize:13,fontWeight:700,color:"var(--text)"}}>Google AI Studio API Key</div>
                   <span style={{fontSize:10,fontWeight:600,color:"var(--text3)",background:"var(--surface2)",border:"1px solid var(--border)",padding:"1px 6px",borderRadius:100}}>Optional</span>
+                  {local.gKey?.trim()
+                    ? <span style={{fontSize:10,fontWeight:600,color:"var(--know)"}}>● set</span>
+                    : <span style={{fontSize:10,fontWeight:600,color:"var(--text3)"}}>○ not set</span>}
                 </div>
                 <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener noreferrer" style={{fontSize:11,color:"var(--accent)",textDecoration:"none",fontWeight:600}}>Get key →</a>
               </div>
@@ -1936,6 +1942,9 @@ function SettingsScreen({settings,setSettings,onBack,usage,user,onSignOut,onRepl
                   <span style={{fontSize:14}}>🎙</span>
                   <div style={{fontSize:13,fontWeight:700,color:"var(--text)"}}>Google Cloud TTS Key</div>
                   <span style={{fontSize:10,fontWeight:600,color:"var(--text3)",background:"var(--surface2)",border:"1px solid var(--border)",padding:"1px 6px",borderRadius:100}}>Optional</span>
+                  {local.ttsKey?.trim()
+                    ? <span style={{fontSize:10,fontWeight:600,color:"var(--know)"}}>● set</span>
+                    : <span style={{fontSize:10,fontWeight:600,color:"var(--text3)"}}>○ not set</span>}
                 </div>
                 <a href="https://console.cloud.google.com/apis/library/texttospeech.googleapis.com" target="_blank" rel="noopener noreferrer" style={{fontSize:11,color:"var(--accent)",textDecoration:"none",fontWeight:600}}>Enable API →</a>
               </div>
@@ -1957,6 +1966,9 @@ function SettingsScreen({settings,setSettings,onBack,usage,user,onSignOut,onRepl
                   <span style={{fontSize:14}}>🎧</span>
                   <div style={{fontSize:13,fontWeight:700,color:"var(--text)"}}>OpenAI API Key (Whisper)</div>
                   <span style={{fontSize:10,fontWeight:600,color:"var(--text3)",background:"var(--surface2)",border:"1px solid var(--border)",padding:"1px 6px",borderRadius:100}}>Optional</span>
+                  {local.sttKey?.trim()
+                    ? <span style={{fontSize:10,fontWeight:600,color:"var(--know)"}}>● set</span>
+                    : <span style={{fontSize:10,fontWeight:600,color:"var(--text3)"}}>○ not set</span>}
                 </div>
                 <a href="https://platform.openai.com/api-keys" target="_blank" rel="noopener noreferrer" style={{fontSize:11,color:"var(--accent)",textDecoration:"none",fontWeight:600}}>Get key →</a>
               </div>
