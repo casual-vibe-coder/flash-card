@@ -3148,7 +3148,7 @@ Deck: ${deckNames}
 Target length: ~${targetLen} words
 Difficulty register: ${settings.difficulty} (use the matching register from the style guide above)${topicClause}
 
-REQUIRED VOCABULARY — every base entry must appear in the passage at least once. You may use ANY form of each (past/present/imperative/masdar/active/passive participle/singular/plural/feminine/synonym/antonym/etc.) — pick whichever form fits the sentence naturally:
+REQUIRED VOCABULARY — every base entry must appear in the passage at least once. Use ANY form that fits the sentence naturally, BUT bias strongly toward the forms native speakers actually use in everyday MSA (past, present, imperative, masdar, singular, plural, feminine where applicable) — those should cover ~90–95% of your choices. Reach for less common forms (passive participle, less common synonyms/antonyms, broken-plural variants) ONLY when the sentence truly calls for it. Never use a rare form just because it appears in the form list — if it would feel forced or textbook-y, use the common form instead:
 ${formsBlock}
 
 EXTRA VOCABULARY YOU MAY WEAVE IN (no obligation, do NOT force):
@@ -3394,7 +3394,7 @@ Deck: ${deckNames}
 Target length: ~${targetLen} words
 Difficulty register: ${settings.difficulty} (use the matching register from the style guide above)${topicClause}
 
-REQUIRED VOCABULARY — every base entry must appear at least once. Use ANY form (past/present/imperative/masdar/active/passive/singular/plural/feminine/etc.) — pick whichever fits the spoken rhythm naturally:
+REQUIRED VOCABULARY — every base entry must appear at least once. Use ANY form that fits the spoken rhythm, BUT bias strongly toward the forms native speakers actually use in everyday MSA speech (past, present, imperative, masdar, singular, plural, feminine where applicable) — those should cover ~90–95% of your choices. Reach for less common forms (passive participle, less common synonyms/antonyms, broken-plural variants) ONLY when the sentence truly calls for it. Never use a rare form just because it appears in the form list — if it would feel forced or textbook-y, use the common form instead:
 ${formsBlock}
 
 EXTRA VOCABULARY YOU MAY WEAVE IN (no obligation):
