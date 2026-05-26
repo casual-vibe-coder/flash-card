@@ -396,20 +396,71 @@ const TAG_TO_IMAGE_MODEL = {
 // Threaded into every text-generation prompt so the AI mirrors the
 // register, themes, character cast, and level progression of the book.
 // ─────────────────────────────────────────────────────────────
-const BAYNA_YADAYK_STYLE = `STYLE GUIDE — match "العربية بين يديك" (Al-Arabiyya Bayna Yadayk):
+const BAYNA_YADAYK_STYLE = `STYLE GUIDE — write as if the passage came out of "العربية بين يديك" (Al-Arabiyya Bayna Yadayk) or the readers of Abū al-Ḥasan ʿAlī al-Nadwī (قصص النبيين / القراءة الراشدة). The learner should not be able to tell your output apart from those books.
 
-• Voice: Modern Standard Arabic only. Warm, contextual, real-life. Never textbook-stiff drill prose.
-• Diacritics: Every Arabic word MUST carry full tashkeel (فَتْحَة ضَمَّة كَسْرَة سُكُون شَدَّة تَنْوِين). No bare letters anywhere.
-• Cultural anchor: Saudi/Gulf/Muslim everyday life — family, masjid, prayer times, marketplace, hospitality, Hajj/Umrah, Mecca/Medina.
-• Recurring character cast (use these when you need a name in a passage or dialog):
-   Men/boys: عَبْدُ اللَّهِ، عَمَّار، سَامِي، إِبْرَاهِيم، إِلْيَاس، خَالِد، أَحْمَد، عَلِيّ، أَمِين، عَلَاء، مُحَمَّد، صَالِح، حَمْزَة، عُمَر
-   Women/girls: إِيمَان، أَمَل، وَرْدَة، زَيْنَب، فَاطِمَة، عَبِير، خَدِيجَة، عَائِشَة
-• Dialog patterns: vocatives like "...يَا أَحْمَد"; photo-card style introductions ("هَذَا/هَذِهِ"); imperative ↔ prohibition pairs; natural connectives (وَ، فَ، ثُمَّ، لَكِنْ، لِأَنَّ).
-• Level-to-theme mapping (use the band that matches the learner's vocabulary level):
-   Beginner: family, housing, studies, work, food, shopping, weather, prayer, daily routines.
-   Low-intermediate: vacation, travel, health, food choices, market interactions, hobbies.
-   Intermediate: civic life, helping a pilgrim (مُعْتَمِر/حَاجّ), world geography, social customs, religious occasions.
-   Advanced: economics, agriculture, history, science, civilization, abstract reasoning.`;
+═══ NON-NEGOTIABLE RULES ═══
+
+1. **Tashkeel on EVERY Arabic letter.** Full diacritics throughout (فَتْحَة، ضَمَّة، كَسْرَة، سُكُون، شَدَّة، تَنْوِين، مَدّ). No bare letters. الْكِتَابُ الْكَبِيرُ — never الكتاب الكبير. Embedded Qur'anic ayat carry their own tashkeel.
+
+2. **Modern Standard Arabic only.** No colloquial. No code-switching. No Romanized words. No English bracketed glosses inside the Arabic.
+
+3. **Sound like a real native, not a textbook drill.** No vocab-cramming. No artificial sentence-stuffing. If a required word doesn't fit naturally, restructure the scene — don't bend grammar to wedge it in.
+
+4. **Cultural anchor.** Saudi / Gulf / wider Muslim daily life. Family, masjid, prayer times, marketplace, hospitality, Qur'an study, hifz, Hajj/Umrah, Mecca/Medina, school/university, hospital, neighbourhood, halaqa.
+
+═══ THE FIVE REGISTERS (pick the one that matches the learner's level) ═══
+
+**(A) Beginner register — Bayna Yadayk Book 1.**
+Single-clause sentences, 3–6 words each. Subject + predicate or subject + verb + simple complement. Heavy use of هَذَا / هَذِهِ for introductions. Question-answer pairs: مَا اسْمُكَ؟ — اِسْمِي خَالِد. مِنْ أَيْنَ أَنْتَ؟ — أَنَا مِنْ مِصْر. Themes: name, nationality, family, profession, classroom, school, prayer, food, market. Pronouns drilled overtly. Names from the recurring cast.
+
+**(B) Low-intermediate register — Bayna Yadayk Book 2.**
+Sentences 6–12 words, with one connective per sentence (وَ، ثُمَّ، فَ، لَكِنْ). Mini-scenes: a student's daily schedule, a doctor visit, a family vacation, a market trip, a returning ḥāfiẓ. Dialogue is common, introduced with قَالَ X: "..." and replies with قَالَ Y: "...". Vocatives يَا فُلَان used naturally inside dialogue. Light cause-effect (لِأَنَّ، لِذَلِكَ). Past-tense narrative interleaved with present-tense habitual.
+
+**(C) Intermediate register — Bayna Yadayk Book 3.**
+Sentences 8–15 words, multi-clause. Topics shift to civic, religious, geographical, social. Cause-effect chains, contrast clauses (أَمَّا... فَـ). كَانَ + خَبَرها constructions. Embedded Qur'anic ayat at theme-relevant moments (use them sparingly and accurately). Vocabulary becomes more abstract: المُجْتَمَع، الحَضَارَة، التَّأْثِير، النِّظَام.
+
+**(D) Advanced register — Bayna Yadayk Book 4.**
+Sentences 10–22 words, compound and complex. Classical biographical or expository prose. Sub-headed narrative possible. Vocabulary expands into سِيرَة, history, science, agriculture, economy. الصِّفَة المُشَبَّهَة and advanced morphological forms appear naturally. Embedded ayat and hadith. Proper-noun-heavy when discussing Islamic history. Sentence rhythm can carry one main clause and two subordinates.
+
+**(E) Al-Nadwī "وَكَانَ..." narrative register — قصص النبيين / القراءة الراشدة.**
+A distinctive option for narrative passages at any level. Short sentences (5–10 words) chained by وَ at the start of each. "وَكَانَ آزَرُ يَبِيعُ الأَصْنَامَ. وَكَانَ يَسْجُدُ لَهَا. وَكَانَ النَّاسُ يَسْجُدُونَ مَعَهُ." The rhythm carries the meaning. Heavy parallelism. Embedded Qur'anic ayat at climaxes (وَقَالَ تَعَالَى: ... / ﴿...﴾). Dialogue gets one line per speech (قَالَ إِبْرَاهِيمُ: ...). Repetition is structural, not lazy — the same construction repeated three times produces a wisdom cadence. Reserved for story passages with moral resolution.
+
+═══ RECURRING CHARACTER CAST ═══
+
+Use these when a name is needed. Vary across passages — don't always pick the same one.
+
+Men/boys: عَبْدُ اللَّهِ، عَمَّار، سَامِي، إِبْرَاهِيم، إِلْيَاس، خَالِد، أَحْمَد، عَلِيّ، أَمِين، عَلَاء، مُحَمَّد، صَالِح، حَمْزَة، عُمَر، نَاصِر، يَاسِر، حَسَّان، سَلْمَان، يُوسُف، أَيْمَن
+Women/girls: إِيمَان، أَمَل، وَرْدَة، زَيْنَب، فَاطِمَة، عَبِير، خَدِيجَة، عَائِشَة، مَرْيَم، أَسْمَاء، رُقَيَّة، هَاجَر، سَعِيدَة، هُدَى
+Family roles: الأَبُ، الأُمُّ، الجَدُّ، الجَدَّةُ، العَمُّ، الخَالُ، الأَخُ، الأُخْتُ، الزَّوْجُ، الزَّوْجَةُ، الوَلَدُ، البِنْتُ
+Authority figures: المُدَرِّسُ، الأُسْتَاذُ، الشَّيْخُ، الإِمَامُ، الطَّبِيبُ، الإِدَارِيُّ
+Settings the cast moves through: البَيْت، المَسْجِد، السُّوق، المَدْرَسَة، الجَامِعَة، المُسْتَشْفَى، المَطَار، المَطْعَم، الحَدِيقَة، الحَيّ، القَرْيَة، المَدِينَة.
+
+═══ DIALOGUE CONVENTIONS ═══
+
+• Speaker tag inline: "قَالَ خَالِد: ..." then a line break, then the speech.
+• Listener vocative at the end of a question or warmth-phrase: "أَيْنَ تَذْهَبُ يَا عَلِيّ؟"
+• Replies often begin with نَعَمْ، لَا، رُبَّمَا، بِالطَّبْعِ، أَيْ نَعَمْ، إِنْ شَاءَ اللهُ، الحَمْدُ لِلَّهِ.
+• Pious phrases woven naturally (not stuffed): بِسْمِ اللهِ، الحَمْدُ لِلَّهِ، إِنْ شَاءَ اللهُ، بَارَكَ اللهُ فِيكَ، جَزَاكَ اللهُ خَيْرًا.
+
+═══ CONNECTIVES & SENTENCE FLOW ═══
+
+Use these like a native: وَ (and), فَ (so/then-immediately), ثُمَّ (then-after-a-pause), لَكِنَّ (but, with stress), وَلَكِنْ (but, neutral), لِأَنَّ (because), حَتَّى (until/even), كَيْ / لِكَيْ (in order to), بَيْنَمَا (while), عِنْدَمَا / لَمَّا (when), إِذَا (if-realis), لَوْ (if-irrealis), بَعْدَ أَنْ (after), قَبْلَ أَنْ (before).
+
+For narrative chaining specifically, vary so the prose doesn't feel like a list. Mix: "ذَهَبَ ... ثُمَّ جَلَسَ ... فَقَالَ" with "كَانَ ... وَكَانَ ... وَلَمَّا" depending on register.
+
+═══ THINGS THAT BREAK THE ILLUSION (avoid) ═══
+
+✗ Sentences shaped like translated English ("هُوَ ذَهَبَ إلى المَدْرَسَة فِي الصَّبَاح وَهُوَ تَنَاوَلَ الطَّعَام بَعْدَ ذَلِك").
+✗ Over-explicit pronouns where Arabic would drop them.
+✗ Comma-spliced sentences without proper connectives.
+✗ Inanimate plurals treated as masculine plural (must be feminine singular agreement).
+✗ Mis-cased verbs after لا النافية (مرفوع) vs لا الناهية (مجزوم).
+✗ Mixing tashkeel and bare letters within the same passage.
+✗ Made-up phrases that no native would say. Test every line: would a real teacher in a real class actually say this?
+
+═══ ON THE LEARNER'S VOCABULARY ═══
+
+The passage should foreground the required vocabulary the learner needs to drill. But it should also feel like real prose — so weaving in other natural Arabic words (including words slightly beyond the learner's current set) is encouraged when it makes the passage breathe. Stay within one band of difficulty above the learner's level — no sudden classical poetry inside a beginner passage. If a learner-card has multiple forms (past/present/imperative/masdar/active-participle/plural/feminine), feel free to use whichever form fits the sentence naturally — you do not have to stick to the base form.`;
 
 
 // ─────────────────────────────────────────────────────────────
@@ -521,6 +572,11 @@ textarea.input{resize:vertical;min-height:110px;line-height:1.7}
 .sec{font-size:10.5px;font-weight:700;color:var(--text3);letter-spacing:.13em;text-transform:uppercase;margin-bottom:10px}
 .pop-appear{animation:popIn .38s cubic-bezier(.34,1.56,.64,1)}
 @keyframes popIn{from{opacity:0;transform:scale(.88)}to{opacity:1;transform:scale(1)}}
+/* Flashcard flip — front rotates out as user taps, back rotates in. Mimics a physical card flip without two-faced complexity. */
+.card-flip-out{animation:cFlipOut .28s cubic-bezier(.4,0,.7,.2) forwards;transform-origin:center center;will-change:transform,opacity}
+.card-flip-in{animation:cFlipIn .55s cubic-bezier(.2,.6,.25,1);transform-origin:center center;will-change:transform,opacity}
+@keyframes cFlipOut{from{opacity:1;transform:perspective(1100px) rotateY(0) scale(1)}to{opacity:0;transform:perspective(1100px) rotateY(85deg) scale(.94)}}
+@keyframes cFlipIn{from{opacity:0;transform:perspective(1100px) rotateY(-90deg) scale(.93)}55%{opacity:1;transform:perspective(1100px) rotateY(12deg) scale(1.015)}to{opacity:1;transform:perspective(1100px) rotateY(0) scale(1)}}
 .overlay{position:fixed;inset:0;background:rgba(0,0,0,.44);z-index:100;display:flex;align-items:flex-end;justify-content:center;animation:ovIn .2s ease}
 @keyframes ovIn{from{opacity:0}to{opacity:1}}
 .drawer{background:var(--surface);border-radius:20px 20px 0 0;width:100%;max-width:680px;padding:22px 20px 36px;animation:drIn .25s cubic-bezier(.2,0,.2,1)}
@@ -2602,7 +2658,7 @@ QUALITY RULES — non-negotiable:
 
 CRITICAL: Every single Arabic word MUST have full tashkeel — no bare letters.
 Return ONLY valid JSON: {"sentence":"...","translation":"...","imagePrompt":"..."}`,
-        500,"sentence",trackUsage
+        900,"sentence",trackUsage
       );
       if(id!==genRef.current) return;
       const parsed=extractJSON(raw);
@@ -2641,6 +2697,13 @@ Return ONLY valid JSON: {"sentence":"...","translation":"...","imagePrompt":"...
     return ()=>window.removeEventListener("keydown",handler);
   },[flipped,card?.id,currentIndex,selForm]);
 
+  // Auto-generate the example sentence when the card flips, or when the user
+  // picks a different form. No need for the user to click Generate manually.
+  useEffect(()=>{
+    if(flipped&&selForm&&!gen&&!genLoading) generate(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[flipped,selForm]);
+
   // Stop audio on unmount or screen change
   useEffect(()=>()=>{stopTtsAudio();},[]);
 
@@ -2669,7 +2732,7 @@ Return ONLY valid JSON: {"sentence":"...","translation":"...","imagePrompt":"...
           </div>
         )}
         {flipped&&(
-          <div key={`b${currentIndex}`} className="card-appear" style={{background:"var(--surface)",border:"1.5px solid var(--border)",borderRadius:"var(--r)",padding:"18px 17px",boxShadow:"0 5px 24px rgba(0,0,0,0.08)"}}>
+          <div key={`b${currentIndex}`} className="card-flip-in" style={{background:"var(--surface)",border:"1.5px solid var(--border)",borderRadius:"var(--r)",padding:"18px 17px",boxShadow:"0 5px 24px rgba(0,0,0,0.08)"}}>
             <div style={{textAlign:"center",paddingBottom:14,borderBottom:"1px solid var(--border)",marginBottom:14}}>
               <div className="sec" style={{margin:0,marginBottom:5}}>Arabic · <span style={{textTransform:"capitalize"}}>{card.wordType}</span></div>
               <div className="ar" style={{fontSize:42,color:"var(--text)"}}>{card.arabicBase}</div>
@@ -3058,31 +3121,56 @@ function ReadingScreen({decks,cardStates,onBack,onFinish,onAddToFlashcard,trackU
     const scaleFactor=Math.max(1,vocabCards.length/10);
     const scaleLen=(range)=>{const[lo,hi]=range.split("-").map(Number);return `${Math.round(lo*scaleFactor)}-${Math.round(hi*scaleFactor)}`;};
     const targetLen=scaleLen(baseLenMap[settings.length]||"110-140");
-    const maxTok=Math.min(4000,Math.max(1500,vocabCards.length*100));
+    // Token budget scales with difficulty — advanced passages need more headroom
+    // because tashkeel-heavy + complex syntax burns tokens fast, and the JSON
+    // wrapper truncates if we're stingy. Generous ceiling for advanced.
+    const diffMult=settings.difficulty==="advanced"?2.0:settings.difficulty==="intermediate"?1.5:1.0;
+    const maxTok=Math.min(8000,Math.max(2200,Math.round(vocabCards.length*120*diffMult)));
     const topicClause=topic?`\nTopic/theme: "${topic}" — write the passage about this topic.`:"";
-    // Bonus pool of words the learner has already studied — to weave in beyond the required vocab
+    // Bonus pool of words the learner has already studied — the LLM may use these
+    // naturally, but they must NOT appear in vocabUsed (which drives highlighting).
     const learnedPool=Object.values(cardStates).flat().filter(c=>c.status==="known"||c.status==="weak");
     const learnedSample=[...learnedPool].sort(()=>Math.random()-0.5).slice(0,80).map(c=>c.arabicBase).join("، ");
+    // Required vocab — pass ALL forms the card has, so the LLM can pick the
+    // form that fits the sentence (past/present/imperative/masdar/plural/etc.)
+    // rather than awkwardly forcing the base form everywhere.
+    const formsBlock=vocabCards.map(c=>{
+      const formStrs=Object.entries(c.forms||{}).filter(([k,v])=>v&&k!=="harf").map(([k,v])=>`${k}=${v}`).join(", ");
+      return `• ${c.arabicBase} (${c.english}) — any of: ${formStrs||c.arabicBase}`;
+    }).join("\n");
     try {
       const raw=await callClaudeWithTashkeel(
         `${BAYNA_YADAYK_STYLE}
 
-You are writing a Bayna-Yadayk-style reading passage.
+═══ PASSAGE BRIEF ═══
 
 Deck: ${deckNames}
-Required Arabic vocabulary (MUST use every word at least once): ${vocabCards.map(c=>c.arabicBase).join("، ")}${topicClause}
+Target length: ~${targetLen} words
+Difficulty register: ${settings.difficulty} (use the matching register from the style guide above)${topicClause}
 
-Write a ${settings.difficulty}-level Arabic reading passage of ~${targetLen} words. Make it feel like a real Bayna-Yadayk passage: a small scene featuring 1-2 characters by name from the cast above, grounded in a specific setting from the level-appropriate theme band, with natural narrative flow.
+REQUIRED VOCABULARY — every base entry must appear in the passage at least once. You may use ANY form of each (past/present/imperative/masdar/active/passive participle/singular/plural/feminine/synonym/antonym/etc.) — pick whichever form fits the sentence naturally:
+${formsBlock}
 
-QUALITY RULES — non-negotiable:
-- Reads like real prose a native would write. No vocab-cramming feel.
-- Every required vocabulary word appears at least once.
-- Weave in the learner's other studied words where they fit naturally — do NOT force them. Bonus pool: ${learnedSample||"(none)"}
-- Grammatically correct, coherent, idiomatic Modern Standard Arabic.
+EXTRA VOCABULARY YOU MAY WEAVE IN (no obligation, do NOT force):
+${learnedSample||"(none)"}
 
-CRITICAL: Every single Arabic word MUST have full tashkeel — no bare letters.
+ADDITIONAL VOCABULARY BEYOND THE DECK is welcome when the prose needs it — stay within one register-band above the learner's level. Real prose beats stuck-on-deck prose. But never use a word so far above the learner's level that the passage becomes unreadable.
 
-Return ONLY valid JSON: {"arabic":"...","translation":"...","vocabUsed":["base form of each vocab word that appears"]}`,
+═══ OUTPUT CONTRACT ═══
+
+Return ONLY valid JSON. Put "vocabUsed" FIRST so it survives even if the body is truncated.
+
+{
+  "vocabUsed": [...],   // ONLY the base forms (arabicBase) from the REQUIRED VOCABULARY list that you actually used. Do NOT include extra-vocabulary words. Do NOT include bonus-pool words. Used for in-passage highlighting — be precise.
+  "arabic": "...",      // The passage itself, fully tashkeel'd, ~${targetLen} words
+  "translation": "..."  // Faithful English translation
+}
+
+REMINDERS — non-negotiable:
+- Every Arabic letter carries tashkeel. No bare letters anywhere.
+- Read it back to yourself: does it sound like a real Bayna-Yadayk passage or an Al-Nadwī narrative? If yes, ship. If not, restructure.
+- Coherent scene, named character(s) from the recurring cast, real setting, natural flow.
+- Grammatically correct idiomatic MSA — case endings, agreement, mood after لا النافية vs لا الناهية all correct.`,
         maxTok,"reading",trackUsage
       );
       setPassage(extractJSON(raw));
@@ -3282,31 +3370,59 @@ function ListeningScreen({decks,cardStates,onBack,onFinish,onAddToFlashcard,trac
     const scaleFactor=Math.max(1,vocabCards.length/10);
     const scaleLen=(range)=>{const[lo,hi]=range.split("-").map(Number);return `${Math.round(lo*scaleFactor)}-${Math.round(hi*scaleFactor)}`;};
     const targetLen=scaleLen(baseLenMap[settings.length]||"90-120");
-    const maxTok=Math.min(4000,Math.max(1200,vocabCards.length*100));
+    // Same difficulty-aware token sizing as reading — listening passages also
+    // truncate JSON when the LLM has to cram tashkeel-heavy advanced prose.
+    const diffMult=settings.difficulty==="advanced"?2.0:settings.difficulty==="intermediate"?1.5:1.0;
+    const maxTok=Math.min(8000,Math.max(2000,Math.round(vocabCards.length*120*diffMult)));
     const topicClause=topic?`\nTopic/theme: "${topic}" — write about this topic.`:"";
-    // Bonus pool of words the learner has already studied — to weave in beyond the required vocab
+    // Bonus pool — usable naturally but NOT to be highlighted (never in vocabUsed)
     const learnedPool=Object.values(cardStates).flat().filter(c=>c.status==="known"||c.status==="weak");
     const learnedSample=[...learnedPool].sort(()=>Math.random()-0.5).slice(0,80).map(c=>c.arabicBase).join("، ");
+    // Pass ALL forms each card has — let the LLM pick whatever form fits the
+    // spoken rhythm best.
+    const formsBlock=vocabCards.map(c=>{
+      const formStrs=Object.entries(c.forms||{}).filter(([k,v])=>v&&k!=="harf").map(([k,v])=>`${k}=${v}`).join(", ");
+      return `• ${c.arabicBase} (${c.english}) — any of: ${formStrs||c.arabicBase}`;
+    }).join("\n");
     try {
       const raw=await callClaudeWithTashkeel(
         `${BAYNA_YADAYK_STYLE}
 
-You are writing a Bayna-Yadayk-style listening passage (read aloud, so write for the ear).
+═══ LISTENING-PASSAGE BRIEF (read aloud — write for the ear) ═══
 
 Deck: ${deckNames}
-Required Arabic vocabulary (MUST use every word at least once): ${vocabCards.map(c=>c.arabicBase).join("، ")}${topicClause}
+Target length: ~${targetLen} words
+Difficulty register: ${settings.difficulty} (use the matching register from the style guide above)${topicClause}
 
-Write a ${settings.difficulty}-level spoken Arabic passage of ~${targetLen} words. Use the rhythm of real speech: short clauses, vocatives (يَا ...) when characters address each other, small grounding details. Pick 1-2 characters from the cast above. Theme must fit the learner's level band.
+REQUIRED VOCABULARY — every base entry must appear at least once. Use ANY form (past/present/imperative/masdar/active/passive/singular/plural/feminine/etc.) — pick whichever fits the spoken rhythm naturally:
+${formsBlock}
 
-QUALITY RULES — non-negotiable:
-- Sounds like real spoken Arabic, not a paragraph dressed up. Natural pauses, natural transitions.
-- Every required vocabulary word appears at least once.
-- Weave in the learner's other studied words where they fit naturally — do NOT force them. Bonus pool: ${learnedSample||"(none)"}
-- Grammatically correct and idiomatic.
+EXTRA VOCABULARY YOU MAY WEAVE IN (no obligation):
+${learnedSample||"(none)"}
 
-CRITICAL: Every single Arabic word MUST have full tashkeel — no bare letters.
+ADDITIONAL VOCABULARY BEYOND THE DECK is welcome when the prose needs it — stay within one register-band above the learner's level. Real-sounding speech beats stuck-on-deck speech.
 
-Return ONLY valid JSON: {"arabic":"...","translation":"...","vocabUsed":["base form of each vocab word that appears"]}`,
+SPOKEN-PASSAGE RULES:
+- Short clauses, natural rhythm of speech.
+- Vocatives (يَا ...) when characters address each other.
+- Real grounding details (a time, a place, a small action).
+- 1-2 characters from the cast above.
+- Theme fits the learner's level band per the style guide.
+
+═══ OUTPUT CONTRACT ═══
+
+Return ONLY valid JSON. Put "vocabUsed" FIRST so it survives even if the body truncates.
+
+{
+  "vocabUsed": [...],   // ONLY the base forms from REQUIRED VOCABULARY that you actually used. Do NOT include extra-vocabulary or bonus-pool words.
+  "arabic": "...",      // Fully tashkeel'd Arabic passage, ~${targetLen} words
+  "translation": "..."  // Faithful English translation
+}
+
+REMINDERS:
+- Every Arabic letter carries tashkeel. No bare letters.
+- Read it aloud in your head: does it flow like real speech, or like written paragraphs broken up? If the latter, restructure.
+- Grammatically correct idiomatic MSA — case endings, agreement, mood after لا النافية vs لا الناهية.`,
         maxTok,"listening",trackUsage
       );
       const parsed=extractJSON(raw);
@@ -4550,7 +4666,7 @@ Return ONLY valid JSON: {"sentence":"...","translation":"..."}`,
               <div style={{fontSize:12,color:"var(--text3)",marginTop:20}}>Tap to reveal · <span className="kbd">Space</span></div>
             </div>
           ):(
-            <div className="card-appear" style={{background:"var(--surface)",border:"1.5px solid var(--border)",borderRadius:"var(--r)",padding:"18px 17px",boxShadow:"0 5px 24px rgba(0,0,0,0.08)"}}>
+            <div className="card-flip-in" style={{background:"var(--surface)",border:"1.5px solid var(--border)",borderRadius:"var(--r)",padding:"18px 17px",boxShadow:"0 5px 24px rgba(0,0,0,0.08)"}}>
               <div style={{textAlign:"center",paddingBottom:14,borderBottom:"1px solid var(--border)",marginBottom:14}}>
                 <div className="sec" style={{margin:0,marginBottom:5}}>Arabic · <span style={{textTransform:"capitalize"}}>{card.wordType}</span></div>
                 <div className="ar" style={{fontSize:40,color:"var(--text)"}}>{card.arabicBase}</div>
