@@ -577,6 +577,12 @@ textarea.input{resize:vertical;min-height:110px;line-height:1.7}
 .card-flip-in{animation:cFlipIn .55s cubic-bezier(.2,.6,.25,1);transform-origin:center center;will-change:transform,opacity}
 @keyframes cFlipOut{from{opacity:1;transform:perspective(1100px) rotateY(0) scale(1)}to{opacity:0;transform:perspective(1100px) rotateY(85deg) scale(.94)}}
 @keyframes cFlipIn{from{opacity:0;transform:perspective(1100px) rotateY(-90deg) scale(.93)}55%{opacity:1;transform:perspective(1100px) rotateY(12deg) scale(1.015)}to{opacity:1;transform:perspective(1100px) rotateY(0) scale(1)}}
+/* True 2-faced flippable card. Click anywhere on the card to toggle. */
+.flip-card{perspective:1400px;width:100%;cursor:pointer}
+.flip-card-inner{position:relative;width:100%;min-height:230px;transition:transform .65s cubic-bezier(.2,.6,.25,1);transform-style:preserve-3d}
+.flip-card.is-flipped .flip-card-inner{transform:rotateY(180deg)}
+.flip-card-face{position:absolute;top:0;left:0;width:100%;min-height:230px;backface-visibility:hidden;-webkit-backface-visibility:hidden;background:var(--surface);border:1.5px solid var(--border);border-radius:var(--r);box-shadow:0 5px 24px rgba(0,0,0,0.08);display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:30px 22px}
+.flip-card-back{transform:rotateY(180deg)}
 .overlay{position:fixed;inset:0;background:rgba(0,0,0,.44);z-index:100;display:flex;align-items:flex-end;justify-content:center;animation:ovIn .2s ease}
 @keyframes ovIn{from{opacity:0}to{opacity:1}}
 .drawer{background:var(--surface);border-radius:20px 20px 0 0;width:100%;max-width:680px;padding:22px 20px 36px;animation:drIn .25s cubic-bezier(.2,0,.2,1)}
@@ -2697,13 +2703,6 @@ Return ONLY valid JSON: {"sentence":"...","translation":"...","imagePrompt":"...
     return ()=>window.removeEventListener("keydown",handler);
   },[flipped,card?.id,currentIndex,selForm]);
 
-  // Auto-generate the example sentence when the card flips, or when the user
-  // picks a different form. No need for the user to click Generate manually.
-  useEffect(()=>{
-    if(flipped&&selForm&&!gen&&!genLoading) generate(null);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  },[flipped,selForm]);
-
   // Stop audio on unmount or screen change
   useEffect(()=>()=>{stopTtsAudio();},[]);
 
@@ -2723,33 +2722,38 @@ Return ONLY valid JSON: {"sentence":"...","translation":"...","imagePrompt":"...
       <div className="progress-track" style={{marginBottom:16}}><div className="progress-fill" style={{width:`${((currentIndex+1)/cards.length)*100}%`,background:"var(--accent)"}}/></div>
 
       <div style={{flex:1,display:"flex",flexDirection:"column",gap:13,overflowY:"auto"}}>
-        {!flipped&&(
-          <div key={`f${currentIndex}`} className="card-appear" onClick={()=>setFlipped(true)}
-            style={{background:"var(--surface)",border:"1.5px solid var(--border)",borderRadius:"var(--r)",padding:"44px 24px",cursor:"pointer",textAlign:"center",boxShadow:"0 5px 24px rgba(0,0,0,0.08)",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",minHeight:188}}>
-            <div className="sec" style={{margin:0,marginBottom:16}}>English</div>
-            <div style={{fontFamily:"Lora,serif",fontSize:38,fontWeight:600,lineHeight:1.2}}>{card.english}</div>
-            <div style={{fontSize:12,color:"var(--text3)",marginTop:20,fontWeight:500}}>Tap to reveal Arabic ↓</div>
-          </div>
-        )}
-        {flipped&&(
-          <div key={`b${currentIndex}`} className="card-flip-in" style={{background:"var(--surface)",border:"1.5px solid var(--border)",borderRadius:"var(--r)",padding:"18px 17px",boxShadow:"0 5px 24px rgba(0,0,0,0.08)"}}>
-            <div style={{textAlign:"center",paddingBottom:14,borderBottom:"1px solid var(--border)",marginBottom:14}}>
-              <div className="sec" style={{margin:0,marginBottom:5}}>Arabic · <span style={{textTransform:"capitalize"}}>{card.wordType}</span></div>
+        {/* True 2-faced flip card — click anywhere on the card to toggle */}
+        <div key={`flip${currentIndex}`} className={`flip-card ${flipped?'is-flipped':''}`} onClick={()=>setFlipped(f=>!f)}>
+          <div className="flip-card-inner">
+            {/* Front face — English */}
+            <div className="flip-card-face">
+              <div className="sec" style={{marginBottom:16}}>English</div>
+              <div style={{fontFamily:"Lora,serif",fontSize:38,fontWeight:600,lineHeight:1.2}}>{card.english}</div>
+              <div style={{fontSize:12,color:"var(--text3)",marginTop:20,fontWeight:500}}>Tap to reveal Arabic ↓</div>
+            </div>
+            {/* Back face — Arabic */}
+            <div className="flip-card-face flip-card-back">
+              <div className="sec" style={{marginBottom:5}}>Arabic · <span style={{textTransform:"capitalize"}}>{card.wordType}</span></div>
               <div className="ar" style={{fontSize:42,color:"var(--text)"}}>{card.arabicBase}</div>
               <div style={{fontSize:13,color:"var(--text3)"}}>{card.english}</div>
               {card.srsStreak>0&&(
-                <div style={{display:"inline-flex",alignItems:"center",gap:4,marginTop:5,fontSize:11,color:"var(--know)"}}>
+                <div style={{display:"inline-flex",alignItems:"center",gap:4,marginTop:6,fontSize:11,color:"var(--know)"}}>
                   {"🔥".repeat(Math.min(card.srsStreak,5))} {card.srsStreak} streak
                 </div>
               )}
-              {/* Harf badge */}
               {card.forms.harf&&(
                 <div style={{display:"inline-flex",alignItems:"center",gap:5,marginTop:7,background:"var(--harf-bg)",border:"1px solid var(--harf-border)",borderRadius:100,padding:"3px 11px"}}>
                   <span style={{fontSize:11.5,color:"var(--harf)"}}>حرف الجر</span>
                   <span className="ar" style={{fontSize:17,color:"var(--harf)",fontWeight:600}}>{card.forms.harf}</span>
                 </div>
               )}
+              <div style={{fontSize:11,color:"var(--text3)",marginTop:14,fontWeight:500}}>↻ Tap to flip back</div>
             </div>
+          </div>
+        </div>
+        {/* Expanded back content (forms, generate, audio) — only when flipped */}
+        {flipped&&(
+          <div className="gen-appear" style={{background:"var(--surface)",border:"1.5px solid var(--border)",borderRadius:"var(--r)",padding:"18px 17px",boxShadow:"0 5px 24px rgba(0,0,0,0.08)"}}>
             <div className="sec">Select a form</div>
             <div style={{display:"flex",flexWrap:"wrap",gap:7,marginBottom:12}}>
               {availForms
@@ -4658,22 +4662,26 @@ Return ONLY valid JSON: {"sentence":"...","translation":"..."}`,
         <div className="progress-track" style={{marginBottom:16}}><div className="progress-fill" style={{width:`${((idx+1)/sessionCards.length)*100}%`,background:"var(--accent)"}}/></div>
 
         <div style={{flex:1,display:"flex",flexDirection:"column",gap:13,overflowY:"auto"}}>
-          {!flipped?(
-            <div className="card-appear" onClick={()=>setFlipped(true)}
-              style={{background:"var(--surface)",border:"1.5px solid var(--border)",borderRadius:"var(--r)",padding:"44px 24px",cursor:"pointer",textAlign:"center",boxShadow:"0 5px 24px rgba(0,0,0,0.08)",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",minHeight:188}}>
-              <div className="sec" style={{margin:0,marginBottom:16}}>English</div>
-              <div style={{fontFamily:"Lora,serif",fontSize:36,fontWeight:600,lineHeight:1.2}}>{card.english}</div>
-              <div style={{fontSize:12,color:"var(--text3)",marginTop:20}}>Tap to reveal · <span className="kbd">Space</span></div>
-            </div>
-          ):(
-            <div className="card-flip-in" style={{background:"var(--surface)",border:"1.5px solid var(--border)",borderRadius:"var(--r)",padding:"18px 17px",boxShadow:"0 5px 24px rgba(0,0,0,0.08)"}}>
-              <div style={{textAlign:"center",paddingBottom:14,borderBottom:"1px solid var(--border)",marginBottom:14}}>
-                <div className="sec" style={{margin:0,marginBottom:5}}>Arabic · <span style={{textTransform:"capitalize"}}>{card.wordType}</span></div>
+          {/* True 2-faced flip card — click anywhere on the card to toggle */}
+          <div key={`flip${idx}`} className={`flip-card ${flipped?'is-flipped':''}`} onClick={()=>setFlipped(f=>!f)}>
+            <div className="flip-card-inner">
+              <div className="flip-card-face">
+                <div className="sec" style={{marginBottom:16}}>English</div>
+                <div style={{fontFamily:"Lora,serif",fontSize:36,fontWeight:600,lineHeight:1.2}}>{card.english}</div>
+                <div style={{fontSize:12,color:"var(--text3)",marginTop:20}}>Tap to reveal · <span className="kbd">Space</span></div>
+              </div>
+              <div className="flip-card-face flip-card-back">
+                <div className="sec" style={{marginBottom:5}}>Arabic · <span style={{textTransform:"capitalize"}}>{card.wordType}</span></div>
                 <div className="ar" style={{fontSize:40,color:"var(--text)"}}>{card.arabicBase}</div>
                 <div style={{fontSize:13,color:"var(--text3)"}}>{card.english}</div>
-                {card.srsStreak>0&&<div style={{display:"inline-flex",alignItems:"center",gap:4,marginTop:5,fontSize:11,color:"var(--know)"}}>{"🔥".repeat(Math.min(card.srsStreak,5))} {card.srsStreak} streak</div>}
+                {card.srsStreak>0&&<div style={{display:"inline-flex",alignItems:"center",gap:4,marginTop:6,fontSize:11,color:"var(--know)"}}>{"🔥".repeat(Math.min(card.srsStreak,5))} {card.srsStreak} streak</div>}
                 {card.forms?.harf&&<div style={{display:"inline-flex",alignItems:"center",gap:5,marginTop:7,background:"var(--harf-bg)",border:"1px solid var(--harf-border)",borderRadius:100,padding:"3px 11px"}}><span className="ar" style={{fontSize:17,color:"var(--harf)",fontWeight:600}}>{card.forms.harf}</span></div>}
+                <div style={{fontSize:11,color:"var(--text3)",marginTop:14,fontWeight:500}}>↻ Tap to flip back</div>
               </div>
+            </div>
+          </div>
+          {flipped&&(
+            <div className="gen-appear" style={{background:"var(--surface)",border:"1.5px solid var(--border)",borderRadius:"var(--r)",padding:"18px 17px",boxShadow:"0 5px 24px rgba(0,0,0,0.08)"}}>
               <div className="sec">Select a form</div>
               <div style={{display:"flex",flexWrap:"wrap",gap:7,marginBottom:12}}>
                 {availForms
