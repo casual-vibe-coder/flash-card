@@ -664,29 +664,42 @@ let _autoGenerateImage = false; // opt-in per learning aid; off by default
 
 function pickModelForTag(tag){return _modelByTag[tag]||_defaultModel;}
 
-async function callClaude(prompt, maxTokens=1500, tag="other", trackFn=null) {
-  const res = await fetch("/api/claude", {
-    method:"POST",
-    headers:{"Content-Type":"application/json"},
-    body:JSON.stringify({
-      model: pickModelForTag(tag),
-      max_tokens: maxTokens,
-      messages:[{role:"user",content:prompt}],
-      ..._orKey ? {apiKey:_orKey} : {},
-    }),
-  });
-  const d = await res.json();
-  if(d.error) throw new Error(d.error);
-  // api/claude.js normalises OpenRouter response → {content:[{type:"text",text}], usage:{input_tokens, output_tokens}}
-  const outputText = d.content?.find(b=>b.type==="text")?.text || "";
-  if(!outputText) throw new Error("Empty response from AI — check your API key in Settings.");
-  if (trackFn) {
-    trackFn(tag, prompt.length, outputText.length,
-      d.usage?.input_tokens  || Math.ceil(prompt.length/4),
-      d.usage?.output_tokens || Math.ceil(outputText.length/4)
-    );
+async function callClaude(prompt, maxTokens=1500, tag="other", trackFn=null, timeoutMs=null) {
+  // Optional client-side timeout so a hung request fails fast instead of
+  // leaving the UI spinning forever (used by quick interactive calls like
+  // word lookups).
+  const ctrl = timeoutMs ? new AbortController() : null;
+  const timer = ctrl ? setTimeout(()=>ctrl.abort(), timeoutMs) : null;
+  try {
+    const res = await fetch("/api/claude", {
+      method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({
+        model: pickModelForTag(tag),
+        max_tokens: maxTokens,
+        messages:[{role:"user",content:prompt}],
+        ..._orKey ? {apiKey:_orKey} : {},
+      }),
+      ...(ctrl ? {signal:ctrl.signal} : {}),
+    });
+    const d = await res.json();
+    if(d.error) throw new Error(typeof d.error==="string"?d.error:(d.error.message||"AI request failed"));
+    // api/claude.js normalises OpenRouter response → {content:[{type:"text",text}], usage:{input_tokens, output_tokens}}
+    const outputText = d.content?.find(b=>b.type==="text")?.text || "";
+    if(!outputText) throw new Error("Empty response from AI — check your API key in Settings.");
+    if (trackFn) {
+      trackFn(tag, prompt.length, outputText.length,
+        d.usage?.input_tokens  || Math.ceil(prompt.length/4),
+        d.usage?.output_tokens || Math.ceil(outputText.length/4)
+      );
+    }
+    return outputText;
+  } catch(e) {
+    if(e.name==="AbortError") throw new Error("Lookup timed out — please try again.");
+    throw e;
+  } finally {
+    if(timer) clearTimeout(timer);
   }
-  return outputText;
 }
 
 /**
@@ -906,8 +919,10 @@ async function synthesizeArabic(rawText,opts={}){
 // Send a recorded audio Blob to /api/stt for transcription.
 // Returns transcript string, or null when the proxy can't transcribe (no key
 // configured / network failure) so the caller can fall back to browser STT.
+// Returns {transcript, error, noKey, disabled} so the caller can show the real
+// reason a transcription failed instead of a generic "out of credit" guess.
 async function transcribeAudio(blob, durationSec=null){
-  if(!_sttEnabled||!_sttKey) return null;
+  if(!_sttEnabled||!_sttKey) return {transcript:null,disabled:true};
   try{
     const buf=await blob.arrayBuffer();
     let bin=""; const bytes=new Uint8Array(buf);
@@ -916,15 +931,17 @@ async function transcribeAudio(blob, durationSec=null){
     const res=await fetch("/api/stt",{method:"POST",headers:{"Content-Type":"application/json"},
       body:JSON.stringify({audio,mime:blob.type||"audio/webm",language:"ar",openaiKey:_sttKey})});
     const data=await res.json();
-    if(data.noKey||!data.transcript) return null;
+    if(data.noKey) return {transcript:null,noKey:true};
+    if(data.error) return {transcript:null,error:data.error}; // surface the real Whisper/Deepgram error
+    if(!data.transcript) return {transcript:null};
     // Track usage. Prefer measured durationSec; if not provided, estimate
     // from blob size (~16kB/sec for opus). Whisper bills per second, rounded.
     if(_voiceTracker){
       const secs = Math.max(1, Math.round(durationSec || (blob.size/16000)));
       _voiceTracker("sttWhisper", secs, 0);
     }
-    return data.transcript;
-  }catch{return null;}
+    return {transcript:data.transcript};
+  }catch(e){return {transcript:null,error:e.message};}
 }
 
 // Image generation via Nano Banana (Gemini Flash Image) — through /api/image proxy
@@ -1032,18 +1049,23 @@ function WordPopup({word,context,decks,cardStates,onClose,onAddToFlashcard,track
     if(!word) return;
     (async()=>{
       try {
-        const raw=await callClaudeWithTashkeel(
+        // Single fast call (no tashkeel double-call retry — a lookup just needs
+        // the meaning quickly) with a timeout and robust JSON extraction so
+        // stray markdown/prose doesn't drop us to the "Arabic word" fallback.
+        const raw=await callClaude(
           `${BAYNA_YADAYK_STYLE}
 
 You are an Arabic language expert answering a word-lookup in this register.
 Learner clicked word: "${word}" in context: "${context}"
 Return ONLY valid JSON no markdown. Include full tashkeel on all Arabic text:
 {"word":"${word}","root":"3-letter Arabic root with tashkeel like كَتَبَ or empty","rootMeaning":"short root meaning or empty","meaning":"English meaning","partOfSpeech":"noun/verb/adjective/etc","note":"one short helpful usage tip with everyday/cultural context, or empty"}`,
-          180,"wordLookup",trackUsage
+          180,"wordLookup",trackUsage,15000
         );
-        setData(JSON.parse(raw.replace(/```json|```/g,"").trim()));
-      } catch {
-        setData({word,root:"",rootMeaning:"",meaning:"Arabic word",partOfSpeech:"",note:""});
+        const parsed=extractJSON(raw);
+        // Guard against a parse that succeeded but lacks the meaning field.
+        setData({word,root:"",rootMeaning:"",meaning:"",partOfSpeech:"",note:"",...parsed});
+      } catch(e) {
+        setData({word,root:"",rootMeaning:"",meaning:e?.message?.includes("timed out")?"Lookup timed out — tap again to retry":"Couldn't load — tap the word again",partOfSpeech:"",note:""});
       } finally { setLoading(false); }
     })();
   },[word]);
@@ -3916,11 +3938,15 @@ function ConversationScreen({decks,cardStates,onBack,onFinish,trackUsage,onLogSt
       if (blob.size < 800) return; // user didn't really say anything
       setTranscribing(true);
       try {
-        const transcript = await transcribeAudio(blob, durationSec);
-        if (transcript && transcript.trim()) {
-          sendMessage(transcript.trim(), { fromVoice: true });
+        const result = await transcribeAudio(blob, durationSec);
+        if (result.transcript && result.transcript.trim()) {
+          sendMessage(result.transcript.trim(), { fromVoice: true });
+        } else if (result.error) {
+          showToast(`Transcription failed: ${result.error}`,"error",5000);
+        } else if (result.disabled || result.noKey) {
+          showToast("Enhanced STT is off or missing an OpenAI key — enable it in Settings","error",5000);
         } else {
-          showToast("Couldn't transcribe — check OpenAI key & credits","error");
+          showToast("Couldn't transcribe — no speech detected, try again","error");
         }
       } finally { setTranscribing(false); }
     };

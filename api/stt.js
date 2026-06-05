@@ -54,8 +54,12 @@ export default async function handler(req, res) {
     }
 
     // OpenAI Whisper (default)
+    // Whisper validates the upload's file extension, so strip any ";codecs=..."
+    // suffix — e.g. "audio/webm;codecs=opus" → "webm", not "webm;codecs=opus"
+    // (the latter is an invalid extension and Whisper rejects it).
+    const ext = (mime.split(';')[0].split('/')[1] || 'webm');
     const form = new FormData();
-    form.append('file', new Blob([buf], { type: mime }), `audio.${mime.split('/')[1] || 'webm'}`);
+    form.append('file', new Blob([buf], { type: mime }), `audio.${ext}`);
     form.append('model', 'whisper-1');
     form.append('language', language);
     const oaRes = await fetch('https://api.openai.com/v1/audio/transcriptions', {
