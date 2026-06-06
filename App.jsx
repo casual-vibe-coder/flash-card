@@ -1047,27 +1047,57 @@ function WordPopup({word,context,decks,cardStates,onClose,onAddToFlashcard,track
 
   useEffect(()=>{
     if(!word) return;
+    let cancelled=false;
+    // NOTE: this is a plain bilingual DICTIONARY lookup — deliberately NOT
+    // wrapped in BAYNA_YADAYK_STYLE. That style guide is for generating
+    // passages ("Modern Standard Arabic only, no colloquial") and, when bolted
+    // onto a lookup, made the model REFUSE colloquial words, proper nouns, and
+    // anything it judged "outside the register" — i.e. the "this word isn't
+    // available" reports even for words Google translates fine.
+    const buildPrompt=(force)=>`You are an expert Arabic→English lexicographer. A learner tapped a single word and wants its meaning.
+
+Word tapped: "${word}"
+Sentence it appeared in: "${context}"
+
+RULES:
+- ALWAYS give your best-effort English meaning. NEVER reply that the word is unavailable, unknown, not found, not a real word, or outside any curriculum/register. Every Arabic string is translatable.
+- Handle ANY register: Modern Standard, Classical, Qur'anic, or colloquial/dialect — translate it regardless.
+- If the word carries attached prefixes (و=and, ف=so, ب=with/in, ك=like, ل=for, ال=the, س=will) or a suffix pronoun, analyse the core word and translate that.
+- If it is a name or place, transliterate it and say so.
+- If genuinely uncertain, give the most likely meaning from the root + context and append " (approx.)".${force?`\n- Your previous attempt did NOT give a real translation. You MUST output an actual English meaning now.`:""}
+
+Return ONLY valid JSON, no markdown. Put full tashkeel on Arabic text:
+{"word":"${word}","root":"3-letter Arabic root with tashkeel like كَتَبَ, or empty","rootMeaning":"short root meaning or empty","meaning":"English meaning — REQUIRED, must never be empty or a refusal","partOfSpeech":"noun/verb/adjective/particle/proper noun/etc","note":"one short usage tip or empty"}`;
+    // Did the model dodge instead of translating?
+    const looksLikeRefusal=(m)=>{
+      if(!m||!m.trim()) return true;
+      return /not? available|unavailable|isn'?t available|not found|cannot? find|can'?t find|\bunknown\b|no (clear |exact )?(meaning|translation)|n\/a|not a (real|standard|valid) word|unable to|outside (the |this )?(register|curriculum|level)/i.test(m);
+    };
     (async()=>{
       try {
-        // Single fast call (no tashkeel double-call retry — a lookup just needs
-        // the meaning quickly) with a timeout and robust JSON extraction so
-        // stray markdown/prose doesn't drop us to the "Arabic word" fallback.
-        const raw=await callClaude(
-          `${BAYNA_YADAYK_STYLE}
-
-You are an Arabic language expert answering a word-lookup in this register.
-Learner clicked word: "${word}" in context: "${context}"
-Return ONLY valid JSON no markdown. Include full tashkeel on all Arabic text:
-{"word":"${word}","root":"3-letter Arabic root with tashkeel like كَتَبَ or empty","rootMeaning":"short root meaning or empty","meaning":"English meaning","partOfSpeech":"noun/verb/adjective/etc","note":"one short helpful usage tip with everyday/cultural context, or empty"}`,
-          180,"wordLookup",trackUsage,15000
-        );
-        const parsed=extractJSON(raw);
+        let parsed={};
+        try {
+          const raw=await callClaude(buildPrompt(false),200,"wordLookup",trackUsage,15000);
+          parsed=extractJSON(raw);
+        } catch(e) { if(e?.message?.includes("timed out")) throw e; }
+        // One forceful retry if the model refused or returned no meaning.
+        if(looksLikeRefusal(parsed?.meaning)){
+          try {
+            const raw2=await callClaude(buildPrompt(true),200,"wordLookup",trackUsage,15000);
+            const p2=extractJSON(raw2);
+            if(p2?.meaning && !looksLikeRefusal(p2.meaning)) parsed=p2;
+            else if(p2?.meaning) parsed=p2; // still take whatever it gave over nothing
+          } catch {}
+        }
+        if(cancelled) return;
         // Guard against a parse that succeeded but lacks the meaning field.
         setData({word,root:"",rootMeaning:"",meaning:"",partOfSpeech:"",note:"",...parsed});
       } catch(e) {
+        if(cancelled) return;
         setData({word,root:"",rootMeaning:"",meaning:e?.message?.includes("timed out")?"Lookup timed out — tap again to retry":"Couldn't load — tap the word again",partOfSpeech:"",note:""});
-      } finally { setLoading(false); }
+      } finally { if(!cancelled) setLoading(false); }
     })();
+    return ()=>{cancelled=true;};
   },[word]);
 
   const doAdd=()=>{
