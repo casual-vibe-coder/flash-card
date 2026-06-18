@@ -16,6 +16,7 @@ import {
 // route generation through this app's own /api/claude proxy + usage meter.
 import { mount as mountIsland } from "./language-island/language-island.js";
 import { BOOKS } from "./language-island/data/units.js"; // 64-unit curriculum source (Phase 2)
+import { UNIT_VOCAB } from "./unit-vocab.js"; // per-unit core vocabulary (grounds generation)
 // NB: prompt building + parsing now live server-side in the gateway
 // (api/generate.js imports them from language-island/core/generator.js).
 
@@ -6020,13 +6021,13 @@ function DictationScreen({decks,cardStates,profile,onBack,onFinish,trackUsage,on
       const persona=personalized?buildPersona(profile):"";
       // Topic source + vocabulary per the chosen mode. "From my words" leans
       // hardest on the deck (stayClose = new words must stay near known ones).
-      let topic="", vocab=personalized?knownVocab(decks,cardStates):[], stayClose=false;
-      if(topicMode==="unit"){ const u=unitById(unitId); topic=u?`${u.titleEn} (${u.titleAr})`:""; }
+      let topic="", vocab=personalized?knownVocab(decks,cardStates):[], stayClose=false, unitVocab=null;
+      if(topicMode==="unit"){ const u=unitById(unitId); topic=u?`${u.titleEn} (${u.titleAr})`:""; unitVocab=UNIT_VOCAB[unitId]||null; }
       else if(topicMode==="prompt"){ topic=promptText.trim(); }
       else if(topicMode==="vocab"){ vocab=knownVocab(decks,cardStates); stayClose=true; }
       // "random" → no topic; the model picks a level-appropriate everyday theme.
       const level={id:WL.id,guidance:`CEFR ${WL.cefr}. ${WL.desc} Keep each sentence short and dictation-friendly.`};
-      const d=await callGenerate({kind:"dictation",inputs:{level,count,vocab,persona,topic,stayClose},maxTokens:700,tag:"dictation",personalized,trackFn:trackUsage});
+      const d=await callGenerate({kind:"dictation",inputs:{level,count,vocab,persona,topic,stayClose,unitVocab},maxTokens:700,tag:"dictation",personalized,trackFn:trackUsage});
       const arr=d.payload;
       if(!arr?.length) throw new Error("No sentences came back — try again.");
       setSentences(arr);setIdx(0);setInput("");setRevealed(false);setShowHint(false);setScores([]);startedAt.current=Date.now();setPhase("practice");
@@ -6299,11 +6300,14 @@ function LanguageIslandScreen({decks,cardStates,profile,trackUsage,onBack}) {
       generate:async ({unitAr,unitEn,level,count})=>{
         const known=personalized?knownVocab(decks,cardStates):[];
         const persona=personalized?buildPersona(profile):"";
+        // Ground Q&A in this unit's real curriculum vocabulary.
+        const u=UNITS.find(x=>x.titleAr===unitAr||x.titleEn===unitEn);
+        const unitVocab=u?UNIT_VOCAB[u.id]||null:null;
         const seqKey=`li-seq:${personalized?"p:":""}${unitEn}:${level.id}`;
         let seq=0; try{ seq=parseInt(localStorage.getItem(seqKey)||"0",10)||0; }catch{}
         const d=await callGenerate({
           kind:"islandQA",
-          inputs:{unitAr,unitEn,level:{id:level.id,guidance:level.guidance},count,vocab:known,persona,seq},
+          inputs:{unitAr,unitEn,level:{id:level.id,guidance:level.guidance},count,vocab:known,persona,unitVocab,topic:unitEn,seq},
           maxTokens:1024, tag:"island", personalized, trackFn:trackUsage,
         });
         try{ localStorage.setItem(seqKey,String(seq+1)); }catch{}

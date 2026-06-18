@@ -113,6 +113,10 @@ export default async function handler(req, res) {
   // rides inside inputs.vocab. General mode sends no persona → shared content.
   let prompt = spec.build(inputs);
   if (personalized && inputs.persona) prompt += `\n\n${inputs.persona}`;
+  // Ground vocabulary in the curriculum unit's real word list (from the book).
+  if (Array.isArray(inputs.unitVocab) && inputs.unitVocab.length) {
+    prompt += `\n\nThis is a "${inputs.topic || "unit"}" lesson. Draw on the unit's core vocabulary; prefer these words where natural: ${inputs.unitVocab.slice(0, 50).join("، ")}.`;
+  }
   let text = "", usage = { input_tokens: 0, output_tokens: 0 };
   try {
     const r = await fetch(OPENROUTER_URL, {
