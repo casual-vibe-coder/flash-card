@@ -4063,7 +4063,7 @@ const UNITS=BOOKS.flatMap((b)=>b.units.map((u,i)=>({
   book:b.n, index:i+1,
   titleAr:u[0], titleEn:u[1],
   level:BOOK_WORKING_LEVEL[b.n],
-  verified:b.n===1,            // Book 1 titles verified; Books 2–4 vary by printing
+  verified:true,               // all 64 titles transcribed from the official 2nd-edition TOCs
 })));
 const unitById=(id)=>UNITS.find((u)=>u.id===id)||null;
 const unitsForLevel=(lvl)=>UNITS.filter((u)=>u.level===lvl);

@@ -1,7 +1,9 @@
 // 64 units across the four levels of Al-ʿArabiyyah Bayna Yadayk.
-// Book 1 unit titles are verified against published outlines; Books 2–4 use the
-// standard themes (titles vary slightly between printings). Each unit is [arabic, english].
-// You can replace or extend this list freely — the app renders whatever you pass in.
+// Titles transcribed from the official 2nd edition (1435H / 2014) tables of
+// contents — Book 1 from published outlines; Books 2–4 from each book's
+// المحتويات / الفهرس التفصيلي (Part 1 = units 1–8, Part 2 = units 9–16). For
+// Book 4, unit themes are taken from each unit's main intensive-reading text
+// (القراءة المكثفة). Each unit is [arabic, english].
 
 export const BOOKS = [
   { n: 1, name: "Book 1 · Foundations", units: [
@@ -14,34 +16,34 @@ export const BOOKS = [
     ["السفر", "Travel"], ["الحج والعمرة", "Hajj & Umrah"],
     ["الصحة", "Health"], ["الإجازة", "Holiday / vacation"],
   ]},
-  { n: 2, name: "Book 2 · Social & civic life", units: [
-    ["العناية بالصحة", "Health care"], ["الطعام والضيافة", "Food & hospitality"],
-    ["السفر والسياحة", "Travel & tourism"], ["المدن والأماكن", "Cities & places"],
-    ["العلم والتعلم", "Knowledge & study"], ["المهن والأعمال", "Professions"],
-    ["السفر لطلب العلم", "Travel for study"], ["الجوائز", "Prizes & awards"],
-    ["وسائل الاتصال", "Communication"], ["الإعلام", "Media"],
-    ["الأسواق", "Markets & shopping"], ["البيئة", "Environment"],
-    ["الزراعة", "Agriculture"], ["الرياضة", "Sports"],
-    ["العادات والتقاليد", "Customs & traditions"], ["المناسبات", "Occasions & events"],
+  { n: 2, name: "Book 2 · Intermediate", units: [
+    ["العناية بالصحة", "Health care"], ["الترويح عن النفس", "Recreation & leisure"],
+    ["الحياة الزوجية", "Married life"], ["الحياة في المدينة", "Life in the city"],
+    ["العلم والتعلم", "Knowledge & learning"], ["المهن", "Professions"],
+    ["اللغة العربية", "The Arabic language"], ["الجوائز", "Prizes & awards"],
+    ["العالم قرية صغيرة", "The world, a small village"], ["النظافة", "Cleanliness"],
+    ["الإسلام", "Islam"], ["الشباب", "Youth"],
+    ["العالم الإسلامي", "The Islamic world"], ["الأمن", "Security"],
+    ["التلوث", "Pollution"], ["الطاقة", "Energy"],
   ]},
-  { n: 3, name: "Book 3 · Society, science & culture", units: [
-    ["الأسرة والمجتمع", "Family & society"], ["العمل والمهن", "Work & careers"],
-    ["الصحة والطب", "Health & medicine"], ["العلم والعلماء", "Knowledge & scholars"],
-    ["التقنية والحاسوب", "Technology & computing"], ["الاقتصاد والمال", "Economy & finance"],
-    ["الإعلام والصحافة", "Media & press"], ["السياحة والآثار", "Tourism & heritage"],
-    ["البيئة والطبيعة", "Environment & nature"], ["الفنون", "Arts"],
-    ["التاريخ", "History"], ["الحضارة الإسلامية", "Islamic civilization"],
-    ["الأدب والشعر", "Literature & poetry"], ["المرأة والأسرة", "Women & family"],
-    ["التعليم", "Education"], ["القضايا الاجتماعية", "Social issues"],
+  { n: 3, name: "Book 3 · Advanced", units: [
+    ["المعجزة الخالدة", "The eternal miracle"], ["يوم في حياة ناشئ", "A day in a youth's life"],
+    ["أقلياتنا في العالم", "Our minorities in the world"], ["السنة النبوية", "The Prophetic Sunnah"],
+    ["الأطفال والقراءة", "Children & reading"], ["هجرة العقول", "Brain drain"],
+    ["طاب يومكم", "Good day to you (greetings)"], ["نوادر وطرف", "Anecdotes & witticisms"],
+    ["المساواة الحقة", "True equality"], ["الرفق بالحيوان", "Kindness to animals"],
+    ["الأمثال العربية", "Arabic proverbs"], ["الخلافات الزوجية", "Marital disputes"],
+    ["العلاقة بين الآباء والأبناء", "Parents & children"], ["الماء أصل الحياة", "Water, the source of life"],
+    ["وصية أب", "A father's counsel"], ["من يوميات وليد", "From Walid's diary"],
   ]},
-  { n: 4, name: "Book 4 · Advanced & abstract", units: [
-    ["اللغة العربية", "The Arabic language"], ["الحضارات", "Civilizations"],
-    ["العلوم والاكتشافات", "Science & discovery"], ["الأدب العربي", "Arabic literature"],
-    ["الإعلام والاتصال", "Media & communication"], ["الاقتصاد العالمي", "Global economy"],
-    ["السياسة والمجتمع", "Politics & society"], ["البيئة والتنمية", "Environment & development"],
-    ["الفكر والثقافة", "Thought & culture"], ["الصحة العالمية", "Global health"],
-    ["التقنية الحديثة", "Modern technology"], ["حقوق الإنسان", "Human rights"],
-    ["التراث", "Heritage"], ["قضايا معاصرة", "Contemporary issues"],
-    ["الحوار بين الثقافات", "Intercultural dialogue"], ["مستقبل العالم", "The future / global outlook"],
+  { n: 4, name: "Book 4 · Mastery", units: [
+    ["من أضرار التدخين", "The harms of smoking"], ["الترويح عن النفس", "Recreation"],
+    ["اختيار الزوجة", "Choosing a spouse"], ["مدن مقدسة", "Holy cities"],
+    ["المدارس والمعاهد العلمية", "Schools & scientific institutes"], ["كيف تختار مهنتك؟", "Choosing your profession"],
+    ["بين العربية والقرآن", "Arabic & the Qur'an"], ["علماء نالوا جائزة الملك فيصل", "King Faisal Prize scholars"],
+    ["العولمة", "Globalization"], ["النظافة", "Cleanliness"],
+    ["الباحث عن الحقيقة", "The seeker of truth"], ["طبقات الأصدقاء", "Types of friends"],
+    ["آثار الثقافة الإسلامية", "The legacy of Islamic culture"], ["مفهوم الأمن", "The concept of security"],
+    ["الحماية من التلوث", "Protection from pollution"], ["أنواع الطاقة", "Types of energy"],
   ]},
 ];
