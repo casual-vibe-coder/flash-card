@@ -2011,14 +2011,21 @@ function DuplicateFinder({decks,cardStates,setCardStates}) {
 // ─────────────────────────────────────────────────────────────
 function ProfilePanel({profile,setProfile,onRetake}) {
   const base={displayName:"",workingLevel:"book1",personalizationOn:false,personalContext:emptyContext(),nativeLanguage:""};
-  const [local,setLocal]=useState({...base,...(profile||{}),personalContext:{...emptyContext(),...(profile?.personalContext||{})}});
+  const norm=(p)=>({...base,...(p||{}),personalContext:{...emptyContext(),...(p?.personalContext||{})}});
+  const [local,setLocal]=useState(()=>norm(profile));
   const [open,setOpen]=useState(false);
-  const set=(k,v)=>setLocal(p=>({...p,[k]:v}));
-  const setCtx=(k,v)=>setLocal(p=>({...p,personalContext:{...p.personalContext,[k]:v}}));
-  const save=()=>{
-    setProfile({...local,nativeLanguage:local.personalContext.nativeLanguage||local.nativeLanguage||""});
-    showToast("Profile saved","success");
-  };
+  const synced=useRef(!!profile);
+  // If the profile arrives from Firestore after this panel mounted, sync the
+  // edit buffer once (without clobbering in-progress typing).
+  useEffect(()=>{ if(profile&&!synced.current){ synced.current=true; setLocal(norm(profile)); } },[profile]);
+  // Persist immediately — no separate Save step to forget. (App debounces the
+  // Firestore write.) `nativeLanguage` mirrors the context field.
+  const persist=(next)=>setProfile({...next,nativeLanguage:next.personalContext?.nativeLanguage||next.nativeLanguage||""});
+  const setNow=(k,v)=>{ const next={...local,[k]:v}; setLocal(next); persist(next); };          // discrete controls
+  const setCtxNow=(k,v)=>{ const next={...local,personalContext:{...local.personalContext,[k]:v}}; setLocal(next); persist(next); };
+  const setLocalOnly=(k,v)=>setLocal(p=>({...p,[k]:v}));                                          // text → local, commit on blur
+  const setCtxLocal=(k,v)=>setLocal(p=>({...p,personalContext:{...p.personalContext,[k]:v}}));
+  const save=()=>{ persist(local); showToast("Profile saved","success"); };
   const lv=levelById(local.workingLevel);
   return (
     <div style={{background:"var(--surface)",border:"1.5px solid var(--border)",borderRadius:"var(--r)",padding:"15px 17px"}}>
@@ -2038,11 +2045,11 @@ function ProfilePanel({profile,setProfile,onRetake}) {
         <div style={{borderTop:"1px solid var(--border)",marginTop:12,paddingTop:14,display:"flex",flexDirection:"column",gap:12}}>
           <div>
             <label className="lbl" style={{marginBottom:3}}>Name</label>
-            <input className="input" value={local.displayName} onChange={e=>set("displayName",e.target.value)} placeholder="Your name"/>
+            <input className="input" value={local.displayName} onChange={e=>setLocalOnly("displayName",e.target.value)} onBlur={save} placeholder="Your name"/>
           </div>
           <div>
-            <label className="lbl" style={{marginBottom:3}}>Working level</label>
-            <select className="input" value={local.workingLevel} onChange={e=>set("workingLevel",e.target.value)}>
+            <label className="lbl" style={{marginBottom:3}}>Working level <span style={{color:"var(--text3)",fontWeight:400,textTransform:"none",letterSpacing:0}}>· saved instantly</span></label>
+            <select className="input" value={local.workingLevel} onChange={e=>setNow("workingLevel",e.target.value)}>
               {WORKING_LEVELS.map(l=><option key={l.id} value={l.id}>{l.label} · {l.cefr} (Book {l.book})</option>)}
             </select>
             <div style={{fontSize:11.5,color:"var(--text3)",marginTop:4,lineHeight:1.5}}>{lv.desc}</div>
@@ -2052,7 +2059,7 @@ function ProfilePanel({profile,setProfile,onRetake}) {
               <div style={{fontSize:13,fontWeight:700}}>Personalized mode <span style={{fontSize:11,color:"var(--accent)"}}>· Paid</span></div>
               <div style={{fontSize:11.5,color:"var(--text3)",marginTop:2,lineHeight:1.5}}>Generate content from your known vocabulary + context. Off = shared free preset library.</div>
             </div>
-            <div className={`chk ${local.personalizationOn?"on":""}`} onClick={()=>set("personalizationOn",!local.personalizationOn)}>{local.personalizationOn&&<Check size={11} color="white"/>}</div>
+            <div className={`chk ${local.personalizationOn?"on":""}`} onClick={()=>setNow("personalizationOn",!local.personalizationOn)}>{local.personalizationOn&&<Check size={11} color="white"/>}</div>
           </div>
           <div className="divider"/>
           <div className="sec" style={{margin:0}}>Personal context</div>
@@ -2060,13 +2067,13 @@ function ProfilePanel({profile,setProfile,onRetake}) {
             <div key={f.key}>
               <label className="lbl" style={{marginBottom:3}}>{f.label}</label>
               {f.type==="select"
-                ? <select className="input" value={local.personalContext[f.key]||""} onChange={e=>setCtx(f.key,e.target.value)}>
+                ? <select className="input" value={local.personalContext[f.key]||""} onChange={e=>setCtxNow(f.key,e.target.value)}>
                     <option value="">Select…</option>
                     {f.options.map(o=><option key={o} value={o}>{o}</option>)}
                   </select>
                 : f.type==="textarea"
-                ? <textarea className="input" value={local.personalContext[f.key]||""} onChange={e=>setCtx(f.key,e.target.value)} placeholder={f.placeholder} rows={2} style={{resize:"vertical"}}/>
-                : <input className="input" value={local.personalContext[f.key]||""} onChange={e=>setCtx(f.key,e.target.value)} placeholder={f.placeholder}/>}
+                ? <textarea className="input" value={local.personalContext[f.key]||""} onChange={e=>setCtxLocal(f.key,e.target.value)} onBlur={save} placeholder={f.placeholder} rows={2} style={{resize:"vertical"}}/>
+                : <input className="input" value={local.personalContext[f.key]||""} onChange={e=>setCtxLocal(f.key,e.target.value)} onBlur={save} placeholder={f.placeholder}/>}
             </div>
           ))}
           <div style={{display:"flex",gap:8,marginTop:4}}>
@@ -4041,11 +4048,14 @@ const ONBOARDING_STEPS=[
 // self-contained placement bank. The placement uses NO AI (it's a fixed
 // graded quiz), so it stays in the free tier per product rule R1.
 // ─────────────────────────────────────────────────────────────
+// CEFR bands per Bayna Yadayk book — you're working WITHIN the band while
+// studying that book, reaching its upper bound on completion (completing Book 1
+// ≈ A2, Book 2 ≈ B1, Book 3 ≈ B2, Book 4 ≈ C1 entry).
 const WORKING_LEVELS=[
-  {id:"book1",label:"Beginner",cefr:"A0–A1",book:1,desc:"Foundations — greetings, family, daily life."},
-  {id:"book2",label:"Elementary",cefr:"A2",book:2,desc:"Social & civic life — travel, health, media."},
-  {id:"book3",label:"Intermediate",cefr:"B1",book:3,desc:"Society, science & culture."},
-  {id:"book4",label:"Advanced",cefr:"B2+",book:4,desc:"Abstract & advanced topics; near-native phrasing."},
+  {id:"book1",label:"Beginner",cefr:"A1–A2",book:1,desc:"Foundations — greetings, family, daily life. Completing Book 1 ≈ A2."},
+  {id:"book2",label:"Elementary",cefr:"A2–B1",book:2,desc:"Social & civic life — health, city life, work. Completing Book 2 ≈ B1."},
+  {id:"book3",label:"Intermediate",cefr:"B1–B2",book:3,desc:"Society, faith & culture; longer texts. Completing Book 3 ≈ B2."},
+  {id:"book4",label:"Advanced",cefr:"B2–C1",book:4,desc:"Abstract & advanced topics; near-native phrasing. Book 4 ≈ C1 entry."},
 ];
 const levelById=(id)=>WORKING_LEVELS.find(l=>l.id===id)||WORKING_LEVELS[0];
 
@@ -4111,11 +4121,13 @@ function buildPersona(profile){
   if(c.occupation) bits.push(`works as ${c.occupation}`);
   if(c.region) bits.push(`is based in ${c.region}`);
   if(c.ageBand) bits.push(`is in the ${c.ageBand} age range`);
+  if(c.reason) bits.push(`is learning Arabic mainly for ${c.reason}`);
   if(c.interests) bits.push(`is interested in ${c.interests}`);
-  if(c.goals) bits.push(`is learning Arabic to ${c.goals}`);
+  if(c.favoriteTopics) bits.push(`enjoys topics like ${c.favoriteTopics}`);
+  if(c.goals) bits.push(`has the goal: ${c.goals}`);
   if(c.nativeLanguage) bits.push(`is a native ${c.nativeLanguage} speaker`);
   if(!bits.length) return "";
-  return `The learner ${bits.join(", ")}. Where natural, tailor examples, names, and scenarios to this person's life and goals — but keep the chosen topic and level unchanged and don't force irrelevant references.`;
+  return `The learner ${bits.join(", ")}. Where natural, tailor examples, names, and scenarios to this person's life, interests, and goals — but keep the chosen topic and level unchanged and don't force irrelevant references.`;
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -4178,8 +4190,11 @@ function downloadPreset(pd){
 const CONTEXT_FIELDS=[
   {key:"occupation",label:"Occupation",type:"text",placeholder:"e.g. Software engineer"},
   {key:"ageBand",label:"Age band",type:"select",options:["Under 18","18–24","25–34","35–44","45–54","55+"]},
-  {key:"interests",label:"Interests",type:"text",placeholder:"e.g. football, cooking, history"},
-  {key:"goals",label:"Why are you learning Arabic?",type:"textarea",placeholder:"e.g. to understand the Qur'an, travel, talk with family"},
+  {key:"reason",label:"Main reason for learning",type:"select",options:["Understand the Qur'an & Islam","Travel","Work / business","Family / heritage","Academic study","General interest"]},
+  {key:"interests",label:"Interests & hobbies",type:"text",placeholder:"e.g. football, cooking, history"},
+  {key:"favoriteTopics",label:"Topics you enjoy reading about",type:"text",placeholder:"e.g. science, travel, sports, food"},
+  {key:"goals",label:"Your specific goal",type:"textarea",placeholder:"e.g. read the Qur'an with understanding, talk with my in-laws"},
+  {key:"dailyGoal",label:"Daily study time",type:"select",options:["5–10 min","15–30 min","30–60 min","60+ min"]},
   {key:"region",label:"Region / country",type:"text",placeholder:"e.g. Canada"},
   {key:"nativeLanguage",label:"Native language",type:"text",placeholder:"e.g. English"},
 ];
@@ -5979,8 +5994,12 @@ function DictationAudio({text}){
 
 function DictationScreen({decks,cardStates,profile,onBack,onFinish,trackUsage,onLogStudy}){
   const WL=levelById(profile?.workingLevel||"book1");
+  const levelUnits=unitsForLevel(WL.id);
   const [phase,setPhase]=useState("setup"); // setup | practice
   const [count,setCount]=useState(5);
+  const [topicMode,setTopicMode]=useState("unit"); // unit | vocab | prompt | random
+  const [unitId,setUnitId]=useState(levelUnits[0]?.id||"1-1");
+  const [promptText,setPromptText]=useState("");
   const [sentences,setSentences]=useState([]);
   const [idx,setIdx]=useState(0);
   const [input,setInput]=useState("");
@@ -5994,13 +6013,20 @@ function DictationScreen({decks,cardStates,profile,onBack,onFinish,trackUsage,on
   const result=(revealed&&cur)?diffTokens(cur.ar,input):null;
 
   const generate=async()=>{
+    if(topicMode==="prompt"&&!promptText.trim()){ setErr("Enter a topic or prompt first."); return; }
     setLoading(true);setErr("");
     try{
       const personalized=!!profile?.personalizationOn;
-      const known=personalized?knownVocab(decks,cardStates):[];
       const persona=personalized?buildPersona(profile):"";
+      // Topic source + vocabulary per the chosen mode. "From my words" leans
+      // hardest on the deck (stayClose = new words must stay near known ones).
+      let topic="", vocab=personalized?knownVocab(decks,cardStates):[], stayClose=false;
+      if(topicMode==="unit"){ const u=unitById(unitId); topic=u?`${u.titleEn} (${u.titleAr})`:""; }
+      else if(topicMode==="prompt"){ topic=promptText.trim(); }
+      else if(topicMode==="vocab"){ vocab=knownVocab(decks,cardStates); stayClose=true; }
+      // "random" → no topic; the model picks a level-appropriate everyday theme.
       const level={id:WL.id,guidance:`CEFR ${WL.cefr}. ${WL.desc} Keep each sentence short and dictation-friendly.`};
-      const d=await callGenerate({kind:"dictation",inputs:{level,count,vocab:known,persona},maxTokens:700,tag:"dictation",personalized,trackFn:trackUsage});
+      const d=await callGenerate({kind:"dictation",inputs:{level,count,vocab,persona,topic,stayClose},maxTokens:700,tag:"dictation",personalized,trackFn:trackUsage});
       const arr=d.payload;
       if(!arr?.length) throw new Error("No sentences came back — try again.");
       setSentences(arr);setIdx(0);setInput("");setRevealed(false);setShowHint(false);setScores([]);startedAt.current=Date.now();setPhase("practice");
@@ -6033,6 +6059,30 @@ function DictationScreen({decks,cardStates,profile,onBack,onFinish,trackUsage,on
             </div>
             <div style={{fontSize:13,color:"var(--text2)",lineHeight:1.65}}>You'll hear a sentence, type what you hear (with tashkīl), then submit to reveal the correct text and a word-by-word check.</div>
           </div>
+          <label className="lbl">Topic source</label>
+          <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:10}}>
+            {[["unit","Curriculum unit"],["vocab","From my words"],["prompt","Custom prompt"],["random","Surprise me"]].map(([m,label])=>(
+              <button key={m} className={`chip ${topicMode===m?"chip-on":""}`} onClick={()=>{setTopicMode(m);setErr("");}} style={{padding:"6px 12px",fontSize:12.5}}>{label}</button>
+            ))}
+          </div>
+          {topicMode==="unit"&&(
+            <select className="input" value={unitId} onChange={e=>setUnitId(e.target.value)} style={{marginBottom:18}}>
+              {BOOKS.map(b=>(
+                <optgroup key={b.n} label={b.name}>
+                  {b.units.map((u,i)=><option key={`${b.n}-${i+1}`} value={`${b.n}-${i+1}`}>{i+1}. {u[1]} · {u[0]}</option>)}
+                </optgroup>
+              ))}
+            </select>
+          )}
+          {topicMode==="prompt"&&(
+            <input className="input" value={promptText} onChange={e=>setPromptText(e.target.value)} placeholder="e.g. a trip to the market, my morning routine…" style={{marginBottom:18}}/>
+          )}
+          {topicMode==="vocab"&&(
+            <div style={{fontSize:12,color:"var(--text3)",lineHeight:1.5,marginBottom:18}}>Sentences are built from your flashcard words; any new words stay close to what you already know.</div>
+          )}
+          {topicMode==="random"&&(
+            <div style={{fontSize:12,color:"var(--text3)",lineHeight:1.5,marginBottom:18}}>We'll pick a natural everyday topic at your level.</div>
+          )}
           <label className="lbl">Sentences</label>
           <div style={{display:"flex",gap:8,marginBottom:18}}>
             {[3,5,8].map(n=>(
@@ -6119,13 +6169,12 @@ function DictationScreen({decks,cardStates,profile,onBack,onFinish,trackUsage,on
 // the registry leaves room for more (the demo home screen hinted at others).
 // `screen` points at a registered route; status "soon" renders a disabled card.
 // ─────────────────────────────────────────────────────────────
+// Real, shipped capsules only. Add new entries here as they're built (a future
+// entry would set status:"live" + a `screen` route, or status:"soon" as a
+// teaser). Kept to what actually exists to avoid implying features that don't.
 const CAPSULES=[
   {id:"island", title:"Language Island", titleAr:"جزيرة اللغة", icon:Globe, color:"#2563EB", status:"live", screen:"island",
    desc:"Immersion Q&A across all 64 units — read, answer aloud, reveal the model answer."},
-  {id:"listeningLab", title:"Listening Lab", titleAr:"مختبر الاستماع", icon:Headphones, color:"#0F766E", status:"soon",
-   desc:"Long-form listening with graded, revealable transcripts."},
-  {id:"readingReef", title:"Reading Reef", titleAr:"شعاب القراءة", icon:FileText, color:"#9B3A0C", status:"soon",
-   desc:"Leveled long-form reading passages with tap-to-look-up."},
 ];
 
 function CapsulesScreen({profile,onOpen,onBack}){
@@ -6612,7 +6661,10 @@ export default function App() {
       const payload={onboardingDone:true};
       if(data?.profile) payload.profile=data.profile;
       if(data?.placement) payload.placement=data.placement;
-      setDoc(doc(db,"users",user.uid),payload,{merge:true}).catch(()=>{});
+      setDoc(doc(db,"users",user.uid),payload,{merge:true}).catch(e=>{
+        console.error("Onboarding save error:",e);
+        showToast("Couldn't save your profile — check your connection and try again.","error");
+      });
     }
   };
 

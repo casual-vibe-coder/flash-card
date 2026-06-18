@@ -18,13 +18,14 @@ import { getAdmin } from "./_firebase.js";
 const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
 
 // Dictation (Phase 4): short fully-voweled sentences the learner transcribes.
-function buildDictationPrompt({ level, count, vocab, topic }) {
+function buildDictationPrompt({ level, count, vocab, topic, stayClose }) {
   const vocabClause =
     vocab && vocab.length
-      ? "\n- Prefer reusing these words the learner already knows; introduce as few new words as possible:\n  " +
-        vocab.slice(0, 120).join("، ")
+      ? "\n- Prefer reusing these words the learner already knows; introduce as few new words as possible" +
+        (stayClose ? ", and any new word MUST be closely related to them (small vocabulary steps only — slight scope creep, not a jump)" : "") +
+        ":\n  " + vocab.slice(0, 120).join("، ")
       : "";
-  const topicClause = topic ? ` about "${topic}"` : "";
+  const topicClause = topic ? ` about "${topic}"` : " on a natural everyday topic appropriate for the level";
   return (
 `You are an expert Modern Standard Arabic teacher creating DICTATION practice${topicClause}.
 Create ${count} short, natural sentences the learner will hear and write down.
