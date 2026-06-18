@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { auth, googleProvider, db } from "./firebase.js";
 import { signInWithPopup, signOut, onAuthStateChanged } from "firebase/auth";
-import { doc, getDoc, setDoc } from "firebase/firestore";
+import { doc, getDoc, setDoc, collection, getDocs } from "firebase/firestore";
 import {
   Settings, ArrowLeft, ChevronRight, X, Volume2, RotateCcw, BookOpen,
   RefreshCw, Check, Sparkles, Plus, Edit3, Trash2, Layers, Save, Eye,
@@ -11,6 +11,13 @@ import {
   Moon, Sun, Download, Upload, Search, MessageCircle, HelpCircle,
   Send, Clock, Target, BarChart3, Hash, Star, PenLine, Brain, CheckCircle2
 } from "lucide-react";
+// Language Island — Arabic immersion capsule (vendored under ./language-island).
+// mount() injects its own scoped (.li-root) styles; buildPrompt/parseQA let us
+// route generation through this app's own /api/claude proxy + usage meter.
+import { mount as mountIsland } from "./language-island/language-island.js";
+import { BOOKS } from "./language-island/data/units.js"; // 64-unit curriculum source (Phase 2)
+// NB: prompt building + parsing now live server-side in the gateway
+// (api/generate.js imports them from language-island/core/generator.js).
 
 // ─────────────────────────────────────────────────────────────
 // TASHKEEL VALIDATION
@@ -369,6 +376,8 @@ const MODEL_FEATURES = [
   {tag:"listening", label:"Listening passages",     desc:"Listening practice generation"},
   {tag:"wordLookup",label:"Word lookups",           desc:"Click-to-look-up Arabic words"},
   {tag:"regen",     label:"Cleanup & regen",        desc:"Card cleanup audit + form regeneration"},
+  {tag:"island",    label:"Language Island",        desc:"Immersion Q&A generation (64 units)"},
+  {tag:"dictation", label:"Dictation",              desc:"Dictation sentence generation"},
   {tag:"other",     label:"Topics & conversation",  desc:"Topic generation, chat replies, misc"},
 ];
 
@@ -376,6 +385,7 @@ const USAGE_LABELS = {
   flashcard:"Flashcard Generation", sentence:"Sentence / Learning Aid",
   reading:"Reading Passage", listening:"Listening Content",
   wordLookup:"Word Lookup", regen:"Form Regeneration",
+  island:"Language Island", dictation:"Dictation",
   imageNB1:"Image · Nano Banana 1", imageNB2:"Image · Nano Banana 2",
   ttsGoogle:"Voice · Google TTS", sttWhisper:"Voice · OpenAI Whisper",
 };
@@ -702,6 +712,36 @@ async function callClaude(prompt, maxTokens=1500, tag="other", trackFn=null, tim
   }
 }
 
+// ─────────────────────────────────────────────────────────────
+// THE GENERATION GATEWAY — client side (Phase 3)
+// Routes structured generation through /api/generate, which owns auth +
+// entitlement + cache + usage logging server-side. Sends the Firebase ID
+// token so the gateway can identify the user. Returns {payload, cached, usage};
+// a cache hit costs nothing (no model call), so usage is only metered on a miss.
+// Throws err.paywall=true on a 402 (wired to a paywall UI in Phase 6).
+// ─────────────────────────────────────────────────────────────
+async function callGenerate({kind, inputs, model=null, maxTokens=1024, personalized=false, noCache=false, tag="other", trackFn=null}){
+  let token="";
+  try { if(auth.currentUser) token=await auth.currentUser.getIdToken(); } catch {}
+  const res=await fetch("/api/generate",{
+    method:"POST",
+    headers:{"Content-Type":"application/json",...(token?{Authorization:`Bearer ${token}`}:{})},
+    body:JSON.stringify({
+      kind, inputs,
+      model: model||pickModelForTag(tag),
+      maxTokens, personalized, noCache,
+      ..._orKey ? {apiKey:_orKey} : {},
+    }),
+  });
+  let d; try { d=await res.json(); } catch { throw new Error("The generation service returned an unexpected response."); }
+  if(res.status===402){ const e=new Error("Upgrade required to generate this content."); e.paywall=true; e.reason=d.reason; throw e; }
+  if(!res.ok||d.error) throw new Error(typeof d.error==="string"?d.error:(d.error?.message||"Generation failed"));
+  if(trackFn && !d.cached && d.usage){
+    trackFn(tag, 0, 0, d.usage.input_tokens||0, d.usage.output_tokens||0);
+  }
+  return d;
+}
+
 /**
  * Calls the LLM expecting JSON back, validates tashkeel on Arabic text,
  * and retries once with a stronger prompt if tashkeel is insufficient.
@@ -914,6 +954,60 @@ async function synthesizeArabic(rawText,opts={}){
   }catch{
     if(isCurrent()){browserSpeak(text,onEnd); onStart?.();}
   }
+}
+
+// Fetch a playable TTS source (data URL) WITHOUT auto-playing, at neutral
+// speed — so a player can control speed live via audio.playbackRate (Phase 4
+// dictation). Returns the src string, or null when no TTS key (caller falls
+// back to browserSpeak). Reuses the same on-disk cache as synthesizeArabic.
+async function getTtsSrc(rawText){
+  const text=cleanArabicForSpeech(rawText);
+  if(!text) return null;
+  const voice=_ttsVoice||"ar-XA-Wavenet-C";
+  const speed=1.0; // neutral; playback rate is applied client-side
+  const cacheKey=ttsHash(`${voice}|${speed}|${text}`);
+  const cached=ttsCacheRead(cacheKey);
+  if(cached) return cached;
+  try{
+    const apiKey=_ttsKey||_gKey||"";
+    const res=await fetch("/api/tts",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({text,voice,speed,...(apiKey?{apiKey}:{})})});
+    const data=await res.json();
+    if(data.noKey||!data.audio) return null;
+    ttsCacheWrite(cacheKey,data.audio);
+    if(_voiceTracker) _voiceTracker("ttsGoogle", text.length, 0);
+    return data.audio;
+  }catch{ return null; }
+}
+// Change the speed of the CURRENTLY PLAYING TTS clip live, without restarting
+// (Phase 4 acceptance for Listening). Works for the Google-TTS <audio> path;
+// returns false if there's no live element (caller may fall back to restart).
+function setTtsPlaybackRate(rate){
+  if(_ttsAudioEl){ try{ _ttsAudioEl.playbackRate=rate; return true; }catch{} }
+  return false;
+}
+
+// Word-level diff for dictation correction. Aligns target vs. user tokens via
+// LCS on diacritic-insensitive forms, so "close enough" Arabic counts. Returns
+// ordered ops ({ok|missing|extra}) + a score for the reveal-after-write UI.
+function diffTokens(target,user){
+  const tok=(s)=>(s||"").trim().split(/\s+/).filter(Boolean);
+  const T=tok(target), U=tok(user);
+  const nT=T.map(normalizeForMatch), nU=U.map(normalizeForMatch);
+  const m=nT.length,n=nU.length;
+  const dp=Array.from({length:m+1},()=>new Array(n+1).fill(0));
+  for(let i=m-1;i>=0;i--)for(let j=n-1;j>=0;j--)
+    dp[i][j]=nT[i]===nU[j]?dp[i+1][j+1]+1:Math.max(dp[i+1][j],dp[i][j+1]);
+  const ops=[]; let i=0,j=0;
+  while(i<m&&j<n){
+    if(nT[i]===nU[j]){ops.push({type:"ok",t:T[i],u:U[j]});i++;j++;}
+    else if(dp[i+1][j]>=dp[i][j+1]){ops.push({type:"missing",t:T[i]});i++;}
+    else {ops.push({type:"extra",u:U[j]});j++;}
+  }
+  while(i<m) ops.push({type:"missing",t:T[i++]});
+  while(j<n) ops.push({type:"extra",u:U[j++]});
+  const matched=ops.filter(o=>o.type==="ok").length;
+  return {ops,matched,total:m,score:m?Math.round((matched/m)*100):0};
 }
 
 // Send a recorded audio Blob to /api/stt for transcription.
@@ -1222,6 +1316,8 @@ function UsageMeter({usage, settings, onReset}) {
     {key:"reading",    label:"Reading passages", tag:"reading", tokenIn:300, tokenOut:1500,perDay:1},
     {key:"listening",  label:"Listening passages",tag:"listening",tokenIn:300,tokenOut:1200,perDay:1},
     {key:"convoTurns", label:"Conversation turns", tag:"other", tokenIn:400, tokenOut:500, perDay:20},
+    {key:"islandBatches", label:"Language Island batches", tag:"island", tokenIn:300, tokenOut:900, perDay:3},
+    {key:"dictationSets", label:"Dictation sets", tag:"dictation", tokenIn:200, tokenOut:500, perDay:2},
     {key:"images",     label:"Nano Banana images", tag:"imageNB1", perDay:5},
     {key:"ttsPlays",   label:"TTS plays (~120 ch each, first-time only)", tag:"ttsGoogle", chars:120, perDay:10},
     {key:"sttMinutes", label:"Whisper STT minutes", tag:"sttWhisper", seconds:60, perDay:5},
@@ -1363,7 +1459,7 @@ function UsageMeter({usage, settings, onReset}) {
 // ─────────────────────────────────────────────────────────────
 // HOME
 // ─────────────────────────────────────────────────────────────
-function HomeScreen({decks,cardStates,onOpenDeck,onSettings,onCreateDeck,onReading,onListening,onConversation,onSearch,onProgress,onMasterReview,darkMode,onToggleDark,studyLog}) {
+function HomeScreen({decks,cardStates,onOpenDeck,onSettings,onCreateDeck,onReading,onListening,onConversation,onDictation,onCapsules,onSearch,onProgress,onMasterReview,onGuide,onPresets,darkMode,onToggleDark,studyLog}) {
   const sorted=[...decks].sort((a,b)=>b.createdAt-a.createdAt);
   const importRef=useRef(null);
   const handleImport=(e)=>{
@@ -1404,9 +1500,16 @@ function HomeScreen({decks,cardStates,onOpenDeck,onSettings,onCreateDeck,onReadi
         </div>
         <div style={{display:"flex",gap:6}}>
           <button className="btn btn-ghost" onClick={onSearch} style={{width:36,height:36}} title="Search all cards"><Search size={16}/></button>
+          <button className="btn btn-ghost" onClick={onGuide} style={{width:36,height:36}} title="Help & tips"><HelpCircle size={17}/></button>
           <button className="btn btn-ghost" onClick={onToggleDark} style={{width:36,height:36}} title={darkMode?"Light mode":"Dark mode"}>{darkMode?<Sun size={16}/>:<Moon size={16}/>}</button>
           <button className="btn btn-ghost" onClick={onSettings} style={{width:36,height:36}}><Settings size={17}/></button>
         </div>
+      </div>
+
+      <div style={{padding:"14px 20px 0"}}>
+        <TipBanner id="home-welcome" title="New here? Start with the basics">
+          Create a deck and add words, then tap <b>Master Review</b> to study. The practice modules and <b>Immersion Capsules</b> use your own vocabulary. Tap the <b>?</b> up top anytime for a full guide.
+        </TipBanner>
       </div>
 
       {/* Dashboard Stats */}
@@ -1463,6 +1566,16 @@ function HomeScreen({decks,cardStates,onOpenDeck,onSettings,onCreateDeck,onReadi
             <div style={{flex:1}}><div style={{fontWeight:700,fontSize:14.5,color:"var(--accent)"}}>Conversation</div><div style={{fontSize:12.5,color:"var(--text2)",marginTop:2}}>AI chat practice using your vocabulary</div></div>
             <ChevronRight size={15} color="var(--accent)"/>
           </div>
+          <div className="module-card" style={{borderColor:"#0F766E55",background:"#0F766E12"}} onClick={onDictation}>
+            <div style={{width:40,height:40,borderRadius:12,background:"#0F766E",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}><PenLine size={19} color="white"/></div>
+            <div style={{flex:1}}><div style={{fontWeight:700,fontSize:14.5,color:"#0F766E"}}>Dictation</div><div style={{fontSize:12.5,color:"var(--text2)",marginTop:2}}>Listen & write — with word-by-word correction</div></div>
+            <ChevronRight size={15} color="#0F766E"/>
+          </div>
+          <div className="module-card" style={{borderColor:"var(--info-border)",background:"var(--info-bg)"}} onClick={onCapsules}>
+            <div style={{width:40,height:40,borderRadius:12,background:"var(--info)",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}><Globe size={19} color="white"/></div>
+            <div style={{flex:1}}><div style={{fontWeight:700,fontSize:14.5,color:"var(--info)"}}>Immersion Capsules</div><div style={{fontSize:12.5,color:"var(--text2)",marginTop:2}}>Language Island &amp; more — long-form immersion</div></div>
+            <ChevronRight size={15} color="var(--info)"/>
+          </div>
           <div className="module-card" style={{borderColor:"var(--border)"}} onClick={onProgress}>
             <div style={{width:40,height:40,borderRadius:12,background:"var(--surface2)",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}><BarChart3 size={19} color="var(--text2)"/></div>
             <div style={{flex:1}}>
@@ -1474,7 +1587,7 @@ function HomeScreen({decks,cardStates,onOpenDeck,onSettings,onCreateDeck,onReadi
           </div>
         </div>
         <div className="sec">Flashcard Decks</div>
-        <div style={{display:"flex",gap:8,marginBottom:12}}>
+        <div style={{display:"flex",gap:8,marginBottom:8}}>
           <button className="btn btn-primary" onClick={onCreateDeck} style={{flex:1,padding:"13px",borderRadius:"var(--r)",fontSize:14}}>
             <Plus size={15}/> Create New Deck
           </button>
@@ -1483,7 +1596,10 @@ function HomeScreen({decks,cardStates,onOpenDeck,onSettings,onCreateDeck,onReadi
           </button>
           <input ref={importRef} type="file" accept=".json" onChange={handleImport} style={{display:"none"}}/>
         </div>
-        {sorted.length===0&&<div style={{textAlign:"center",color:"var(--text3)",fontSize:14,padding:"36px 0"}}><Layers size={28} style={{opacity:.3,marginBottom:8}}/><br/>No decks yet.</div>}
+        <button className="btn" onClick={onPresets} style={{width:"100%",marginBottom:12,padding:"12px",borderRadius:"var(--r)",fontSize:13.5,background:"var(--accent-bg)",border:"1.5px solid var(--accent-border)",color:"var(--accent)",fontWeight:600,gap:7}}>
+          <Download size={14}/> Browse preset decks
+        </button>
+        {sorted.length===0&&<div style={{textAlign:"center",color:"var(--text3)",fontSize:14,padding:"36px 0"}}><Layers size={28} style={{opacity:.3,marginBottom:8}}/><br/>No decks yet — create one or download a preset above.</div>}
         <div style={{display:"flex",flexDirection:"column",gap:9}}>
           {sorted.map(deck=>{
             const dc=cardStates[deck.id]||[];
@@ -1889,7 +2005,81 @@ function DuplicateFinder({decks,cardStates,setCardStates}) {
   );
 }
 
-function SettingsScreen({settings,setSettings,onBack,usage,user,onSignOut,onReplayOnboarding,studyLog,onUpdateTargets,decks,cardStates,setCardStates,trackUsage,onResetUsage}) {
+// ─────────────────────────────────────────────────────────────
+// PROFILE PANEL (Phase 1) — edit working level, personalization mode,
+// and personal context; or retake the placement / full onboarding.
+// ─────────────────────────────────────────────────────────────
+function ProfilePanel({profile,setProfile,onRetake}) {
+  const base={displayName:"",workingLevel:"book1",personalizationOn:false,personalContext:emptyContext(),nativeLanguage:""};
+  const [local,setLocal]=useState({...base,...(profile||{}),personalContext:{...emptyContext(),...(profile?.personalContext||{})}});
+  const [open,setOpen]=useState(false);
+  const set=(k,v)=>setLocal(p=>({...p,[k]:v}));
+  const setCtx=(k,v)=>setLocal(p=>({...p,personalContext:{...p.personalContext,[k]:v}}));
+  const save=()=>{
+    setProfile({...local,nativeLanguage:local.personalContext.nativeLanguage||local.nativeLanguage||""});
+    showToast("Profile saved","success");
+  };
+  const lv=levelById(local.workingLevel);
+  return (
+    <div style={{background:"var(--surface)",border:"1.5px solid var(--border)",borderRadius:"var(--r)",padding:"15px 17px"}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",cursor:"pointer"}} onClick={()=>setOpen(v=>!v)}>
+        <div>
+          <div className="sec" style={{margin:0}}>Profile & Personalization</div>
+          <div style={{fontSize:13,marginTop:3}}>
+            <span style={{fontWeight:700}}>{lv.label}</span>
+            <span style={{color:"var(--text3)"}}> · {lv.cefr}</span>
+            <span style={{color:local.personalizationOn?"var(--accent)":"var(--text3)",fontWeight:600}}> · {local.personalizationOn?"Personalized":"General"}</span>
+          </div>
+        </div>
+        {open?<ChevronUp size={15} color="var(--text3)"/>:<ChevronDown size={15} color="var(--text3)"/>}
+      </div>
+
+      {open&&(
+        <div style={{borderTop:"1px solid var(--border)",marginTop:12,paddingTop:14,display:"flex",flexDirection:"column",gap:12}}>
+          <div>
+            <label className="lbl" style={{marginBottom:3}}>Name</label>
+            <input className="input" value={local.displayName} onChange={e=>set("displayName",e.target.value)} placeholder="Your name"/>
+          </div>
+          <div>
+            <label className="lbl" style={{marginBottom:3}}>Working level</label>
+            <select className="input" value={local.workingLevel} onChange={e=>set("workingLevel",e.target.value)}>
+              {WORKING_LEVELS.map(l=><option key={l.id} value={l.id}>{l.label} · {l.cefr} (Book {l.book})</option>)}
+            </select>
+            <div style={{fontSize:11.5,color:"var(--text3)",marginTop:4,lineHeight:1.5}}>{lv.desc}</div>
+          </div>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:10}}>
+            <div style={{flex:1}}>
+              <div style={{fontSize:13,fontWeight:700}}>Personalized mode <span style={{fontSize:11,color:"var(--accent)"}}>· Paid</span></div>
+              <div style={{fontSize:11.5,color:"var(--text3)",marginTop:2,lineHeight:1.5}}>Generate content from your known vocabulary + context. Off = shared free preset library.</div>
+            </div>
+            <div className={`chk ${local.personalizationOn?"on":""}`} onClick={()=>set("personalizationOn",!local.personalizationOn)}>{local.personalizationOn&&<Check size={11} color="white"/>}</div>
+          </div>
+          <div className="divider"/>
+          <div className="sec" style={{margin:0}}>Personal context</div>
+          {CONTEXT_FIELDS.map(f=>(
+            <div key={f.key}>
+              <label className="lbl" style={{marginBottom:3}}>{f.label}</label>
+              {f.type==="select"
+                ? <select className="input" value={local.personalContext[f.key]||""} onChange={e=>setCtx(f.key,e.target.value)}>
+                    <option value="">Select…</option>
+                    {f.options.map(o=><option key={o} value={o}>{o}</option>)}
+                  </select>
+                : f.type==="textarea"
+                ? <textarea className="input" value={local.personalContext[f.key]||""} onChange={e=>setCtx(f.key,e.target.value)} placeholder={f.placeholder} rows={2} style={{resize:"vertical"}}/>
+                : <input className="input" value={local.personalContext[f.key]||""} onChange={e=>setCtx(f.key,e.target.value)} placeholder={f.placeholder}/>}
+            </div>
+          ))}
+          <div style={{display:"flex",gap:8,marginTop:4}}>
+            <button className="btn btn-primary" onClick={save} style={{flex:2,padding:"11px",borderRadius:"var(--rs)",fontSize:13.5}}>Save profile</button>
+            <button className="btn" onClick={onRetake} style={{flex:1,background:"var(--surface2)",color:"var(--text2)",padding:"11px",borderRadius:"var(--rs)",fontSize:13}}>Replay onboarding</button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SettingsScreen({settings,setSettings,onBack,usage,user,onSignOut,onReplayOnboarding,profile,setProfile,studyLog,onUpdateTargets,decks,cardStates,setCardStates,trackUsage,onResetUsage}) {
   const [local,setLocal]=useState(settings);
   const [saved,setSaved]=useState(false);
   const set=(k,v)=>setLocal(p=>({...p,[k]:v}));
@@ -1915,6 +2105,8 @@ function SettingsScreen({settings,setSettings,onBack,usage,user,onSignOut,onRepl
             <button className="btn btn-ghost" onClick={onSignOut} style={{fontSize:12,color:"var(--text3)",padding:"6px 10px",borderRadius:"var(--rxs)"}}>Sign out</button>
           </div>
         </div>
+
+        <ProfilePanel profile={profile} setProfile={setProfile} onRetake={onReplayOnboarding}/>
 
         {/* Pass `local` (the in-edit settings) so cost previews react as you
             change model dropdowns above, before you've hit Save. */}
@@ -2165,13 +2357,24 @@ function SettingsScreen({settings,setSettings,onBack,usage,user,onSignOut,onRepl
 // ─────────────────────────────────────────────────────────────
 function CreateDeckScreen({onBack,onCreate}) {
   const [title,setTitle]=useState("");
+  const [unitId,setUnitId]=useState("");
   return (
     <div className="screen">
       <Hdr title="New Deck" sub="Create" onBack={onBack}/>
       <div style={{padding:"22px 20px 0"}}>
         <label className="lbl">Deck Title</label>
-        <input className="input" placeholder="e.g. Common Nouns, Chapter 3 Verbs…" value={title} onChange={e=>setTitle(e.target.value)} autoFocus onKeyDown={e=>e.key==="Enter"&&title.trim()&&onCreate(title.trim())}/>
-        <button className="btn btn-primary" onClick={()=>title.trim()&&onCreate(title.trim())} disabled={!title.trim()} style={{width:"100%",padding:14,borderRadius:"var(--r)",fontSize:15,marginTop:18}}>
+        <input className="input" placeholder="e.g. Common Nouns, Chapter 3 Verbs…" value={title} onChange={e=>setTitle(e.target.value)} autoFocus onKeyDown={e=>e.key==="Enter"&&title.trim()&&onCreate(title.trim(),unitId||null)}/>
+        <label className="lbl" style={{marginTop:16}}>Curriculum unit <span style={{color:"var(--text3)",fontWeight:400,textTransform:"none",letterSpacing:0}}>· optional</span></label>
+        <select className="input" value={unitId} onChange={e=>setUnitId(e.target.value)}>
+          <option value="">No unit (general deck)</option>
+          {BOOKS.map(b=>(
+            <optgroup key={b.n} label={b.name}>
+              {b.units.map((u,i)=><option key={`${b.n}-${i+1}`} value={`${b.n}-${i+1}`}>{i+1}. {u[1]} · {u[0]}</option>)}
+            </optgroup>
+          ))}
+        </select>
+        <div style={{fontSize:11.5,color:"var(--text3)",marginTop:5,lineHeight:1.5}}>Linking a deck to a unit makes its cards count toward that unit & level — used by practice modules and personalization.</div>
+        <button className="btn btn-primary" onClick={()=>title.trim()&&onCreate(title.trim(),unitId||null)} disabled={!title.trim()} style={{width:"100%",padding:14,borderRadius:"var(--r)",fontSize:15,marginTop:18}}>
           <Plus size={15}/> Create & Add Cards
         </button>
       </div>
@@ -2360,11 +2563,13 @@ CRITICAL: Every Arabic word MUST have full tashkeel (فَتْحَة ضَمَّة
 // ─────────────────────────────────────────────────────────────
 // DECK SCREEN — with edit/delete deck
 // ─────────────────────────────────────────────────────────────
-function DeckScreen({deck,cards,onStartStudy,onBack,onAddCards,onEditCard,onDeleteCard,onRenameDeck,onDeleteDeck,savedIdx}) {
+function DeckScreen({deck,cards,onStartStudy,onBack,onAddCards,onEditCard,onDeleteCard,onRenameDeck,onDeleteDeck,onSetDeckUnit,savedIdx}) {
   const [deckMenu,setDeckMenu]=useState(false);
   const [renaming,setRenaming]=useState(false);
+  const [linkingUnit,setLinkingUnit]=useState(false);
   const [newTitle,setNewTitle]=useState(deck.title);
   const [confirmDelete,setConfirmDelete]=useState(false);
+  const linkedUnit=deck.unitId?unitById(deck.unitId):null;
   const [search,setSearch]=useState("");
   const [statusFilter,setStatusFilter]=useState("all");
   const [studyFilter,setStudyFilter]=useState("all");
@@ -2396,6 +2601,11 @@ function DeckScreen({deck,cards,onStartStudy,onBack,onAddCards,onEditCard,onDele
         }/>
 
       <div style={{padding:"18px 20px 0"}}>
+        <div onClick={()=>{setDeckMenu(true);setLinkingUnit(true);}} style={{display:"inline-flex",alignItems:"center",gap:6,marginBottom:12,cursor:"pointer",fontSize:12,padding:"5px 11px",borderRadius:100,
+          background:linkedUnit?"var(--accent-bg)":"var(--surface2)",color:linkedUnit?"var(--accent)":"var(--text3)",border:`1px solid ${linkedUnit?"var(--accent-border)":"var(--border)"}`}}>
+          <BookOpen size={12}/>
+          {linkedUnit?<>Book {linkedUnit.book} · {linkedUnit.titleEn} <span style={{opacity:.7}}>({levelById(linkedUnit.level).cefr})</span></>:"Link to curriculum unit"}
+        </div>
         <div style={{background:"var(--surface)",border:"1.5px solid var(--border)",borderRadius:"var(--r)",padding:"14px 16px",marginBottom:12}}>
           <div style={{display:"flex",justifyContent:"space-between",marginBottom:8}}>
             <span style={{fontSize:13,color:"var(--text2)"}}>{cards.length} cards</span>
@@ -2493,18 +2703,22 @@ function DeckScreen({deck,cards,onStartStudy,onBack,onAddCards,onEditCard,onDele
 
       {/* Deck options drawer */}
       {deckMenu&&(
-        <div className="overlay" onClick={e=>{if(e.target===e.currentTarget){setDeckMenu(false);setRenaming(false);setConfirmDelete(false);}}}>
+        <div className="overlay" onClick={e=>{if(e.target===e.currentTarget){setDeckMenu(false);setRenaming(false);setConfirmDelete(false);setLinkingUnit(false);}}}>
           <div className="drawer">
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:18}}>
               <div style={{fontFamily:"Lora,serif",fontSize:17,fontWeight:600}}>Deck Options</div>
-              <button className="btn btn-ghost" onClick={()=>{setDeckMenu(false);setRenaming(false);setConfirmDelete(false);}} style={{width:30,height:30}}><X size={13}/></button>
+              <button className="btn btn-ghost" onClick={()=>{setDeckMenu(false);setRenaming(false);setConfirmDelete(false);setLinkingUnit(false);}} style={{width:30,height:30}}><X size={13}/></button>
             </div>
 
-            {!renaming&&!confirmDelete&&(
+            {!renaming&&!confirmDelete&&!linkingUnit&&(
               <div style={{display:"flex",flexDirection:"column",gap:10}}>
                 <button className="btn" onClick={()=>setRenaming(true)}
                   style={{background:"var(--surface2)",color:"var(--text)",padding:"13px 16px",borderRadius:"var(--rs)",justifyContent:"flex-start",gap:12,fontSize:14}}>
                   <Pencil size={15} color="var(--text2)"/> Rename Deck
+                </button>
+                <button className="btn" onClick={()=>setLinkingUnit(true)}
+                  style={{background:"var(--surface2)",color:"var(--text)",padding:"13px 16px",borderRadius:"var(--rs)",justifyContent:"flex-start",gap:12,fontSize:14}}>
+                  <BookOpen size={15} color="var(--text2)"/> {linkedUnit?"Change Curriculum Unit":"Link to Curriculum Unit"}
                 </button>
                 <button className="btn" onClick={()=>{
                   const data=JSON.stringify({deck,cards},null,2);
@@ -2534,6 +2748,22 @@ function DeckScreen({deck,cards,onStartStudy,onBack,onAddCards,onEditCard,onDele
                   <button className="btn" onClick={()=>setRenaming(false)} style={{flex:1,background:"var(--surface2)",color:"var(--text2)",padding:"12px"}}>Cancel</button>
                   <button className="btn btn-primary" onClick={doRename} disabled={!newTitle.trim()} style={{flex:2,padding:"12px",borderRadius:"var(--rs)"}}><Check size={14}/> Save Name</button>
                 </div>
+              </div>
+            )}
+
+            {linkingUnit&&(
+              <div style={{display:"flex",flexDirection:"column",gap:12}}>
+                <label className="lbl">Curriculum unit</label>
+                <div style={{fontSize:12,color:"var(--text3)",lineHeight:1.5,marginTop:-4}}>Links every card in this deck to a unit & level. Cards can still be studied normally.</div>
+                <select className="input" value={deck.unitId||""} onChange={e=>{onSetDeckUnit(deck.id,e.target.value||null);showToast(e.target.value?`Linked to ${unitLabel(e.target.value)}`:"Unit link removed","success");setLinkingUnit(false);setDeckMenu(false);}}>
+                  <option value="">No unit (general deck)</option>
+                  {BOOKS.map(b=>(
+                    <optgroup key={b.n} label={b.name}>
+                      {b.units.map((u,i)=><option key={`${b.n}-${i+1}`} value={`${b.n}-${i+1}`}>{i+1}. {u[1]} · {u[0]}</option>)}
+                    </optgroup>
+                  ))}
+                </select>
+                <button className="btn" onClick={()=>setLinkingUnit(false)} style={{background:"var(--surface2)",color:"var(--text2)",padding:"12px"}}>Cancel</button>
               </div>
             )}
 
@@ -3495,7 +3725,10 @@ REMINDERS:
 
   const doPlay=(rate)=>{
     if(!content?.arabic) return;
-    synthesizeArabic(content.arabic,{speed:rate||settings.speed,onStart:()=>setPlaying(true),onEnd:()=>setPlaying(false)});
+    // Render TTS at neutral speed and apply the chosen rate via playbackRate, so
+    // changing speed later is LIVE (no regeneration / restart) and caches hit.
+    const r=rate||settings.speed;
+    synthesizeArabic(content.arabic,{speed:1.0,onStart:()=>{setPlaying(true);setTtsPlaybackRate(r);},onEnd:()=>setPlaying(false)});
   };
 
   const togglePlay=()=>{
@@ -3517,7 +3750,7 @@ REMINDERS:
               <div><label className="lbl">Difficulty</label><Seg options={[{value:"beginner",label:"Beginner"},{value:"intermediate",label:"Intermediate"},{value:"advanced",label:"Advanced"}]} value={settings.difficulty} onChange={v=>setSetting("difficulty",v)}/></div>
               <div>
                 <label className="lbl">Audio Speed — {Math.round(settings.speed*100)}%</label>
-                <input type="range" min="0.5" max="1.2" step="0.05" value={settings.speed} onChange={e=>setSetting("speed",parseFloat(e.target.value))} style={{width:"100%",accentColor:"var(--listen)"}}/>
+                <input type="range" min="0.5" max="1.2" step="0.05" value={settings.speed} onChange={e=>{const v=parseFloat(e.target.value);setSetting("speed",v);setTtsPlaybackRate(v);/* live, no restart */}} style={{width:"100%",accentColor:"var(--listen)"}}/>
                 <div style={{display:"flex",justifyContent:"space-between",fontSize:11,color:"var(--text3)",marginTop:3}}><span>Slow</span><span>Normal</span><span>Fast</span></div>
               </div>
               <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
@@ -3593,7 +3826,7 @@ REMINDERS:
               <div style={{fontSize:12.5,color:"var(--text3)"}}>{playing?"Playing…":"Tap play to start"}</div>
               <div style={{display:"flex",justifyContent:"center",gap:6,marginTop:12}}>
                 {[{v:0.6,l:"0.6×"},{v:0.82,l:"0.8×"},{v:1.0,l:"1.0×"},{v:1.2,l:"1.2×"}].map(s=>(
-                  <button key={s.v} onClick={()=>{setSetting("speed",s.v);window.speechSynthesis.cancel();setPlaying(false);}}
+                  <button key={s.v} onClick={()=>{setSetting("speed",s.v);setTtsPlaybackRate(s.v);/* live; keeps playing */}}
                     style={{padding:"5px 10px",borderRadius:100,fontSize:12,fontWeight:600,border:`1.5px solid ${settings.speed===s.v?"var(--listen)":"var(--border)"}`,background:settings.speed===s.v?"var(--listen)":"transparent",color:settings.speed===s.v?"white":"var(--text2)",cursor:"pointer",transition:"all .15s"}}>
                     {s.l}
                   </button>
@@ -3733,6 +3966,65 @@ function GlobalSearch({decks,cardStates,onClose,onSelectCard}) {
 // ─────────────────────────────────────────────────────────────
 // ONBOARDING
 // ─────────────────────────────────────────────────────────────
+// Short, capture-focused intro shown at the START of onboarding. The detailed
+// feature walkthrough (ONBOARDING_STEPS) lives in the always-available Help &
+// Tips guide instead of being forced up front — so setup stays quick and
+// guidance is continuous.
+const INTRO_SLIDES=[
+  {icon:"🗂️",title:"Welcome",body:"Learn Modern Standard Arabic through flashcards, spaced repetition, and immersive practice — tailored to you. Let's set up your profile; it takes about two minutes."},
+  {icon:"🧭",title:"Why we ask a few questions",body:"We'll learn a little about you and check your level, so your reading, listening, dictation, and immersion content can be personalized. You can change anything later — and the ? button on the home screen has tips for every feature."},
+];
+
+// ── In-app tips / coach marks (persistent dismissal) ──────────────
+// First-visit tips guide students through the app. Seen-state lives in
+// localStorage so it works without the cloud and survives reloads.
+const TIPS_KEY="arabic_fc_tips_seen";
+function getTipsSeen(){try{return new Set(JSON.parse(localStorage.getItem(TIPS_KEY)||"[]"));}catch{return new Set();}}
+function markTipSeen(id){try{const s=getTipsSeen();s.add(id);localStorage.setItem(TIPS_KEY,JSON.stringify([...s]));}catch{}}
+function resetTips(){try{localStorage.removeItem(TIPS_KEY);}catch{}}
+function TipBanner({id,title,children}){
+  const [show,setShow]=useState(()=>!getTipsSeen().has(id));
+  if(!show) return null;
+  const dismiss=()=>{markTipSeen(id);setShow(false);};
+  return (
+    <div style={{background:"var(--info-bg)",border:"1px solid var(--info-border)",borderRadius:"var(--rs)",padding:"11px 13px",display:"flex",gap:10,alignItems:"flex-start",marginBottom:12}}>
+      <Info size={15} color="var(--info)" style={{flexShrink:0,marginTop:1}}/>
+      <div style={{flex:1,fontSize:12.5,color:"var(--text2)",lineHeight:1.55}}>
+        {title&&<div style={{fontWeight:700,color:"var(--info)",marginBottom:2}}>{title}</div>}
+        {children}
+      </div>
+      <button onClick={dismiss} title="Dismiss" style={{background:"none",border:"none",color:"var(--text3)",cursor:"pointer",flexShrink:0,padding:0,lineHeight:1}}><X size={14}/></button>
+    </div>
+  );
+}
+
+// Help & Tips — always-available guide. Reuses the feature walkthrough and lets
+// the student replay onboarding or re-enable the in-app tips.
+function GuideScreen({onBack,onReplayOnboarding,onResetTips}){
+  return (
+    <div className="screen">
+      <Hdr title="Help & Tips" sub="Guide" onBack={onBack}/>
+      <div style={{padding:"18px 20px 0",display:"flex",flexDirection:"column",gap:10}}>
+        <div style={{fontSize:13,color:"var(--text2)",lineHeight:1.6,marginBottom:2}}>A quick guide to every part of the app. Tap below to set up your profile again or bring back the in-app tips.</div>
+        <div style={{display:"flex",gap:8,marginBottom:6}}>
+          <button className="btn btn-primary" onClick={onReplayOnboarding} style={{flex:2,padding:"12px",borderRadius:"var(--r)",fontSize:14}}><RotateCcw size={15}/> Replay onboarding</button>
+          <button className="btn" onClick={onResetTips} style={{flex:1,background:"var(--surface2)",color:"var(--text2)",padding:"12px",borderRadius:"var(--rs)",fontSize:13}}>Reset tips</button>
+        </div>
+        {ONBOARDING_STEPS.map((s,i)=>(
+          <div key={i} className="module-card" style={{alignItems:"flex-start",cursor:"default"}}>
+            <div style={{fontSize:24,flexShrink:0,lineHeight:1.2}}>{s.icon}</div>
+            <div style={{flex:1,minWidth:0}}>
+              <div style={{fontWeight:700,fontSize:14}}>{s.title}</div>
+              <div style={{fontSize:12.5,color:"var(--text2)",marginTop:3,lineHeight:1.55}}>{s.body}</div>
+            </div>
+          </div>
+        ))}
+        <div style={{height:20}}/>
+      </div>
+    </div>
+  );
+}
+
 const ONBOARDING_STEPS=[
   {icon:"🗂️",title:"Welcome to Arabic Flashcards",body:"Your all-in-one Arabic learning app. AI-powered flashcards with full tashkeel, spaced repetition, reading, listening, conversation, and progress tracking toward B2."},
   {icon:"📇",title:"How Flashcards Work",body:"Create decks and add English or Arabic words. The AI generates all forms — singular, plural, synonyms, antonyms, verb conjugations, and the common preposition (harf) — all with full diacritics."},
@@ -3743,27 +4035,392 @@ const ONBOARDING_STEPS=[
   {icon:"🚀",title:"Ready to Start!",body:"Create a deck, add words, then hit Master Review. Set your daily target in Settings. The app tracks everything — you focus on learning Arabic."},
 ];
 
-function Onboarding({onComplete}) {
-  const [step,setStep]=useState(0);
-  const s=ONBOARDING_STEPS[step];
+// ─────────────────────────────────────────────────────────────
+// PROFILE / PLACEMENT (Phase 1) — working levels mapped to the four
+// Al-ʿArabiyyah Bayna Yadayk books, the personal-context form, and a
+// self-contained placement bank. The placement uses NO AI (it's a fixed
+// graded quiz), so it stays in the free tier per product rule R1.
+// ─────────────────────────────────────────────────────────────
+const WORKING_LEVELS=[
+  {id:"book1",label:"Beginner",cefr:"A0–A1",book:1,desc:"Foundations — greetings, family, daily life."},
+  {id:"book2",label:"Elementary",cefr:"A2",book:2,desc:"Social & civic life — travel, health, media."},
+  {id:"book3",label:"Intermediate",cefr:"B1",book:3,desc:"Society, science & culture."},
+  {id:"book4",label:"Advanced",cefr:"B2+",book:4,desc:"Abstract & advanced topics; near-native phrasing."},
+];
+const levelById=(id)=>WORKING_LEVELS.find(l=>l.id===id)||WORKING_LEVELS[0];
+
+// ─────────────────────────────────────────────────────────────
+// CURRICULUM (Phase 2) — the 64 units (4 books × 16). Derived from the
+// vendored Language Island data so there is ONE source of truth, not a
+// duplicate list. Units are fixed reference data, so they live as a constant
+// (queried like the app's other seed constants) with stable ids that future
+// content/cache rows can reference. `id` matches Language Island's "<book>-<unit>" key.
+// ─────────────────────────────────────────────────────────────
+const BOOK_WORKING_LEVEL={1:"book1",2:"book2",3:"book3",4:"book4"};
+const UNITS=BOOKS.flatMap((b)=>b.units.map((u,i)=>({
+  id:`${b.n}-${i+1}`,
+  globalNo:(b.n-1)*16+(i+1),   // 1..64
+  book:b.n, index:i+1,
+  titleAr:u[0], titleEn:u[1],
+  level:BOOK_WORKING_LEVEL[b.n],
+  verified:b.n===1,            // Book 1 titles verified; Books 2–4 vary by printing
+})));
+const unitById=(id)=>UNITS.find((u)=>u.id===id)||null;
+const unitsForLevel=(lvl)=>UNITS.filter((u)=>u.level===lvl);
+const unitLabel=(id)=>{const u=unitById(id);return u?`${u.titleEn} · ${u.titleAr}`:"";};
+
+// ── Reconcile EXISTING decks/cards with the curriculum (no duplication) ──
+// A deck may carry an optional `unitId`/`level`; its cards inherit them (a card
+// can override per-card). These helpers make existing flashcards queryable by
+// unit/level and derive the learner's known vocabulary for personalization.
+function collectVocab(cards){
+  const out=new Set();
+  (cards||[]).forEach((c)=>{
+    if(c?.arabicBase) out.add(c.arabicBase);
+    if(c?.forms) Object.values(c.forms).forEach((v)=>{if(v&&typeof v==="string") out.add(v);});
+  });
+  return [...out];
+}
+function allCardsWithUnit(decks,cardStates){
+  const byId={}; (decks||[]).forEach((d)=>{byId[d.id]=d;});
+  return Object.entries(cardStates||{}).flatMap(([deckId,arr])=>(arr||[]).map((c)=>{
+    const d=byId[deckId];
+    const uId=c.unitId||d?.unitId||null;
+    const level=c.level||d?.level||(uId?unitById(uId)?.level:null)||null;
+    return {...c,deckId,unitId:uId,level};
+  }));
+}
+function cardsForCurriculum(decks,cardStates,{unitId=null,level=null}={}){
+  return allCardsWithUnit(decks,cardStates).filter((c)=>
+    (!unitId||c.unitId===unitId)&&(!level||c.level===level));
+}
+// The learner's KNOWN vocabulary (feeds Phase 5 personalization). Defaults to
+// cards they've engaged with (known/weak); optionally scoped to a unit/level.
+function knownVocab(decks,cardStates,{unitId=null,level=null,statuses=["known","weak"]}={}){
+  return collectVocab(
+    cardsForCurriculum(decks,cardStates,{unitId,level}).filter((c)=>statuses.includes(c.status||"new"))
+  );
+}
+
+// Personalization engine (Phase 5): turn the learner's profile context into a
+// prompt clause the gateway appends when personalized mode is on. Returns ""
+// when there's nothing to personalize with (→ behaves like general mode).
+function buildPersona(profile){
+  const c=profile?.personalContext||{};
+  const bits=[];
+  if(c.occupation) bits.push(`works as ${c.occupation}`);
+  if(c.region) bits.push(`is based in ${c.region}`);
+  if(c.ageBand) bits.push(`is in the ${c.ageBand} age range`);
+  if(c.interests) bits.push(`is interested in ${c.interests}`);
+  if(c.goals) bits.push(`is learning Arabic to ${c.goals}`);
+  if(c.nativeLanguage) bits.push(`is a native ${c.nativeLanguage} speaker`);
+  if(!bits.length) return "";
+  return `The learner ${bits.join(", ")}. Where natural, tailor examples, names, and scenarios to this person's life and goals — but keep the chosen topic and level unchanged and don't force irrelevant references.`;
+}
+
+// ─────────────────────────────────────────────────────────────
+// PRESET LIBRARY — central starter decks available to EVERY user,
+// independent of their own cloud data. Bundled here so they always exist
+// (offline-safe); `fetchCentralPresets()` additionally merges a Firestore
+// `preset_decks` collection when present, so the team can publish/update
+// presets centrally without an app deploy. "Download" copies a preset into
+// the user's own decks (new ids) where it becomes editable + cloud-synced.
+// ─────────────────────────────────────────────────────────────
+const PRESET_DECKS=[
+  {id:"preset-greetings", title:"Greetings & Introductions", unitId:"1-1", level:"book1",
+   cards:[
+     {wordType:"noun",english:"Name",arabicBase:"اِسْم",forms:{singular:"اِسْم",plural:"أَسْمَاء"}},
+     {wordType:"noun",english:"Friend",arabicBase:"صَدِيق",forms:{singular:"صَدِيق",plural:"أَصْدِقَاء"}},
+     {wordType:"noun",english:"Peace / greeting",arabicBase:"سَلَام",forms:{singular:"سَلَام"}},
+     {wordType:"noun",english:"Morning",arabicBase:"صَبَاح",forms:{singular:"صَبَاح",harf:"فِي"}},
+     {wordType:"noun",english:"Evening",arabicBase:"مَسَاء",forms:{singular:"مَسَاء",harf:"فِي"}},
+     {wordType:"noun",english:"Country",arabicBase:"بَلَد",forms:{singular:"بَلَد",plural:"بِلَاد",harf:"مِنْ"}},
+   ]},
+  {id:"preset-family", title:"The Family", unitId:"1-2", level:"book1",
+   cards:[
+     {wordType:"noun",english:"Father",arabicBase:"أَب",forms:{singular:"أَب",plural:"آبَاء"}},
+     {wordType:"noun",english:"Mother",arabicBase:"أُمّ",forms:{singular:"أُمّ",plural:"أُمَّهَات"}},
+     {wordType:"noun",english:"Son",arabicBase:"اِبْن",forms:{singular:"اِبْن",plural:"أَبْنَاء"}},
+     {wordType:"noun",english:"Daughter",arabicBase:"بِنْت",forms:{singular:"بِنْت",plural:"بَنَات"}},
+     {wordType:"noun",english:"Brother",arabicBase:"أَخ",forms:{singular:"أَخ",plural:"إِخْوَة"}},
+     {wordType:"noun",english:"Sister",arabicBase:"أُخْت",forms:{singular:"أُخْت",plural:"أَخَوَات"}},
+   ]},
+  {id:"preset-food", title:"Food & Drink", unitId:"1-5", level:"book1",
+   cards:[
+     {wordType:"noun",english:"Bread",arabicBase:"خُبْز",forms:{singular:"خُبْز"}},
+     {wordType:"noun",english:"Water",arabicBase:"مَاء",forms:{singular:"مَاء"}},
+     {wordType:"noun",english:"Meat",arabicBase:"لَحْم",forms:{singular:"لَحْم",plural:"لُحُوم"}},
+     {wordType:"noun",english:"Rice",arabicBase:"أَرُزّ",forms:{singular:"أَرُزّ"}},
+     {wordType:"noun",english:"Apple",arabicBase:"تُفَّاحَة",forms:{singular:"تُفَّاحَة",plural:"تُفَّاح"}},
+     {wordType:"noun",english:"Milk",arabicBase:"حَلِيب",forms:{singular:"حَلِيب"}},
+   ]},
+];
+// Best-effort central layer. Returns [] (and never throws) if the collection is
+// absent / rules block it / offline — bundled presets still show.
+async function fetchCentralPresets(){
+  try{
+    const snap=await getDocs(collection(db,"preset_decks"));
+    const out=[];
+    snap.forEach(d=>{ const v=d.data(); if(v&&Array.isArray(v.cards)) out.push({id:d.id,...v}); });
+    return out;
+  }catch{ return []; }
+}
+// Copy a preset into a brand-new user deck (fresh ids, status reset, unit link
+// preserved). Reuses the existing "importDeck" channel the app already handles.
+function downloadPreset(pd){
+  const now=Date.now();
+  const cards=(pd.cards||[]).map((c,i)=>({...c,id:`c${now+i+1}`,status:"new"}));
+  const deck={id:`d${now}`,title:pd.title,createdAt:now,...(pd.unitId?{unitId:pd.unitId,level:pd.level||(unitById(pd.unitId)?.level)}:{})};
+  window.dispatchEvent(new CustomEvent("importDeck",{detail:{deck,cards}}));
+  return cards.length;
+}
+
+const CONTEXT_FIELDS=[
+  {key:"occupation",label:"Occupation",type:"text",placeholder:"e.g. Software engineer"},
+  {key:"ageBand",label:"Age band",type:"select",options:["Under 18","18–24","25–34","35–44","45–54","55+"]},
+  {key:"interests",label:"Interests",type:"text",placeholder:"e.g. football, cooking, history"},
+  {key:"goals",label:"Why are you learning Arabic?",type:"textarea",placeholder:"e.g. to understand the Qur'an, travel, talk with family"},
+  {key:"region",label:"Region / country",type:"text",placeholder:"e.g. Canada"},
+  {key:"nativeLanguage",label:"Native language",type:"text",placeholder:"e.g. English"},
+];
+const emptyContext=()=>Object.fromEntries(CONTEXT_FIELDS.map(f=>[f.key,""]));
+
+// 4 tiers × 3 questions, increasing difficulty. `a` is the index of the
+// correct option. The placement walks tier by tier and stops as soon as a
+// learner clearly hits their ceiling (lightly adaptive — see Onboarding).
+const PLACEMENT_TIERS=[
+  [ // Tier 1 → book1 (A0–A1)
+    {id:"t1q1",q:"What does «بَيْت» mean?",options:["Car","House","Book","Water"],a:1},
+    {id:"t1q2",q:"Which word means “water”?",options:["نَار","بَاب","مَاء","قَلَم"],a:2},
+    {id:"t1q3",q:"«السَّلامُ عَلَيكُم» is used to…",options:["Order food","Count numbers","Greet someone","Say the time"],a:2},
+  ],
+  [ // Tier 2 → book2 (A2)
+    {id:"t2q1",q:"The correct plural of «كِتاب» (book) is:",options:["كاتِب","كُتُب","مَكتَب","كِتابة"],a:1},
+    {id:"t2q2",q:"«ذَهَبْتُ إلى السُّوقِ أمسِ» — when did it happen?",options:["Tomorrow","Right now","Yesterday (past)","Never"],a:2},
+    {id:"t2q3",q:"Which sentence means “I want to eat”?",options:["هو يَشرَبُ الماء","أُريدُ أن آكُلَ","أَكَلْتُ كثيراً","لا أُحِبُّ الطعام"],a:1},
+  ],
+  [ // Tier 3 → book3 (B1)
+    {id:"t3q1",q:"In «رَغمَ أنَّهُ مُتعَب، أكمَلَ عَمَلَهُ», «رَغمَ أنَّ» means:",options:["Because","Although","After","If"],a:1},
+    {id:"t3q2",q:"The maṣdar (verbal noun) of «دَرَسَ» is:",options:["دارِس","مَدرَسة","دِراسة","يَدرُسُ"],a:2},
+    {id:"t3q3",q:"«إذا اجتَهَدتَ، نَجَحتَ» expresses:",options:["A command","A question","Negation","A condition"],a:3},
+  ],
+  [ // Tier 4 → book4 (B2+)
+    {id:"t4q1",q:"«تَتَّسِمُ هذهِ القَضيّةُ بالتَّعقيدِ» — «تَتَّسِمُ بـ» means:",options:["Is characterized by","Is unaware of","Travels to","Disagrees with"],a:0},
+    {id:"t4q2",q:"The most formal/eloquent equivalent of “however” is:",options:["وبعدين","يعني","بَيدَ أنَّ","طَيّب"],a:2},
+    {id:"t4q3",q:"In «لولا العِلمُ لَما تَقَدَّمَتِ الأُمَمُ», «لولا» signals:",options:["A greeting","A hypothetical (if not for)","A simple past","A direct order"],a:1},
+  ],
+];
+
+// Walk the placement results tier by tier. A tier is "passed" with ≥2/3.
+// Stop at the first tier the learner fails; their level is the last passed
+// tier (or book1 if they fail tier 1 → clear A0 early-out).
+function scorePlacement(answers){
+  let placed=0; // highest tier passed (1-based); 0 = failed tier 1
+  for(let t=0;t<PLACEMENT_TIERS.length;t++){
+    const reached=PLACEMENT_TIERS[t].some(q=>q.id in answers);
+    if(!reached) break; // tier never asked (adaptive stop)
+    const correct=PLACEMENT_TIERS[t].filter(q=>answers[q.id]===q.a).length;
+    if(correct>=2) placed=t+1; else break; // need 2/3 to clear a tier
+  }
+  return WORKING_LEVELS[placed===0?0:placed-1].id; // book1 floor; else the last cleared tier
+}
+
+function Onboarding({onComplete,initialProfile}) {
+  // phase: welcome → context → placement → result → personalize
+  const [phase,setPhase]=useState("welcome");
+  const [step,setStep]=useState(0); // welcome carousel index
+  const [ctx,setCtx]=useState(()=>({...emptyContext(),...(initialProfile?.personalContext||{})}));
+  const [displayName,setDisplayName]=useState(initialProfile?.displayName||"");
+  const [personalizationOn,setPersonalizationOn]=useState(initialProfile?.personalizationOn??false);
+  const [addStarter,setAddStarter]=useState(true);
+
+  // Placement state (lightly adaptive)
+  const [tier,setTier]=useState(0);
+  const [qInTier,setQInTier]=useState(0);
+  const [answers,setAnswers]=useState({});
+  const [picked,setPicked]=useState(null);
+
+  const setField=(k,v)=>setCtx(p=>({...p,[k]:v}));
+
+  const finish=(resultLevel,ans)=>{
+    // Optional starter deck for the placed level (a free preset → their decks).
+    if(addStarter){
+      const starter=PRESET_DECKS.find(d=>d.level===resultLevel)||PRESET_DECKS[0];
+      if(starter) downloadPreset(starter);
+    }
+    onComplete({
+      profile:{
+        displayName:displayName.trim(),
+        workingLevel:resultLevel,
+        personalizationOn,
+        personalContext:ctx,
+        nativeLanguage:ctx.nativeLanguage||"",
+      },
+      placement:{ answers:ans, resultLevel, takenAt:Date.now() },
+    });
+  };
+
+  const answerQuestion=()=>{
+    if(picked===null) return;
+    const q=PLACEMENT_TIERS[tier][qInTier];
+    const nextAnswers={...answers,[q.id]:picked};
+    setAnswers(nextAnswers);
+    setPicked(null);
+    // advance within tier
+    if(qInTier<PLACEMENT_TIERS[tier].length-1){ setQInTier(qInTier+1); return; }
+    // tier complete — evaluate
+    const correct=PLACEMENT_TIERS[tier].filter(x=>nextAnswers[x.id]===x.a).length;
+    const passed=correct>=2;
+    if(passed && tier<PLACEMENT_TIERS.length-1){ setTier(tier+1); setQInTier(0); return; }
+    // stop: ceiling reached or finished top tier
+    setPhase("result");
+  };
+
+  const resultLevelId=scorePlacement(answers);
+
+  // ---- WELCOME (short intro → leads into profile capture) ----
+  if(phase==="welcome"){
+    const s=INTRO_SLIDES[step];
+    const last=step===INTRO_SLIDES.length-1;
+    return (
+      <div className="onboarding-overlay">
+        <div className="onboarding-card">
+          <div style={{fontSize:48,marginBottom:16}}>{s.icon}</div>
+          <div style={{fontFamily:"Lora,serif",fontSize:22,fontWeight:600,marginBottom:10}}>{s.title}</div>
+          <div style={{fontSize:14,color:"var(--text2)",lineHeight:1.7,marginBottom:8}}>{s.body}</div>
+          <div className="onboarding-dots">
+            {INTRO_SLIDES.map((_,i)=><div key={i} className={`onboarding-dot ${i===step?"active":""}`}/>)}
+          </div>
+          <div style={{display:"flex",gap:8,marginTop:8}}>
+            {step>0&&<button className="btn" onClick={()=>setStep(v=>v-1)} style={{flex:1,background:"var(--surface2)",color:"var(--text2)",padding:"12px",borderRadius:"var(--rs)",fontSize:14}}>Back</button>}
+            {!last
+              ? <button className="btn btn-primary" onClick={()=>setStep(v=>v+1)} style={{flex:2,padding:"12px",borderRadius:"var(--rs)",fontSize:14}}>Next</button>
+              : <button className="btn btn-primary" onClick={()=>setPhase("context")} style={{flex:2,padding:"12px",borderRadius:"var(--rs)",fontSize:14}}>Set up my profile</button>}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // ---- PERSONAL-CONTEXT FORM ----
+  if(phase==="context"){
+    return (
+      <div className="onboarding-overlay">
+        <div className="onboarding-card" style={{textAlign:"left",maxHeight:"86vh",overflowY:"auto"}}>
+          <div style={{textAlign:"center"}}>
+            <div style={{fontSize:40,marginBottom:10}}>🧭</div>
+            <div style={{fontFamily:"Lora,serif",fontSize:21,fontWeight:600,marginBottom:6}}>Tell us about you</div>
+            <div style={{fontSize:13,color:"var(--text2)",lineHeight:1.6,marginBottom:18}}>This personalizes your practice later. Everything is optional and editable in Settings.</div>
+          </div>
+          <label className="lbl" style={{marginBottom:3}}>Your name</label>
+          <input className="input" value={displayName} onChange={e=>setDisplayName(e.target.value)} placeholder="e.g. Muhammed" style={{marginBottom:12}}/>
+          {CONTEXT_FIELDS.map(f=>(
+            <div key={f.key} style={{marginBottom:12}}>
+              <label className="lbl" style={{marginBottom:3}}>{f.label}</label>
+              {f.type==="select"
+                ? <select className="input" value={ctx[f.key]} onChange={e=>setField(f.key,e.target.value)}>
+                    <option value="">Select…</option>
+                    {f.options.map(o=><option key={o} value={o}>{o}</option>)}
+                  </select>
+                : f.type==="textarea"
+                ? <textarea className="input" value={ctx[f.key]} onChange={e=>setField(f.key,e.target.value)} placeholder={f.placeholder} rows={2} style={{resize:"vertical"}}/>
+                : <input className="input" value={ctx[f.key]} onChange={e=>setField(f.key,e.target.value)} placeholder={f.placeholder}/>}
+            </div>
+          ))}
+          <div style={{display:"flex",gap:8,marginTop:8}}>
+            <button className="btn" onClick={()=>setPhase("welcome")} style={{flex:1,background:"var(--surface2)",color:"var(--text2)",padding:"12px",borderRadius:"var(--rs)",fontSize:14}}>Back</button>
+            <button className="btn btn-primary" onClick={()=>{setTier(0);setQInTier(0);setAnswers({});setPicked(null);setPhase("placement");}} style={{flex:2,padding:"12px",borderRadius:"var(--rs)",fontSize:14}}>Continue</button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // ---- PLACEMENT ASSESSMENT ----
+  if(phase==="placement"){
+    const q=PLACEMENT_TIERS[tier][qInTier];
+    const answeredCount=Object.keys(answers).length;
+    return (
+      <div className="onboarding-overlay">
+        <div className="onboarding-card" style={{textAlign:"left"}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}>
+            <span className="sec" style={{margin:0}}>Placement · {WORKING_LEVELS[tier].cefr}</span>
+            <span style={{fontSize:12,color:"var(--text3)"}}>Q{answeredCount+1}</span>
+          </div>
+          <div className="progress-track" style={{marginBottom:18}}><div className="progress-fill" style={{width:`${(answeredCount/(PLACEMENT_TIERS.length*3))*100}%`,background:"var(--accent)"}}/></div>
+          <div style={{fontSize:15.5,fontWeight:600,lineHeight:1.6,marginBottom:16}}>{q.q}</div>
+          <div style={{display:"flex",flexDirection:"column",gap:9,marginBottom:18}}>
+            {q.options.map((opt,i)=>{
+              const on=picked===i;
+              const isArabic=/[؀-ۿ]/.test(opt);
+              return (
+                <button key={i} onClick={()=>setPicked(i)}
+                  className="btn"
+                  style={{textAlign:isArabic?"right":"left",justifyContent:isArabic?"flex-end":"flex-start",padding:"13px 15px",borderRadius:"var(--rs)",
+                    border:`1.5px solid ${on?"var(--accent)":"var(--border)"}`,background:on?"var(--accent-bg)":"var(--surface)",
+                    color:"var(--text)",fontSize:isArabic?17:14,fontWeight:on?600:500,
+                    ...(isArabic?{fontFamily:"'Scheherazade New','Amiri',serif",direction:"rtl"}:{})}}>
+                  {opt}
+                </button>
+              );
+            })}
+          </div>
+          <button className="btn btn-primary" disabled={picked===null} onClick={answerQuestion} style={{width:"100%",padding:"13px",borderRadius:"var(--rs)",fontSize:14,opacity:picked===null?.5:1}}>
+            {answeredCount===PLACEMENT_TIERS.length*3-1?"See my level":"Next question"}
+          </button>
+          <div style={{fontSize:11.5,color:"var(--text3)",textAlign:"center",marginTop:10}}>The quiz adapts — it stops once we've found your level.</div>
+        </div>
+      </div>
+    );
+  }
+
+  // ---- RESULT ----
+  if(phase==="result"){
+    const lv=levelById(resultLevelId);
+    return (
+      <div className="onboarding-overlay">
+        <div className="onboarding-card">
+          <div style={{fontSize:46,marginBottom:12}}>🎯</div>
+          <div style={{fontFamily:"Lora,serif",fontSize:21,fontWeight:600,marginBottom:6}}>You're at {lv.label}</div>
+          <div style={{display:"inline-block",background:"var(--accent-bg)",color:"var(--accent)",border:"1px solid var(--accent-border)",borderRadius:"var(--rxs)",padding:"4px 12px",fontSize:13,fontWeight:700,marginBottom:14}}>
+            {lv.cefr} · Book {lv.book}
+          </div>
+          <div style={{fontSize:14,color:"var(--text2)",lineHeight:1.7,marginBottom:18}}>{lv.desc} We'll show you level-appropriate content. You can change this anytime in Settings.</div>
+          <div style={{display:"flex",gap:8}}>
+            <button className="btn" onClick={()=>{setTier(0);setQInTier(0);setAnswers({});setPicked(null);setPhase("placement");}} style={{flex:1,background:"var(--surface2)",color:"var(--text2)",padding:"12px",borderRadius:"var(--rs)",fontSize:14}}>Retake</button>
+            <button className="btn btn-primary" onClick={()=>setPhase("personalize")} style={{flex:2,padding:"12px",borderRadius:"var(--rs)",fontSize:14}}>Continue</button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // ---- PERSONALIZATION TOGGLE ----
+  const lv=levelById(resultLevelId);
   return (
-    <div className="onboarding-overlay" onClick={e=>{if(e.target===e.currentTarget&&step===ONBOARDING_STEPS.length-1) onComplete();}}>
-      <div className="onboarding-card">
-        <div style={{fontSize:48,marginBottom:16}}>{s.icon}</div>
-        <div style={{fontFamily:"Lora,serif",fontSize:22,fontWeight:600,marginBottom:10}}>{s.title}</div>
-        <div style={{fontSize:14,color:"var(--text2)",lineHeight:1.7,marginBottom:8}}>{s.body}</div>
-        <div className="onboarding-dots">
-          {ONBOARDING_STEPS.map((_,i)=><div key={i} className={`onboarding-dot ${i===step?"active":""}`}/>)}
+    <div className="onboarding-overlay">
+      <div className="onboarding-card" style={{textAlign:"left"}}>
+        <div style={{textAlign:"center"}}>
+          <div style={{fontSize:42,marginBottom:10}}>✨</div>
+          <div style={{fontFamily:"Lora,serif",fontSize:21,fontWeight:600,marginBottom:6}}>Choose your mode</div>
+          <div style={{fontSize:13,color:"var(--text2)",lineHeight:1.6,marginBottom:18}}>How should we pick your practice content?</div>
         </div>
-        <div style={{display:"flex",gap:8,marginTop:8}}>
-          {step>0&&<button className="btn" onClick={()=>setStep(s=>s-1)} style={{flex:1,background:"var(--surface2)",color:"var(--text2)",padding:"12px",borderRadius:"var(--rs)",fontSize:14}}>Back</button>}
-          {step<ONBOARDING_STEPS.length-1?(
-            <button className="btn btn-primary" onClick={()=>setStep(s=>s+1)} style={{flex:2,padding:"12px",borderRadius:"var(--rs)",fontSize:14}}>Next</button>
-          ):(
-            <button className="btn btn-primary" onClick={onComplete} style={{flex:2,padding:"12px",borderRadius:"var(--rs)",fontSize:14}}>Get Started</button>
-          )}
+        <button onClick={()=>setPersonalizationOn(false)} className="btn" style={{width:"100%",textAlign:"left",flexDirection:"column",alignItems:"stretch",gap:4,padding:"14px",borderRadius:"var(--rs)",marginBottom:10,border:`1.5px solid ${!personalizationOn?"var(--accent)":"var(--border)"}`,background:!personalizationOn?"var(--accent-bg)":"var(--surface)"}}>
+          <div style={{fontWeight:700,fontSize:14}}>General <span style={{fontSize:11,color:"var(--know)",fontWeight:700}}>· Free</span></div>
+          <div style={{fontSize:12.5,color:"var(--text2)",lineHeight:1.5}}>Shared preset library at your level. No AI cost.</div>
+        </button>
+        <button onClick={()=>setPersonalizationOn(true)} className="btn" style={{width:"100%",textAlign:"left",flexDirection:"column",alignItems:"stretch",gap:4,padding:"14px",borderRadius:"var(--rs)",marginBottom:16,border:`1.5px solid ${personalizationOn?"var(--accent)":"var(--border)"}`,background:personalizationOn?"var(--accent-bg)":"var(--surface)"}}>
+          <div style={{fontWeight:700,fontSize:14}}>Personalized <span style={{fontSize:11,color:"var(--accent)",fontWeight:700}}>· Paid</span></div>
+          <div style={{fontSize:12.5,color:"var(--text2)",lineHeight:1.5}}>Content built from your known vocabulary, level, and context. Requires a Pro plan (set up later).</div>
+        </button>
+        <div onClick={()=>setAddStarter(v=>!v)} style={{display:"flex",alignItems:"center",gap:10,padding:"12px 14px",borderRadius:"var(--rs)",border:"1.5px solid var(--border)",background:"var(--surface)",cursor:"pointer",marginBottom:16}}>
+          <div className={`chk ${addStarter?"on":""}`}>{addStarter&&<Check size={11} color="white"/>}</div>
+          <div style={{flex:1}}>
+            <div style={{fontSize:13.5,fontWeight:700}}>Add a starter deck for my level</div>
+            <div style={{fontSize:11.5,color:"var(--text3)",marginTop:1}}>A free, ready-made {lv.label} deck to begin — you can add more anytime from the Preset Library.</div>
+          </div>
         </div>
-        <button onClick={onComplete} style={{background:"none",border:"none",color:"var(--text3)",fontSize:12,cursor:"pointer",marginTop:12}}>Skip onboarding</button>
+        <button className="btn btn-primary" onClick={()=>finish(resultLevelId,answers)} style={{width:"100%",padding:"13px",borderRadius:"var(--rs)",fontSize:14}}>Finish setup · {lv.label}</button>
       </div>
     </div>
   );
@@ -4899,7 +5556,7 @@ function SessionRating({module,onSubmit,onSkip}) {
     <div className="overlay" onClick={e=>{if(e.target===e.currentTarget) onSkip();}}>
       <div className="drawer" style={{textAlign:"center",padding:"28px 24px 36px"}}>
         <div style={{fontSize:32,marginBottom:8}}>
-          {module==="reading"?"📖":module==="listening"?"🎧":"💬"}
+          {module==="reading"?"📖":module==="listening"?"🎧":module==="writing"?"✍️":"💬"}
         </div>
         <div style={{fontFamily:"Lora,serif",fontSize:18,fontWeight:600,marginBottom:4}}>How did that session feel?</div>
         <div style={{fontSize:13,color:"var(--text3)",marginBottom:20}}>Rate your {module} session</div>
@@ -5226,7 +5883,7 @@ function SRSSettingsPanel({srsSettings,onChange}) {
 // ROOT
 // ─────────────────────────────────────────────────────────────
 function initUsage() {
-  const tags=["flashcard","sentence","reading","listening","wordLookup","regen","other","imageNB1","imageNB2","ttsGoogle","sttWhisper"];
+  const tags=["flashcard","sentence","reading","listening","wordLookup","regen","island","dictation","other","imageNB1","imageNB2","ttsGoogle","sttWhisper"];
   const byTag={};
   // For text tags, the meaningful counters are tokens. For voice tags we
   // reuse the existing shape but treat inputTokens as "units" (chars for
@@ -5249,6 +5906,376 @@ function loadScreen(name){try{const r=localStorage.getItem(SCREEN_PREFIX+name);i
 function saveScreen(name,s){try{if(s===null) localStorage.removeItem(SCREEN_PREFIX+name);else localStorage.setItem(SCREEN_PREFIX+name,JSON.stringify({...s,savedAt:Date.now()}));}catch{}}
 function clearAllSessions(){saveSession(null);SCREEN_KEYS.forEach(n=>saveScreen(n,null));}
 
+// ─────────────────────────────────────────────────────────────
+// DICTATION / WRITING MODULE (Phase 4)
+// Listen → write what you hear → reveal + word-level correction.
+// The audio player uses a real <audio> element so speed is LIVE (playbackRate,
+// no restart), pause keeps position, and you can scrub — the Phase 4 audio
+// acceptance, demonstrated here and reused conceptually by Listening.
+// ─────────────────────────────────────────────────────────────
+const DICT_TEAL="#0F766E";
+function DictationAudio({text}){
+  const audioRef=useRef(null);
+  const [src,setSrc]=useState(null);
+  const [playing,setPlaying]=useState(false);
+  const [rate,setRate]=useState(0.9);
+  const [cur,setCur]=useState(0);
+  const [dur,setDur]=useState(0);
+  const [noAudio,setNoAudio]=useState(false);
+  useEffect(()=>{
+    let alive=true;
+    setSrc(null);setNoAudio(false);setPlaying(false);setCur(0);setDur(0);
+    getTtsSrc(text).then(s=>{ if(!alive) return; if(s) setSrc(s); else setNoAudio(true); });
+    return ()=>{ alive=false; try{audioRef.current?.pause();}catch{} };
+  },[text]);
+  // Apply speed live to the playing clip — never restarts.
+  useEffect(()=>{ if(audioRef.current) audioRef.current.playbackRate=rate; },[rate,src]);
+
+  const toggle=()=>{
+    const a=audioRef.current;
+    if(noAudio||!a){ browserSpeak(cleanArabicForSpeech(text)); return; }
+    if(a.paused) a.play().catch(()=>{}); else a.pause(); // pause preserves position
+  };
+  const replay=()=>{ const a=audioRef.current; if(a&&src){ a.currentTime=0; a.play().catch(()=>{}); } else browserSpeak(cleanArabicForSpeech(text)); };
+  const fmt=(s)=>{ s=Math.max(0,s||0); const m=Math.floor(s/60),ss=Math.floor(s%60); return `${m}:${ss<10?"0":""}${ss}`; };
+  const SPEEDS=[0.6,0.8,0.9,1.0,1.2];
+
+  return (
+    <div style={{background:"var(--surface2)",border:"1.5px solid var(--border)",borderRadius:"var(--r)",padding:"14px 16px"}}>
+      <audio ref={audioRef} src={src||undefined} preload="auto"
+        onLoadedMetadata={e=>{setDur(e.target.duration||0);e.target.playbackRate=rate;}}
+        onTimeUpdate={e=>setCur(e.target.currentTime||0)}
+        onPlay={()=>setPlaying(true)} onPause={()=>setPlaying(false)} onEnded={()=>setPlaying(false)}/>
+      <div style={{display:"flex",alignItems:"center",gap:12}}>
+        <button onClick={toggle} style={{width:46,height:46,borderRadius:"50%",border:"none",background:DICT_TEAL,color:"#fff",display:"flex",alignItems:"center",justifyContent:"center",cursor:"pointer",flexShrink:0}}>
+          {playing?<Pause size={20}/>:<Play size={20} style={{marginLeft:2}}/>}
+        </button>
+        <div style={{flex:1,minWidth:0}}>
+          <input type="range" min={0} max={dur||0} step="0.1" value={cur} disabled={!src}
+            onChange={e=>{const a=audioRef.current; if(a) a.currentTime=parseFloat(e.target.value);}}
+            style={{width:"100%",accentColor:DICT_TEAL,cursor:src?"pointer":"default"}}/>
+          <div style={{display:"flex",justifyContent:"space-between",fontSize:11,color:"var(--text3)",fontVariantNumeric:"tabular-nums"}}>
+            <span>{fmt(cur)}</span><span>{src?fmt(dur):(noAudio?"browser voice":"loading…")}</span>
+          </div>
+        </div>
+        <button onClick={replay} title="Replay" style={{width:36,height:36,borderRadius:"50%",border:"1.5px solid var(--border)",background:"var(--surface)",color:"var(--text2)",display:"flex",alignItems:"center",justifyContent:"center",cursor:"pointer",flexShrink:0}}>
+          <RotateCcw size={15}/>
+        </button>
+      </div>
+      <div style={{display:"flex",alignItems:"center",gap:6,marginTop:10}}>
+        <span style={{fontSize:11,color:"var(--text3)",marginRight:2}}>Speed</span>
+        {SPEEDS.map(s=>(
+          <button key={s} onClick={()=>setRate(s)} disabled={noAudio}
+            style={{padding:"3px 9px",borderRadius:100,fontSize:11.5,fontWeight:600,cursor:noAudio?"default":"pointer",
+              border:`1.5px solid ${rate===s?DICT_TEAL:"var(--border)"}`,background:rate===s?DICT_TEAL:"transparent",color:rate===s?"#fff":"var(--text3)",opacity:noAudio?.4:1}}>
+            {s}×
+          </button>
+        ))}
+      </div>
+      {noAudio&&<div style={{fontSize:11,color:"var(--text3)",marginTop:8,lineHeight:1.5}}>Using the browser voice (no scrub/live-speed). Add a Google TTS key in Settings for full playback control.</div>}
+    </div>
+  );
+}
+
+function DictationScreen({decks,cardStates,profile,onBack,onFinish,trackUsage,onLogStudy}){
+  const WL=levelById(profile?.workingLevel||"book1");
+  const [phase,setPhase]=useState("setup"); // setup | practice
+  const [count,setCount]=useState(5);
+  const [sentences,setSentences]=useState([]);
+  const [idx,setIdx]=useState(0);
+  const [input,setInput]=useState("");
+  const [revealed,setRevealed]=useState(false);
+  const [showHint,setShowHint]=useState(false);
+  const [loading,setLoading]=useState(false);
+  const [err,setErr]=useState("");
+  const [scores,setScores]=useState([]);
+  const startedAt=useRef(Date.now());
+  const cur=sentences[idx];
+  const result=(revealed&&cur)?diffTokens(cur.ar,input):null;
+
+  const generate=async()=>{
+    setLoading(true);setErr("");
+    try{
+      const personalized=!!profile?.personalizationOn;
+      const known=personalized?knownVocab(decks,cardStates):[];
+      const persona=personalized?buildPersona(profile):"";
+      const level={id:WL.id,guidance:`CEFR ${WL.cefr}. ${WL.desc} Keep each sentence short and dictation-friendly.`};
+      const d=await callGenerate({kind:"dictation",inputs:{level,count,vocab:known,persona},maxTokens:700,tag:"dictation",personalized,trackFn:trackUsage});
+      const arr=d.payload;
+      if(!arr?.length) throw new Error("No sentences came back — try again.");
+      setSentences(arr);setIdx(0);setInput("");setRevealed(false);setShowHint(false);setScores([]);startedAt.current=Date.now();setPhase("practice");
+    }catch(e){ setErr(e.paywall?"Generating new dictation needs a Pro plan.":(e.message||"Generation failed")); }
+    setLoading(false);
+  };
+  const submit=()=>{ if(!input.trim()||!cur) return; const r=diffTokens(cur.ar,input); setScores(s=>{const n=[...s];n[idx]=r.score;return n;}); setRevealed(true); };
+  const next=()=>{ if(idx<sentences.length-1){ setIdx(idx+1);setInput("");setRevealed(false);setShowHint(false); } };
+  const finish=()=>{
+    const mins=Math.max(1,Math.round((Date.now()-startedAt.current)/60000));
+    const done=scores.filter(s=>typeof s==="number");
+    const avg=done.length?Math.round(done.reduce((a,b)=>a+b,0)/done.length):0;
+    onLogStudy?.({type:"app",module:"writing",minutes:mins,score:avg});
+    onFinish?.();
+  };
+  const avgScore=(()=>{const d=scores.filter(s=>typeof s==="number");return d.length?Math.round(d.reduce((a,b)=>a+b,0)/d.length):0;})();
+
+  if(phase==="setup"){
+    return (
+      <div className="screen">
+        <Hdr title="Dictation" sub="Writing" onBack={onBack}/>
+        <div style={{padding:"22px 20px 0"}}>
+          <TipBanner id="dictation-intro" title="How dictation works">
+            You'll hear a sentence — play it, slow it down, or scrub back as many times as you need. Type what you hear (with tashkīl), then submit to see a word-by-word check.
+          </TipBanner>
+          <div style={{background:"var(--surface)",border:"1.5px solid var(--border)",borderRadius:"var(--r)",padding:"16px 18px",marginBottom:16}}>
+            <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:10}}>
+              <div style={{width:40,height:40,borderRadius:12,background:DICT_TEAL,display:"flex",alignItems:"center",justifyContent:"center"}}><PenLine size={19} color="#fff"/></div>
+              <div><div style={{fontWeight:700,fontSize:15}}>Listen & write</div><div style={{fontSize:12.5,color:"var(--text2)"}}>Level: {WL.label} · {WL.cefr}{profile?.personalizationOn?" · personalized":""}</div></div>
+            </div>
+            <div style={{fontSize:13,color:"var(--text2)",lineHeight:1.65}}>You'll hear a sentence, type what you hear (with tashkīl), then submit to reveal the correct text and a word-by-word check.</div>
+          </div>
+          <label className="lbl">Sentences</label>
+          <div style={{display:"flex",gap:8,marginBottom:18}}>
+            {[3,5,8].map(n=>(
+              <button key={n} className="btn" onClick={()=>setCount(n)} style={{flex:1,padding:"11px",borderRadius:"var(--rs)",fontSize:14,fontWeight:600,
+                border:`1.5px solid ${count===n?DICT_TEAL:"var(--border)"}`,background:count===n?DICT_TEAL:"var(--surface)",color:count===n?"#fff":"var(--text2)"}}>{n}</button>
+            ))}
+          </div>
+          {err&&<div style={{background:"var(--weak-bg)",border:"1px solid var(--weak-border)",borderRadius:"var(--rxs)",padding:"10px 13px",fontSize:13,color:"var(--weak)",marginBottom:14}}>{err}</div>}
+          <button className="btn btn-primary" onClick={generate} disabled={loading} style={{width:"100%",padding:14,borderRadius:"var(--r)",fontSize:15,background:DICT_TEAL}}>
+            {loading?<><RefreshCw size={16} className="spin"/> Preparing…</>:<><Play size={15}/> Start dictation</>}
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="screen">
+      <Hdr title="Dictation" sub={`${idx+1} / ${sentences.length}`} onBack={onBack}
+        right={<button className="btn btn-ghost btn-sm" onClick={finish} style={{fontSize:12.5}}>Finish</button>}/>
+      <div style={{padding:"18px 20px 0",display:"flex",flexDirection:"column",gap:14}}>
+        <div className="progress-track"><div className="progress-fill" style={{width:`${((idx+(revealed?1:0))/sentences.length)*100}%`,background:DICT_TEAL}}/></div>
+
+        <DictationAudio text={cur?.ar||""}/>
+
+        {!revealed&&(
+          <>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+              <label className="lbl" style={{margin:0}}>Type what you hear</label>
+              <button onClick={()=>setShowHint(h=>!h)} className="btn btn-ghost btn-sm" style={{fontSize:12,color:"var(--text3)"}}>{showHint?"Hide hint":"Hint"}</button>
+            </div>
+            {showHint&&cur?.en&&<div style={{fontSize:13,color:"var(--text3)",fontStyle:"italic",marginTop:-4}}>{cur.en}</div>}
+            <textarea className="input ar" dir="rtl" value={input} onChange={e=>setInput(e.target.value)} rows={3}
+              placeholder="…اكتب ما تسمع" style={{fontSize:20,lineHeight:1.8,resize:"vertical"}}/>
+            <button className="btn btn-primary" onClick={submit} disabled={!input.trim()} style={{width:"100%",padding:13,borderRadius:"var(--r)",fontSize:14,background:DICT_TEAL,opacity:input.trim()?1:.5}}>
+              <Check size={15}/> Submit & check
+            </button>
+          </>
+        )}
+
+        {revealed&&result&&cur&&(
+          <div style={{display:"flex",flexDirection:"column",gap:14}}>
+            <div style={{display:"flex",alignItems:"center",gap:10}}>
+              <div style={{fontSize:26,fontWeight:800,color:result.score>=80?"var(--know)":result.score>=50?DICT_TEAL:"var(--weak)"}}>{result.score}%</div>
+              <div style={{fontSize:12.5,color:"var(--text2)"}}>{result.matched} / {result.total} words correct</div>
+            </div>
+
+            <div>
+              <div className="sec">Correct answer</div>
+              <div className="ar" dir="rtl" style={{fontSize:22,lineHeight:1.9,display:"flex",flexWrap:"wrap",gap:"4px 8px",justifyContent:"flex-end"}}>
+                {result.ops.filter(o=>o.type!=="extra").map((o,i)=>(
+                  <span key={i} style={o.type==="missing"?{color:"var(--weak)",textDecoration:"underline",textDecorationStyle:"wavy"}:{color:"var(--know)"}}>{o.t}</span>
+                ))}
+              </div>
+            </div>
+
+            <div>
+              <div className="sec">You wrote</div>
+              <div className="ar" dir="rtl" style={{fontSize:20,lineHeight:1.9,display:"flex",flexWrap:"wrap",gap:"4px 8px",justifyContent:"flex-end"}}>
+                {result.ops.filter(o=>o.type!=="missing").map((o,i)=>(
+                  <span key={i} style={o.type==="extra"?{color:"var(--weak)",textDecoration:"line-through"}:{color:"var(--know)"}}>{o.u}</span>
+                ))}
+                {!input.trim()&&<span style={{color:"var(--text3)"}}>(nothing)</span>}
+              </div>
+            </div>
+
+            <div style={{fontSize:13,color:"var(--text2)",fontStyle:"italic"}}>{cur.en}</div>
+
+            <div style={{display:"flex",gap:8}}>
+              {idx<sentences.length-1
+                ? <button className="btn btn-primary" onClick={next} style={{flex:1,padding:13,borderRadius:"var(--r)",fontSize:14,background:DICT_TEAL}}>Next <ChevronRight size={15}/></button>
+                : <button className="btn btn-primary" onClick={finish} style={{flex:1,padding:13,borderRadius:"var(--r)",fontSize:14,background:DICT_TEAL}}><Check size={15}/> Finish · avg {avgScore}%</button>}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────
+// IMMERSION CAPSULES (Phase 5)
+// A registry of long-form immersion experiences. Language Island is capsule #1;
+// the registry leaves room for more (the demo home screen hinted at others).
+// `screen` points at a registered route; status "soon" renders a disabled card.
+// ─────────────────────────────────────────────────────────────
+const CAPSULES=[
+  {id:"island", title:"Language Island", titleAr:"جزيرة اللغة", icon:Globe, color:"#2563EB", status:"live", screen:"island",
+   desc:"Immersion Q&A across all 64 units — read, answer aloud, reveal the model answer."},
+  {id:"listeningLab", title:"Listening Lab", titleAr:"مختبر الاستماع", icon:Headphones, color:"#0F766E", status:"soon",
+   desc:"Long-form listening with graded, revealable transcripts."},
+  {id:"readingReef", title:"Reading Reef", titleAr:"شعاب القراءة", icon:FileText, color:"#9B3A0C", status:"soon",
+   desc:"Leveled long-form reading passages with tap-to-look-up."},
+];
+
+function CapsulesScreen({profile,onOpen,onBack}){
+  const personalized=!!profile?.personalizationOn;
+  return (
+    <div className="screen">
+      <Hdr title="Immersion Capsules" sub="Capsules" onBack={onBack}/>
+      <div style={{padding:"18px 20px 0",display:"flex",flexDirection:"column",gap:11}}>
+        <TipBanner id="capsules-intro" title="What are capsules?">
+          Self-contained immersion experiences. <b>Language Island</b> generates speaking-practice Q&amp;A across all 64 units. Turn on <b>Personalized</b> mode in Settings to tailor them to your profile and known words.
+        </TipBanner>
+        <div style={{fontSize:13,color:"var(--text2)",lineHeight:1.6,marginBottom:2}}>
+          Long-form, conversational practice. {personalized
+            ? <b style={{color:"var(--accent)"}}>Personalized</b>
+            : "General"} mode — {personalized?"tailored to your profile & known vocabulary.":"shared preset content at your level."}
+        </div>
+        {CAPSULES.map(c=>{
+          const Icon=c.icon; const live=c.status==="live";
+          return (
+            <div key={c.id} onClick={()=>live&&onOpen(c.screen)} className="module-card"
+              style={{borderColor:c.color+"55",background:c.color+"12",cursor:live?"pointer":"default",opacity:live?1:.55}}>
+              <div style={{width:42,height:42,borderRadius:12,background:c.color,display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}><Icon size={20} color="#fff"/></div>
+              <div style={{flex:1,minWidth:0}}>
+                <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
+                  <span style={{fontWeight:700,fontSize:14.5,color:c.color}}>{c.title}</span>
+                  <span className="ar" style={{fontSize:13,color:"var(--text3)"}}>{c.titleAr}</span>
+                  {!live&&<span style={{fontSize:9.5,fontWeight:800,letterSpacing:".06em",color:"var(--text3)",background:"var(--surface2)",padding:"2px 7px",borderRadius:100}}>SOON</span>}
+                </div>
+                <div style={{fontSize:12.5,color:"var(--text2)",marginTop:3,lineHeight:1.5}}>{c.desc}</div>
+              </div>
+              {live&&<ChevronRight size={15} color={c.color}/>}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function PresetLibraryScreen({profile,decks,onBack}){
+  const [central,setCentral]=useState([]);
+  const [onlyMyLevel,setOnlyMyLevel]=useState(true);
+  useEffect(()=>{ let alive=true; fetchCentralPresets().then(c=>{if(alive&&c.length)setCentral(c);}); return ()=>{alive=false;}; },[]);
+  const byId={}; PRESET_DECKS.forEach(d=>{byId[d.id]=d;}); central.forEach(d=>{byId[d.id]=d;});
+  const list=Object.values(byId);
+  const wl=profile?.workingLevel;
+  const filtered=(onlyMyLevel&&wl)?list.filter(d=>d.level===wl):list;
+  const owned=new Set((decks||[]).map(d=>d.title));
+  return (
+    <div className="screen">
+      <Hdr title="Preset Library" sub="Starter decks" onBack={onBack}/>
+      <div style={{padding:"18px 20px 0",display:"flex",flexDirection:"column",gap:11}}>
+        <TipBanner id="presets-intro" title="Free starter decks">
+          Ready-made, fully-voweled decks available to everyone. Tap <b>Download</b> to copy one into your decks — then study and edit it like your own; it syncs to your account.
+        </TipBanner>
+        {wl&&(
+          <div style={{display:"flex",gap:6}}>
+            <button className={`chip ${onlyMyLevel?"chip-on":""}`} onClick={()=>setOnlyMyLevel(true)} style={{padding:"5px 11px",fontSize:12}}>My level · {levelById(wl).label}</button>
+            <button className={`chip ${!onlyMyLevel?"chip-on":""}`} onClick={()=>setOnlyMyLevel(false)} style={{padding:"5px 11px",fontSize:12}}>All levels</button>
+          </div>
+        )}
+        {filtered.length===0&&<div style={{textAlign:"center",color:"var(--text3)",fontSize:14,padding:"32px 0"}}><Layers size={26} style={{opacity:.3,marginBottom:8}}/><br/>No preset decks for this level yet.</div>}
+        {filtered.map(pd=>{
+          const u=pd.unitId?unitById(pd.unitId):null;
+          const already=owned.has(pd.title);
+          return (
+            <div key={pd.id} className="module-card" style={{alignItems:"flex-start",cursor:"default"}}>
+              <div style={{width:40,height:40,borderRadius:12,background:"var(--accent)",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}><Layers size={18} color="#fff"/></div>
+              <div style={{flex:1,minWidth:0}}>
+                <div style={{fontWeight:700,fontSize:14}}>{pd.title}</div>
+                <div style={{fontSize:11.5,color:"var(--text3)",marginTop:2}}>{(pd.cards||[]).length} cards · {levelById(pd.level).cefr}{u?` · ${u.titleEn}`:""}</div>
+                <div className="ar" dir="rtl" style={{fontSize:15,color:"var(--accent)",marginTop:5,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{(pd.cards||[]).slice(0,5).map(c=>c.arabicBase).join(" · ")}</div>
+              </div>
+              <button className="btn btn-sm" onClick={()=>{const n=downloadPreset(pd);showToast(`Added "${pd.title}" (${n} cards) to your decks`,"success");}}
+                style={{background:already?"var(--surface2)":"var(--accent)",color:already?"var(--text2)":"#fff",flexShrink:0,alignSelf:"center",gap:5,fontSize:12.5}}>
+                <Download size={13}/> {already?"Add again":"Download"}
+              </button>
+            </div>
+          );
+        })}
+        <div style={{height:20}}/>
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────
+// LANGUAGE ISLAND — Arabic immersion capsule (vendored ./language-island)
+// Thin React host: mounts the framework-free widget into a div and wires it to
+// this app's own systems — generation flows through callClaude (/api/claude →
+// OpenRouter, server-side key, usage meter), and difficulty is personalized to
+// the learner's real deck via the `vocab` option. localStorage persistence and
+// the widget's scoped (.li-root) styling are handled inside the module.
+// ─────────────────────────────────────────────────────────────
+function LanguageIslandScreen({decks,cardStates,profile,trackUsage,onBack}) {
+  const ref=useRef(null);
+  useEffect(()=>{
+    const personalized=!!profile?.personalizationOn;
+    // Layered per-user store (Phase 3): localStorage always (instant, reliable),
+    // plus Firestore when signed in so sets + ✓ marks sync across devices. If
+    // Firestore is blocked (rules/offline) the local layer keeps persistence —
+    // no regression from the module's localStorage default.
+    const encKey=(k)=>String(k).replace(/\//g,"_");
+    const lsGet=(k)=>{try{const v=localStorage.getItem("li:"+k);return v?JSON.parse(v):null;}catch{return null;}};
+    const lsSet=(k,v)=>{try{localStorage.setItem("li:"+k,JSON.stringify(v));}catch{}};
+    const islandStore={
+      async get(k){ const u=auth.currentUser;
+        if(u){ try{ const snap=await getDoc(doc(db,"users",u.uid,"island",encKey(k))); if(snap.exists()) return snap.data().value; }catch{} }
+        return lsGet(k); },
+      async set(k,v){ lsSet(k,v); const u=auth.currentUser;
+        if(u){ try{ await setDoc(doc(db,"users",u.uid,"island",encKey(k)),{value:v,updatedAt:Date.now()}); }catch{} } },
+      async remove(k){ try{localStorage.removeItem("li:"+k);}catch{} const u=auth.currentUser;
+        if(u){ try{ await setDoc(doc(db,"users",u.uid,"island",encKey(k)),{value:null,updatedAt:Date.now()}); }catch{} } },
+    };
+    const inst=mountIsland(ref.current,{
+      store:islandStore,
+      // Generation now flows through the gateway (/api/generate): auth +
+      // entitlement + cache + metering server-side. General mode draws from the
+      // shared (cacheable) library; personalized mode biases to the learner's
+      // known vocabulary. `seq` keeps "generate more" fresh while letting the
+      // first batch per unit/level be a shared cache hit.
+      generate:async ({unitAr,unitEn,level,count})=>{
+        const known=personalized?knownVocab(decks,cardStates):[];
+        const persona=personalized?buildPersona(profile):"";
+        const seqKey=`li-seq:${personalized?"p:":""}${unitEn}:${level.id}`;
+        let seq=0; try{ seq=parseInt(localStorage.getItem(seqKey)||"0",10)||0; }catch{}
+        const d=await callGenerate({
+          kind:"islandQA",
+          inputs:{unitAr,unitEn,level:{id:level.id,guidance:level.guidance},count,vocab:known,persona,seq},
+          maxTokens:1024, tag:"island", personalized, trackFn:trackUsage,
+        });
+        try{ localStorage.setItem(seqKey,String(seq+1)); }catch{}
+        const pairs=d.payload;
+        if(!pairs?.length) throw new Error("Could not read the generated questions — try again.");
+        return pairs;
+      },
+      onClose:onBack,
+    });
+    return ()=>{ try{inst.destroy();}catch{} };
+  },[]); // mount once; deps intentionally empty
+  return (
+    <div className="screen">
+      <div style={{padding:"18px 16px 0"}}>
+        <button className="btn btn-ghost" onClick={onBack} style={{display:"flex",alignItems:"center",gap:6,fontSize:14,color:"var(--text2)"}}><ArrowLeft size={16}/> Home</button>
+      </div>
+      <div ref={ref} style={{padding:"8px 12px 24px"}}/>
+    </div>
+  );
+}
+
 export default function App() {
   const [screen,setScreen]=useState("home");
   const [decks,setDecks]=useState(SEED_DECKS);
@@ -5266,6 +6293,7 @@ export default function App() {
   const [studyLog,setStudyLog]=useState(initStudyLog);
   const [showSearch,setShowSearch]=useState(false);
   const [showOnboarding,setShowOnboarding]=useState(false);
+  const [profile,setProfile]=useState(null); // {displayName,workingLevel,personalizationOn,personalContext,nativeLanguage}
   const [sessionRating,setSessionRating]=useState(null);
   const [masterPool,setMasterPool]=useState("all"); // all, weak, due
   const [sessionRestored,setSessionRestored]=useState(false);
@@ -5306,6 +6334,7 @@ export default function App() {
                 }
               }
               if(d.settings) setSettings(s=>({...s,...d.settings}));
+              if(d.profile) setProfile(d.profile);
               if(d.usage?.byTag) setUsage(d.usage);
               if(d.studyLog) setStudyLog(sl=>({...initStudyLog(),...d.studyLog}));
             } catch(e){ console.error("Data parse error:",e); }
@@ -5329,10 +6358,10 @@ export default function App() {
   useEffect(()=>{
     if(!user||!dataLoaded) return;
     const t=setTimeout(()=>{
-      setDoc(doc(db,"users",user.uid),{decks,cardStates,settings,usage,studyLog},{merge:true}).catch(e=>console.error("Save error:",e));
+      setDoc(doc(db,"users",user.uid),{decks,cardStates,settings,usage,studyLog,...(profile?{profile}:{})},{merge:true}).catch(e=>console.error("Save error:",e));
     },1500);
     return ()=>clearTimeout(t);
-  },[decks,cardStates,settings,usage,studyLog,user,dataLoaded]);
+  },[decks,cardStates,settings,usage,studyLog,profile,user,dataLoaded]);
 
   // Restore active session from localStorage once data is loaded
   useEffect(()=>{
@@ -5453,11 +6482,23 @@ export default function App() {
   },[]);
 
   const openDeck=deck=>{setActiveDeck(deck);go("deck");};
-  const createDeck=title=>{
-    const id=`d${Date.now()}`;const deck={id,title,createdAt:Date.now()};
+  const createDeck=(title,unitId=null)=>{
+    const id=`d${Date.now()}`;
+    const u=unitId?unitById(unitId):null;
+    const deck={id,title,createdAt:Date.now(),...(u?{unitId:u.id,level:u.level}:{})};
     setDecks(p=>[deck,...p]);setCardStates(p=>({...p,[id]:[]}));setActiveDeck(deck);go("addCards");
   };
   const renameDeck=(id,title)=>setDecks(p=>p.map(d=>d.id===id?{...d,title}:d));
+  // Link/unlink a deck to a curriculum unit (Phase 2). Stores unitId + derived level.
+  const setDeckUnit=(id,unitId)=>{
+    const u=unitId?unitById(unitId):null;
+    setDecks(p=>p.map(d=>{
+      if(d.id!==id) return d;
+      const {unitId:_u,level:_l,...rest}=d;
+      return u?{...rest,unitId:u.id,level:u.level}:rest;
+    }));
+    setActiveDeck(ad=>ad&&ad.id===id?(u?{...ad,unitId:u.id,level:u.level}:(()=>{const {unitId,level,...r}=ad;return r;})()):ad);
+  };
   const deleteDeck=(id)=>{
     setDecks(p=>p.filter(d=>d.id!==id));
     setCardStates(p=>{const n={...p};delete n[id];return n;});
@@ -5564,9 +6605,15 @@ export default function App() {
     })}));
   };
 
-  const completeOnboarding=()=>{
+  const completeOnboarding=(data)=>{
     setShowOnboarding(false);
-    if(user) setDoc(doc(db,"users",user.uid),{onboardingDone:true},{merge:true}).catch(()=>{});
+    if(data?.profile) setProfile(data.profile);
+    if(user){
+      const payload={onboardingDone:true};
+      if(data?.profile) payload.profile=data.profile;
+      if(data?.placement) payload.placement=data.placement;
+      setDoc(doc(db,"users",user.uid),payload,{merge:true}).catch(()=>{});
+    }
   };
 
   const handleSearchSelect=(card,deck)=>{
@@ -5579,11 +6626,16 @@ export default function App() {
   const commonProps={decks,cardStates,trackUsage};
 
   const screens={
-    home:<HomeScreen {...commonProps} onOpenDeck={openDeck} onSettings={()=>go("settings")} onCreateDeck={()=>go("createDeck")} onReading={()=>go("reading")} onListening={()=>go("listening")} onConversation={()=>go("conversation")} onSearch={()=>setShowSearch(true)} onProgress={()=>go("progress")} onMasterReview={()=>go("masterReview")} darkMode={darkMode} onToggleDark={()=>setDarkMode(d=>!d)} studyLog={studyLog}/>,
-    settings:<SettingsScreen settings={settings} setSettings={setSettings} onBack={()=>go("home")} usage={usage} user={user} onSignOut={handleSignOut} onReplayOnboarding={()=>setShowOnboarding(true)} studyLog={studyLog} onUpdateTargets={(t)=>setStudyLog(sl=>({...sl,targets:t}))} decks={decks} cardStates={cardStates} setCardStates={setCardStates} trackUsage={trackUsage} onResetUsage={resetUsageCounters}/>,
+    home:<HomeScreen {...commonProps} onOpenDeck={openDeck} onSettings={()=>go("settings")} onCreateDeck={()=>go("createDeck")} onReading={()=>go("reading")} onListening={()=>go("listening")} onConversation={()=>go("conversation")} onDictation={()=>go("dictation")} onCapsules={()=>go("capsules")} onSearch={()=>setShowSearch(true)} onProgress={()=>go("progress")} onMasterReview={()=>go("masterReview")} onGuide={()=>go("guide")} onPresets={()=>go("preset")} darkMode={darkMode} onToggleDark={()=>setDarkMode(d=>!d)} studyLog={studyLog}/>,
+    capsules:<CapsulesScreen profile={profile} onOpen={(s)=>go(s)} onBack={()=>go("home")}/>,
+    preset:<PresetLibraryScreen profile={profile} decks={decks} onBack={()=>go("home")}/>,
+    guide:<GuideScreen onBack={()=>go("home")} onReplayOnboarding={()=>{setShowOnboarding(true);go("home");}} onResetTips={()=>{resetTips();showToast("Tips reset — they'll show again as you explore.","success");}}/>,
+    island:<LanguageIslandScreen decks={decks} cardStates={cardStates} profile={profile} trackUsage={trackUsage} onBack={()=>go("capsules")}/>,
+    dictation:<DictationScreen decks={decks} cardStates={cardStates} profile={profile} trackUsage={trackUsage} onBack={()=>go("home")} onLogStudy={logStudy} onFinish={()=>{go("home");setSessionRating({module:"writing"});}}/>,
+    settings:<SettingsScreen settings={settings} setSettings={setSettings} onBack={()=>go("home")} usage={usage} user={user} onSignOut={handleSignOut} onReplayOnboarding={()=>setShowOnboarding(true)} profile={profile} setProfile={setProfile} studyLog={studyLog} onUpdateTargets={(t)=>setStudyLog(sl=>({...sl,targets:t}))} decks={decks} cardStates={cardStates} setCardStates={setCardStates} trackUsage={trackUsage} onResetUsage={resetUsageCounters}/>,
     createDeck:<CreateDeckScreen onBack={()=>go("home")} onCreate={createDeck}/>,
     addCards:activeDeck&&<AddCardsScreen deck={activeDeck} onBack={()=>go("deck")} onSave={saveCards} trackUsage={trackUsage}/>,
-    deck:activeDeck&&<DeckScreen deck={activeDeck} cards={cardStates[activeDeck.id]||[]} onStartStudy={startStudy} onBack={()=>go("home")} onAddCards={()=>go("addCards")} onEditCard={c=>{setActiveCard(c);go("editCard");}} onDeleteCard={deleteCard} onRenameDeck={renameDeck} onDeleteDeck={deleteDeck} savedIdx={savedIdx.current[activeDeck.id+"_all"]||0}/>,
+    deck:activeDeck&&<DeckScreen deck={activeDeck} cards={cardStates[activeDeck.id]||[]} onStartStudy={startStudy} onBack={()=>go("home")} onAddCards={()=>go("addCards")} onEditCard={c=>{setActiveCard(c);go("editCard");}} onDeleteCard={deleteCard} onRenameDeck={renameDeck} onDeleteDeck={deleteDeck} onSetDeckUnit={setDeckUnit} savedIdx={savedIdx.current[activeDeck.id+"_all"]||0}/>,
     editCard:activeCard&&activeDeck&&<EditCardScreen card={activeCard} onBack={()=>go("deck")} onSave={saveEditedCard} trackUsage={trackUsage}/>,
     study:activeDeck&&sessionCards.length>0&&<StudyScreen cards={sessionCards} currentIndex={currentIdx} onSwipe={handleSwipe} onBack={undoStudy} canUndo={studyHistory.current.length>0} onExit={()=>go("deck")} trackUsage={trackUsage} decks={decks} cardStates={cardStates} onAddToFlashcard={addToFlashcard}/>,
     complete:<CompleteScreen known={sessionRes.current.known} weak={sessionRes.current.weak} onBack={()=>go("deck")}/>,
@@ -5626,7 +6678,7 @@ export default function App() {
     <><style>{CSS}</style>
       <ToastContainer/>
       {showSearch&&<GlobalSearch decks={decks} cardStates={cardStates} onClose={()=>setShowSearch(false)} onSelectCard={handleSearchSelect}/>}
-      {showOnboarding&&<Onboarding onComplete={completeOnboarding}/>}
+      {showOnboarding&&<Onboarding onComplete={completeOnboarding} initialProfile={profile}/>}
       {sessionRating&&<SessionRating module={sessionRating.module} onSubmit={(r)=>{logStudy({type:"app",module:sessionRating.module,minutes:0,rating:r,master:sessionRating.master||false});setSessionRating(null);}} onSkip={()=>setSessionRating(null)}/>}
       <div className="app">{screens[screen]}</div>
     </>
