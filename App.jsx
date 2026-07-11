@@ -252,7 +252,7 @@ function getModuleSkillScores(studyLog) {
 
 /** Get vocab breadth as percentage toward B2 — based on total cards in decks, not just mastered */
 function getVocabProgress(cardStates) {
-  const all = Object.values(cardStates).flat();
+  const all = Object.values(cardStates).flat().filter(c => c.wordType !== "grammar"); // grammar rules aren't vocabulary words
   const total = all.length;
   const known = all.filter(c => c.status === "known").length;
   return { total, known, target: B2_WORD_TARGET, pct: Math.min(100, Math.round(total / B2_WORD_TARGET * 100)) };
@@ -379,6 +379,7 @@ const MODEL_FEATURES = [
   {tag:"regen",     label:"Cleanup & regen",        desc:"Card cleanup audit + form regeneration"},
   {tag:"island",    label:"Language Island",        desc:"Immersion Q&A generation (64 units)"},
   {tag:"dictation", label:"Dictation",              desc:"Dictation sentence generation"},
+  {tag:"grammar",   label:"Grammar import",         desc:"Extract grammar cards from notes/PDFs — pick a vision-capable model (e.g. gpt-4o-mini) if you import screenshots"},
   {tag:"other",     label:"Topics & conversation",  desc:"Topic generation, chat replies, misc"},
 ];
 
@@ -386,7 +387,7 @@ const USAGE_LABELS = {
   flashcard:"Flashcard Generation", sentence:"Sentence / Learning Aid",
   reading:"Reading Passage", listening:"Listening Content",
   wordLookup:"Word Lookup", regen:"Form Regeneration",
-  island:"Language Island", dictation:"Dictation",
+  island:"Language Island", dictation:"Dictation", grammar:"Grammar Import",
   imageNB1:"Image · Nano Banana 1", imageNB2:"Image · Nano Banana 2",
   ttsGoogle:"Voice · Google TTS", sttWhisper:"Voice · OpenAI Whisper",
 };
@@ -711,6 +712,35 @@ async function callClaude(prompt, maxTokens=1500, tag="other", trackFn=null, tim
   } finally {
     if(timer) clearTimeout(timer);
   }
+}
+
+// Vision variant of callClaude — `content` is an OpenAI-style content array
+// (text + image_url parts). api/claude.js passes `messages` through to
+// OpenRouter untouched, so vision-capable models (gpt-4o-mini default)
+// receive the images as-is. Used by the Grammar Import feature to read
+// screenshot pages of the learner's notes.
+async function callClaudeVision(content, maxTokens=3000, tag="other", trackFn=null) {
+  const res = await fetch("/api/claude", {
+    method:"POST",
+    headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({
+      model: pickModelForTag(tag),
+      max_tokens: maxTokens,
+      messages:[{role:"user",content}],
+      ..._orKey ? {apiKey:_orKey} : {},
+    }),
+  });
+  const d = await res.json();
+  if(d.error) throw new Error(typeof d.error==="string"?d.error:(d.error.message||"AI request failed"));
+  const outputText = d.content?.find(b=>b.type==="text")?.text || "";
+  if(!outputText) throw new Error("Empty response from AI — check your API key in Settings.");
+  if (trackFn) {
+    const promptChars = content.filter(p=>p.type==="text").reduce((n,p)=>n+p.text.length,0);
+    trackFn(tag, promptChars, outputText.length,
+      d.usage?.input_tokens || Math.ceil(promptChars/4),
+      d.usage?.output_tokens || Math.ceil(outputText.length/4));
+  }
+  return outputText;
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -1319,6 +1349,9 @@ function UsageMeter({usage, settings, onReset}) {
     {key:"convoTurns", label:"Conversation turns", tag:"other", tokenIn:400, tokenOut:500, perDay:20},
     {key:"islandBatches", label:"Language Island batches", tag:"island", tokenIn:300, tokenOut:900, perDay:3},
     {key:"dictationSets", label:"Dictation sets", tag:"dictation", tokenIn:200, tokenOut:500, perDay:2},
+    // Grammar import: one batch ≈ a few pages of notes (text or vision).
+    // Occasional-use feature, so the default assumes ~1 batch/day.
+    {key:"grammarBatches", label:"Grammar import batches", tag:"grammar", tokenIn:2200, tokenOut:1800, perDay:1},
     {key:"images",     label:"Nano Banana images", tag:"imageNB1", perDay:5},
     {key:"ttsPlays",   label:"TTS plays (~120 ch each, first-time only)", tag:"ttsGoogle", chars:120, perDay:10},
     {key:"sttMinutes", label:"Whisper STT minutes", tag:"sttWhisper", seconds:60, perDay:5},
@@ -1460,8 +1493,39 @@ function UsageMeter({usage, settings, onReset}) {
 // ─────────────────────────────────────────────────────────────
 // HOME
 // ─────────────────────────────────────────────────────────────
-function HomeScreen({decks,cardStates,onOpenDeck,onSettings,onCreateDeck,onReading,onListening,onConversation,onDictation,onCapsules,onSearch,onProgress,onMasterReview,onGuide,onPresets,darkMode,onToggleDark,studyLog}) {
+// Shared deck-card renderer for the Home lists (vocab + grammar sections).
+// Shows weak/known/new pills so untouched cards are visible at a glance.
+function renderDeckCard(deck,cardStates,onOpenDeck,isGrammar=false){
+  const dc=cardStates[deck.id]||[];
+  const weak=dc.filter(c=>c.status==="weak").length;
+  const known=dc.filter(c=>c.status==="known").length;
+  const newC=dc.length-weak-known;
+  const pct=dc.length>0?Math.round((known/dc.length)*100):0;
+  return (
+    <button key={deck.id} className="btn" onClick={()=>onOpenDeck(deck)}
+      style={{background:"var(--surface)",border:"1.5px solid var(--border)",borderRadius:"var(--r)",padding:"15px 17px",textAlign:"left",width:"100%",flexDirection:"column",alignItems:"stretch",gap:8}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+        <span style={{fontWeight:600,fontSize:15,color:"var(--text)",display:"flex",alignItems:"center",gap:6}}>
+          {isGrammar&&<span className="ar" style={{fontSize:13,color:"var(--harf)",background:"var(--harf-bg)",border:"1px solid var(--harf-border)",borderRadius:100,padding:"1px 8px"}}>قواعد</span>}
+          {deck.title}
+        </span>
+        <ChevronRight size={15} color="var(--text3)"/>
+      </div>
+      <div style={{display:"flex",gap:7,alignItems:"center"}}>
+        <span style={{fontSize:12.5,color:"var(--text3)"}}>{dc.length} cards</span>
+        {weak>0&&<span className="tag tag-weak">{weak} weak</span>}
+        {known>0&&<span className="tag tag-know">{known} known</span>}
+        {newC>0&&<span style={{fontSize:11,fontWeight:600,color:"var(--text3)",background:"var(--surface2)",border:"1px solid var(--border)",borderRadius:100,padding:"2px 9px"}}>{newC} new</span>}
+      </div>
+      <div className="progress-track"><div className="progress-fill" style={{width:`${pct}%`,background:"var(--know)"}}/></div>
+    </button>
+  );
+}
+
+function HomeScreen({decks,cardStates,onOpenDeck,onSettings,onCreateDeck,onReading,onListening,onConversation,onDictation,onCapsules,onSearch,onProgress,onMasterReview,onGuide,onPresets,onGrammarImport,darkMode,onToggleDark,studyLog}) {
   const sorted=[...decks].sort((a,b)=>b.createdAt-a.createdAt);
+  const vocabDecks=sorted.filter(d=>d.deckType!=="grammar");
+  const grammarDecks=sorted.filter(d=>d.deckType==="grammar");
   const importRef=useRef(null);
   const handleImport=(e)=>{
     const file=e.target.files?.[0];
@@ -1600,29 +1664,18 @@ function HomeScreen({decks,cardStates,onOpenDeck,onSettings,onCreateDeck,onReadi
         <button className="btn" onClick={onPresets} style={{width:"100%",marginBottom:12,padding:"12px",borderRadius:"var(--r)",fontSize:13.5,background:"var(--accent-bg)",border:"1.5px solid var(--accent-border)",color:"var(--accent)",fontWeight:600,gap:7}}>
           <Download size={14}/> Browse preset decks
         </button>
-        {sorted.length===0&&<div style={{textAlign:"center",color:"var(--text3)",fontSize:14,padding:"36px 0"}}><Layers size={28} style={{opacity:.3,marginBottom:8}}/><br/>No decks yet — create one or download a preset above.</div>}
+        {vocabDecks.length===0&&<div style={{textAlign:"center",color:"var(--text3)",fontSize:14,padding:"36px 0"}}><Layers size={28} style={{opacity:.3,marginBottom:8}}/><br/>No decks yet — create one or download a preset above.</div>}
         <div style={{display:"flex",flexDirection:"column",gap:9}}>
-          {sorted.map(deck=>{
-            const dc=cardStates[deck.id]||[];
-            const weak=dc.filter(c=>c.status==="weak").length;
-            const known=dc.filter(c=>c.status==="known").length;
-            const pct=dc.length>0?Math.round((known/dc.length)*100):0;
-            return (
-              <button key={deck.id} className="btn" onClick={()=>onOpenDeck(deck)}
-                style={{background:"var(--surface)",border:"1.5px solid var(--border)",borderRadius:"var(--r)",padding:"15px 17px",textAlign:"left",width:"100%",flexDirection:"column",alignItems:"stretch",gap:8}}>
-                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-                  <span style={{fontWeight:600,fontSize:15,color:"var(--text)"}}>{deck.title}</span>
-                  <ChevronRight size={15} color="var(--text3)"/>
-                </div>
-                <div style={{display:"flex",gap:7,alignItems:"center"}}>
-                  <span style={{fontSize:12.5,color:"var(--text3)"}}>{dc.length} cards</span>
-                  {weak>0&&<span className="tag tag-weak">{weak} weak</span>}
-                  {known>0&&<span className="tag tag-know">{known} known</span>}
-                </div>
-                <div className="progress-track"><div className="progress-fill" style={{width:`${pct}%`,background:"var(--know)"}}/></div>
-              </button>
-            );
-          })}
+          {vocabDecks.map(deck=>renderDeckCard(deck,cardStates,onOpenDeck))}
+        </div>
+
+        <div className="sec" style={{marginTop:22}}>Grammar</div>
+        <button className="btn" onClick={onGrammarImport} style={{width:"100%",marginBottom:12,padding:"13px",borderRadius:"var(--r)",fontSize:13.5,background:"var(--harf-bg)",border:"1.5px solid var(--harf-border)",color:"var(--harf)",fontWeight:600,gap:7}}>
+          <Upload size={14}/> Import grammar notes (PDF / images / text)
+        </button>
+        {grammarDecks.length===0&&<div style={{textAlign:"center",color:"var(--text3)",fontSize:13,padding:"10px 0 20px"}}>Dump in your grammar notes — I'll turn them into concept flashcards.</div>}
+        <div style={{display:"flex",flexDirection:"column",gap:9}}>
+          {grammarDecks.map(deck=>renderDeckCard(deck,cardStates,onOpenDeck,true))}
         </div>
       </div>
     </div>
@@ -2911,8 +2964,11 @@ function StudyScreen({cards,currentIndex,onSwipe,onBack,canUndo,onExit,trackUsag
   const [playing,setPlaying]=useState(false);
   const [wordPopup,setWordPopup]=useState(null);
   const genRef=useRef(0); // prevent duplicate/stale generation
+  const [playingEx,setPlayingEx]=useState(-1); // grammar example audio index
   const card=cards[currentIndex];
-  const availForms=Object.entries(card.forms).filter(([,v])=>v);
+  const isGrammar=card.wordType==="grammar";
+  const grammar=card.grammar||{explanation:"",examples:[]};
+  const availForms=Object.entries(card.forms||{}).filter(([,v])=>v);
 
   useEffect(()=>{
     genRef.current++;
@@ -2921,7 +2977,8 @@ function StudyScreen({cards,currentIndex,onSwipe,onBack,canUndo,onExit,trackUsag
     const defaultForm=weakForms.find(f=>availForms.some(([k])=>k===f))||availForms[0]?.[0]||null;
     setFlipped(false);setSelForm(defaultForm);setGen(null);setGenLoading(false);setImgLoading(false);
     if(window.speechSynthesis) window.speechSynthesis.cancel();
-    setPlaying(false);
+    stopTtsAudio();
+    setPlaying(false);setPlayingEx(-1);
   },[currentIndex]);
 
   const generate=async(prevSentence=null)=>{
@@ -3015,23 +3072,33 @@ Return ONLY valid JSON: {"sentence":"...","translation":"...","imagePrompt":"...
         {/* True 2-faced flip card — click anywhere on the card to toggle */}
         <div key={`flip${currentIndex}`} className={`flip-card ${flipped?'is-flipped':''}`} onClick={()=>setFlipped(f=>!f)}>
           <div className="flip-card-inner">
-            {/* Front face — English */}
+            {/* Front face — English (or grammar concept) */}
             <div className="flip-card-face">
-              <div className="sec" style={{marginBottom:16}}>English</div>
-              <div style={{fontFamily:"Lora,serif",fontSize:38,fontWeight:600,lineHeight:1.2}}>{card.english}</div>
-              <div style={{fontSize:12,color:"var(--text3)",marginTop:20,fontWeight:500}}>Tap to reveal Arabic ↓</div>
+              <div className="sec" style={{marginBottom:16}}>{isGrammar?<>Grammar · <span className="ar">قَوَاعِد</span></>:"English"}</div>
+              <div style={{fontFamily:"Lora,serif",fontSize:isGrammar?(card.english.length>40?22:28):38,fontWeight:600,lineHeight:1.25}}>{card.english}</div>
+              {isGrammar&&card.arabicBase&&<div className="ar" style={{fontSize:24,color:"var(--harf)",marginTop:10}}>{card.arabicBase}</div>}
+              <div style={{fontSize:12,color:"var(--text3)",marginTop:20,fontWeight:500}}>{isGrammar?"Recall the rule, then tap to check ↓":"Tap to reveal Arabic ↓"}</div>
             </div>
-            {/* Back face — Arabic */}
+            {/* Back face — Arabic (or grammar rule) */}
             <div className="flip-card-face flip-card-back">
-              <div className="sec" style={{marginBottom:5}}>Arabic · <span style={{textTransform:"capitalize"}}>{card.wordType}</span></div>
-              <div className="ar" style={{fontSize:42,color:"var(--text)"}}>{card.arabicBase}</div>
-              <div style={{fontSize:13,color:"var(--text3)"}}>{card.english}</div>
+              <div className="sec" style={{marginBottom:5}}>{isGrammar?"The Rule":<>Arabic · <span style={{textTransform:"capitalize"}}>{card.wordType}</span></>}</div>
+              {isGrammar?(
+                <>
+                  {card.arabicBase&&<div className="ar" style={{fontSize:30,color:"var(--text)"}}>{card.arabicBase}</div>}
+                  <div style={{fontSize:14,color:"var(--text2)",lineHeight:1.55,maxHeight:120,overflowY:"auto",padding:"0 4px"}}>{grammar.explanation}</div>
+                </>
+              ):(
+                <>
+                  <div className="ar" style={{fontSize:42,color:"var(--text)"}}>{card.arabicBase}</div>
+                  <div style={{fontSize:13,color:"var(--text3)"}}>{card.english}</div>
+                </>
+              )}
               {card.srsStreak>0&&(
                 <div style={{display:"inline-flex",alignItems:"center",gap:4,marginTop:6,fontSize:11,color:"var(--know)"}}>
                   {"🔥".repeat(Math.min(card.srsStreak,5))} {card.srsStreak} streak
                 </div>
               )}
-              {card.forms.harf&&(
+              {card.forms?.harf&&(
                 <div style={{display:"inline-flex",alignItems:"center",gap:5,marginTop:7,background:"var(--harf-bg)",border:"1px solid var(--harf-border)",borderRadius:100,padding:"3px 11px"}}>
                   <span style={{fontSize:11.5,color:"var(--harf)"}}>حرف الجر</span>
                   <span className="ar" style={{fontSize:17,color:"var(--harf)",fontWeight:600}}>{card.forms.harf}</span>
@@ -3041,8 +3108,42 @@ Return ONLY valid JSON: {"sentence":"...","translation":"...","imagePrompt":"...
             </div>
           </div>
         </div>
+        {/* Expanded back content — GRAMMAR cards: full explanation + examples with audio */}
+        {flipped&&isGrammar&&(
+          <div className="gen-appear" style={{background:"var(--surface)",border:"1.5px solid var(--border)",borderRadius:"var(--r)",padding:"18px 17px",boxShadow:"0 5px 24px rgba(0,0,0,0.08)",display:"flex",flexDirection:"column",gap:12}}>
+            <div>
+              <div style={{fontSize:10,fontWeight:700,color:"var(--harf)",letterSpacing:".1em",textTransform:"uppercase",marginBottom:7}}>✦ The Concept</div>
+              <div style={{fontSize:14.5,color:"var(--text)",lineHeight:1.65,whiteSpace:"pre-wrap"}}>{grammar.explanation}</div>
+            </div>
+            {(grammar.examples||[]).length>0&&(
+              <div style={{display:"flex",flexDirection:"column",gap:9}}>
+                <div style={{fontSize:10,fontWeight:700,color:"var(--accent)",letterSpacing:".1em",textTransform:"uppercase"}}>✦ Examples</div>
+                {grammar.examples.map((ex,i)=>(
+                  <div key={i} style={{background:"var(--accent-bg)",border:"1px solid var(--accent-border)",borderRadius:"var(--rs)",padding:"11px 13px"}}>
+                    <div style={{display:"flex",alignItems:"flex-start",gap:9}}>
+                      <div style={{flex:1}}>
+                        <ClickableArabic text={ex.ar} highlightWords={card.arabicBase?[card.arabicBase]:[]} onWordClick={(word,ctx)=>setWordPopup({word,context:ctx})} fontSize={20}/>
+                        <div style={{fontSize:12.5,color:"var(--text2)",fontStyle:"italic",marginTop:5}}>{ex.en}</div>
+                      </div>
+                      <button className="btn btn-ghost" title="Play audio"
+                        onClick={(e)=>{e.stopPropagation();
+                          if(playingEx===i){stopTtsAudio();setPlayingEx(-1);return;}
+                          stopTtsAudio();
+                          synthesizeArabic(ex.ar,{onStart:()=>setPlayingEx(i),onEnd:()=>setPlayingEx(-1)});
+                        }}
+                        style={{width:34,height:34,flexShrink:0,color:playingEx===i?"white":"var(--accent)",background:playingEx===i?"var(--accent)":"transparent",border:"1.5px solid var(--accent)",borderRadius:"50%"}}>
+                        <Volume2 size={14}/>
+                      </button>
+                    </div>
+                  </div>
+                ))}
+                <div style={{fontSize:11,color:"var(--text3)"}}>💡 Tap any Arabic word to look it up</div>
+              </div>
+            )}
+          </div>
+        )}
         {/* Expanded back content (forms, generate, audio) — only when flipped */}
-        {flipped&&(
+        {flipped&&!isGrammar&&(
           <div className="gen-appear" style={{background:"var(--surface)",border:"1.5px solid var(--border)",borderRadius:"var(--r)",padding:"18px 17px",boxShadow:"0 5px 24px rgba(0,0,0,0.08)"}}>
             <div className="sec">Select a form</div>
             <div style={{display:"flex",flexWrap:"wrap",gap:7,marginBottom:12}}>
@@ -3193,7 +3294,10 @@ function CompleteScreen({known,weak,onBack}) {
 // ─────────────────────────────────────────────────────────────
 // SHARED: Multi-deck + multi-card selector (used by Reading & Listening)
 // ─────────────────────────────────────────────────────────────
-function MultiDeckCardSelector({decks,cardStates,selDeckIds,setSelDeckIds,selCardIds,setSelCardIds,accentVar,accentBgVar,accentBorderVar,onReset}) {
+function MultiDeckCardSelector({decks:allDecks,cardStates,selDeckIds,setSelDeckIds,selCardIds,setSelCardIds,accentVar,accentBgVar,accentBorderVar,onReset}) {
+  // Grammar-rule decks aren't vocabulary — keep them out of the vocab-driven
+  // modules (reading/listening/conversation) so passages stay word-grounded.
+  const decks=allDecks.filter(d=>d.deckType!=="grammar");
   const [showDeckPicker,setShowDeckPicker]=useState(true);
   const [showCardPicker,setShowCardPicker]=useState(false);
 
@@ -4109,7 +4213,8 @@ function cardsForCurriculum(decks,cardStates,{unitId=null,level=null}={}){
 // cards they've engaged with (known/weak); optionally scoped to a unit/level.
 function knownVocab(decks,cardStates,{unitId=null,level=null,statuses=["known","weak"]}={}){
   return collectVocab(
-    cardsForCurriculum(decks,cardStates,{unitId,level}).filter((c)=>statuses.includes(c.status||"new"))
+    cardsForCurriculum(decks,cardStates,{unitId,level}).filter((c)=>
+      c.wordType!=="grammar"&&statuses.includes(c.status||"new")) // grammar-rule cards aren't vocabulary
   );
 }
 
@@ -5213,7 +5318,9 @@ function MasterReviewScreen({decks,cardStates,onBack,onSwipeCard,onUndoSwipe,tra
     }
   },[started,mode,limit,masterModulePool,sessionCards,idx,results,savedSession]);
 
-  const allCards=Object.values(cardStates).flat();
+  // Grammar-rule cards are studied from their own deck (their study UI lives
+  // in StudyScreen); keep them out of the master-review vocab queue.
+  const allCards=Object.values(cardStates).flat().filter(c=>c.wordType!=="grammar");
   const now=Date.now();
   const dueCards=allCards.filter(c=>c.srsLastReview&&c.srsNextReview&&c.srsNextReview<=now);
   const weakCards=allCards.filter(c=>c.status==="weak");
@@ -5899,7 +6006,7 @@ function SRSSettingsPanel({srsSettings,onChange}) {
 // ROOT
 // ─────────────────────────────────────────────────────────────
 function initUsage() {
-  const tags=["flashcard","sentence","reading","listening","wordLookup","regen","island","dictation","other","imageNB1","imageNB2","ttsGoogle","sttWhisper"];
+  const tags=["flashcard","sentence","reading","listening","wordLookup","regen","island","dictation","grammar","other","imageNB1","imageNB2","ttsGoogle","sttWhisper"];
   const byTag={};
   // For text tags, the meaningful counters are tokens. For voice tags we
   // reuse the existing shape but treat inputTokens as "units" (chars for
@@ -6172,6 +6279,271 @@ function DictationScreen({decks,cardStates,profile,onBack,onFinish,trackUsage,on
 // ─────────────────────────────────────────────────────────────
 // Real, shipped capsules only. Add new entries here as they're built (a future
 // entry would set status:"live" + a `screen` route, or status:"soon" as a
+// ─────────────────────────────────────────────────────────────
+// GRAMMAR IMPORT — dump a PDF / screenshots / pasted text of grammar notes;
+// AI extracts the distinct concepts into flashcards (front = concept, back =
+// explanation + fully-voweled examples). Saved as a deckType:"grammar" deck.
+// PDF pages with selectable text are sent as text (cheap); image-only pages
+// are rendered to JPEG and read by a vision model via /api/claude, which
+// passes content arrays through to OpenRouter untouched. pdfjs-dist loads
+// lazily (dynamic import) so it adds nothing to the main bundle.
+// ─────────────────────────────────────────────────────────────
+const GRAMMAR_PROMPT=`You are analyzing a learner's Arabic GRAMMAR notes from the curriculum "Al-ʿArabiyyah Bayna Yadayk" (Arabic Between Your Hands). The notes may contain explanations, tables, lists and example sentences — in English, Arabic, or both. Some input may be photographed/scanned pages.
+
+Extract every DISTINCT grammar concept/rule the notes cover. For each concept return:
+- "title": short English name, with the Arabic grammar term in parentheses when it exists (e.g. "The Nominal Sentence (الجملة الاسمية)")
+- "arabicTerm": the Arabic name of the concept, fully voweled ("" if none)
+- "explanation": a clear, learner-friendly explanation in English (2–5 sentences). Any Arabic inside it MUST be fully voweled.
+- "examples": 2–4 example sentences as {"ar":"...","en":"..."} — prefer examples taken from the notes themselves (complete/fix them if truncated). Every Arabic word MUST carry full tashkeel — no bare letters.
+
+Rules:
+- ONE card per distinct concept — merge duplicates and repeats.
+- Only concepts actually present in the notes — do NOT invent unrelated material.
+- Modern Standard Arabic, Bayna-Yadayk register.
+Return ONLY valid JSON: [{"title":"...","arabicTerm":"...","explanation":"...","examples":[{"ar":"...","en":"..."}]}]`;
+
+// PDF → per-page {type:"text"|"image"} items. Text-poor pages (scans /
+// screenshots) are rasterized for the vision model.
+async function extractPdfPages(file,onProgress){
+  const pdfjs=await import("pdfjs-dist");
+  const workerUrl=(await import("pdfjs-dist/build/pdf.worker.min.mjs?url")).default;
+  pdfjs.GlobalWorkerOptions.workerSrc=workerUrl;
+  const docPdf=await pdfjs.getDocument({data:await file.arrayBuffer()}).promise;
+  const maxPages=Math.min(docPdf.numPages,60);
+  const pages=[];
+  for(let i=1;i<=maxPages;i++){
+    onProgress&&onProgress(`Reading "${file.name}" — page ${i}/${maxPages}…`);
+    const page=await docPdf.getPage(i);
+    const tc=await page.getTextContent();
+    const text=tc.items.map(it=>it.str).join(" ").replace(/\s+/g," ").trim();
+    if(text.length>=120){
+      pages.push({type:"text",text});
+    } else {
+      const vp=page.getViewport({scale:1.6});
+      const canvas=document.createElement("canvas");
+      canvas.width=vp.width;canvas.height=vp.height;
+      await page.render({canvasContext:canvas.getContext("2d"),viewport:vp}).promise;
+      pages.push({type:"image",dataUrl:canvas.toDataURL("image/jpeg",0.82)});
+    }
+  }
+  if(docPdf.numPages>maxPages) showToast(`"${file.name}" has ${docPdf.numPages} pages — first ${maxPages} imported.`,"info");
+  return pages;
+}
+
+// Downscale a photographed page so vision requests stay small.
+function fileToDownscaledJpeg(file,maxDim=1400){
+  return new Promise((resolve,reject)=>{
+    const img=new Image();
+    img.onload=()=>{
+      const scale=Math.min(1,maxDim/Math.max(img.width,img.height));
+      const canvas=document.createElement("canvas");
+      canvas.width=Math.round(img.width*scale);canvas.height=Math.round(img.height*scale);
+      canvas.getContext("2d").drawImage(img,0,0,canvas.width,canvas.height);
+      URL.revokeObjectURL(img.src);
+      resolve(canvas.toDataURL("image/jpeg",0.85));
+    };
+    img.onerror=(e)=>{URL.revokeObjectURL(img.src);reject(e);};
+    img.src=URL.createObjectURL(file);
+  });
+}
+
+function GrammarImportScreen({onBack,trackUsage,onSave,targetDeck}){
+  const [stage,setStage]=useState("input"); // input | working | preview
+  const [pasted,setPasted]=useState("");
+  const [files,setFiles]=useState([]);
+  const [progress,setProgress]=useState("");
+  const [concepts,setConcepts]=useState([]);
+  const [warnings,setWarnings]=useState([]);
+  const [deckTitle,setDeckTitle]=useState(targetDeck?targetDeck.title:"Grammar — Bayna Yadayk");
+  const [expanded,setExpanded]=useState(-1);
+  const fileRef=useRef(null);
+  const cancelRef=useRef(false);
+
+  useEffect(()=>()=>{cancelRef.current=true;},[]);
+
+  const normalizeConcept=(c)=>({
+    title:String(c?.title||"").trim(),
+    arabicTerm:String(c?.arabicTerm||"").trim(),
+    explanation:String(c?.explanation||"").trim(),
+    examples:Array.isArray(c?.examples)?c.examples.filter(e=>e&&e.ar).map(e=>({ar:String(e.ar).trim(),en:String(e.en||"").trim()})).slice(0,4):[],
+  });
+
+  const run=async()=>{
+    if(!pasted.trim()&&files.length===0){showToast("Add a PDF, images, or paste your notes first.","error");return;}
+    setStage("working");setWarnings([]);cancelRef.current=false;
+    try{
+      // 1) Collect pages from every source
+      let pages=[];
+      if(pasted.trim()) pages.push({type:"text",text:pasted.trim()});
+      for(const f of files){
+        if(cancelRef.current) return;
+        if(f.type==="application/pdf"||/\.pdf$/i.test(f.name)){
+          pages.push(...await extractPdfPages(f,setProgress));
+        } else if(f.type.startsWith("image/")){
+          setProgress(`Preparing image "${f.name}"…`);
+          pages.push({type:"image",dataUrl:await fileToDownscaledJpeg(f)});
+        } else {
+          setProgress(`Reading "${f.name}"…`);
+          pages.push({type:"text",text:await f.text()}); // .txt / .md / pasted docs
+        }
+      }
+      // 2) Batch: text chunks ~6k chars; images 3 per request
+      const batches=[];
+      let buf="";
+      for(const p of pages.filter(p=>p.type==="text")){
+        if(buf&&buf.length+p.text.length>6000){batches.push({type:"text",text:buf});buf="";}
+        buf+=(buf?"\n\n---PAGE---\n\n":"")+p.text;
+        while(buf.length>6000){batches.push({type:"text",text:buf.slice(0,6000)});buf=buf.slice(6000);}
+      }
+      if(buf.trim()) batches.push({type:"text",text:buf});
+      const imgs=pages.filter(p=>p.type==="image");
+      for(let i=0;i<imgs.length;i+=3) batches.push({type:"images",images:imgs.slice(i,i+3).map(p=>p.dataUrl)});
+      if(batches.length===0) throw new Error("Nothing readable found in the input.");
+
+      // 3) Generate per batch, accumulate + dedupe by title
+      const seen=new Map(); const warns=[];
+      for(let i=0;i<batches.length;i++){
+        if(cancelRef.current) return;
+        const b=batches[i];
+        setProgress(`Analyzing ${b.type==="images"?"screenshot":"notes"} batch ${i+1}/${batches.length} — ${seen.size} concepts so far…`);
+        try{
+          const raw=b.type==="text"
+            ?await callClaude(`${GRAMMAR_PROMPT}\n\nTHE LEARNER'S NOTES:\n\n${b.text}`,3000,"grammar",trackUsage)
+            :await callClaudeVision([{type:"text",text:GRAMMAR_PROMPT+"\n\nThe learner's notes are in the attached page image(s)."},...b.images.map(u=>({type:"image_url",image_url:{url:u}}))],3000,"grammar",trackUsage);
+          const arr=extractJSON(raw);
+          if(!Array.isArray(arr)) throw new Error("Response was not a list");
+          for(const rawC of arr){
+            const c=normalizeConcept(rawC);
+            if(!c.title||!c.explanation) continue;
+            const key=c.title.toLowerCase().replace(/[^a-z؀-ۿ]+/g,"");
+            const prev=seen.get(key);
+            // keep the richer duplicate (longer explanation / more examples)
+            if(!prev||c.explanation.length+c.examples.length*50>prev.explanation.length+prev.examples.length*50) seen.set(key,c);
+          }
+        }catch(err){
+          warns.push(`Batch ${i+1}/${batches.length} failed: ${err?.message||"unknown error"}`);
+        }
+      }
+      if(cancelRef.current) return;
+      const found=[...seen.values()];
+      if(found.length===0) throw new Error(warns[0]||"No grammar concepts could be extracted — try clearer pages or paste the text directly.");
+      setConcepts(found);setWarnings(warns);setStage("preview");
+    }catch(err){
+      if(cancelRef.current) return;
+      showToast(err?.message||"Import failed","error");
+      setStage("input");
+    }
+  };
+
+  const save=()=>{
+    const ts=Date.now();
+    const cards=concepts.map((c,i)=>({
+      id:`c${ts}-${i}`, wordType:"grammar", english:c.title, arabicBase:c.arabicTerm||"",
+      forms:{}, grammar:{explanation:c.explanation,examples:c.examples}, status:"new",
+    }));
+    onSave(deckTitle.trim()||"Grammar",cards,targetDeck||null);
+  };
+
+  return (
+    <div className="screen">
+      <div style={{padding:"18px 18px 0",display:"flex",alignItems:"center",gap:10}}>
+        <button className="btn btn-ghost" onClick={onBack} style={{width:34,height:34}}><ArrowLeft size={15}/></button>
+        <div>
+          <div style={{fontWeight:700,fontSize:17}}>Grammar Import <span className="ar" style={{fontSize:15,color:"var(--harf)"}}>قَوَاعِد</span></div>
+          <div style={{fontSize:12,color:"var(--text3)"}}>{targetDeck?`Adding to "${targetDeck.title}"`:"Notes → concept flashcards"}</div>
+        </div>
+      </div>
+      <div style={{padding:"16px 18px 24px",display:"flex",flexDirection:"column",gap:14}}>
+        {stage==="input"&&(<>
+          <div style={{fontSize:13.5,color:"var(--text2)",lineHeight:1.6}}>
+            Dump in the grammar you've been learning — a PDF (typed or screenshots), photos of pages, or pasted text. I'll extract each distinct concept into a flashcard: <b>concept on the front, the rule + voweled examples on the back.</b>
+          </div>
+          <button className="btn" onClick={()=>fileRef.current?.click()}
+            style={{width:"100%",padding:"26px 16px",borderRadius:"var(--r)",background:"var(--surface)",border:"2px dashed var(--border)",color:"var(--text2)",flexDirection:"column",gap:8,fontSize:13.5,fontWeight:600}}>
+            <Upload size={22} color="var(--harf)"/>
+            {files.length===0?"Choose PDF / images":"Add more files"}
+            <span style={{fontSize:11.5,color:"var(--text3)",fontWeight:400}}>PDF · PNG · JPG · TXT — screenshots welcome</span>
+          </button>
+          <input ref={fileRef} type="file" accept=".pdf,.txt,.md,image/*" multiple style={{display:"none"}}
+            onChange={(e)=>{setFiles(p=>[...p,...Array.from(e.target.files||[])]);e.target.value="";}}/>
+          {files.length>0&&(
+            <div style={{display:"flex",flexDirection:"column",gap:6}}>
+              {files.map((f,i)=>(
+                <div key={i} style={{display:"flex",alignItems:"center",gap:9,background:"var(--surface)",border:"1px solid var(--border)",borderRadius:"var(--rs)",padding:"9px 12px",fontSize:13}}>
+                  <FileText size={14} color="var(--text3)"/>
+                  <span style={{flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{f.name}</span>
+                  <span style={{fontSize:11,color:"var(--text3)"}}>{(f.size/1024/1024).toFixed(1)} MB</span>
+                  <button className="btn btn-ghost" onClick={()=>setFiles(p=>p.filter((_,j)=>j!==i))} style={{width:26,height:26}}><X size={12}/></button>
+                </div>
+              ))}
+            </div>
+          )}
+          <div>
+            <div className="sec">Or paste your notes</div>
+            <textarea value={pasted} onChange={e=>setPasted(e.target.value)} rows={6} placeholder="Paste grammar explanations, rules, examples…"
+              style={{width:"100%",background:"var(--surface)",border:"1.5px solid var(--border)",borderRadius:"var(--rs)",padding:"12px 13px",fontSize:13.5,color:"var(--text)",resize:"vertical",fontFamily:"inherit"}}/>
+          </div>
+          <button className="btn btn-primary" onClick={run} style={{width:"100%",padding:"14px",borderRadius:"var(--r)",fontSize:14.5}}>
+            <Sparkles size={15}/> Analyze &amp; build flashcards
+          </button>
+        </>)}
+        {stage==="working"&&(
+          <div style={{textAlign:"center",padding:"46px 12px",display:"flex",flexDirection:"column",alignItems:"center",gap:14}}>
+            <RefreshCw size={26} className="spin" color="var(--harf)"/>
+            <div style={{fontSize:14,fontWeight:600}}>Building your grammar deck…</div>
+            <div style={{fontSize:12.5,color:"var(--text3)",minHeight:18}}>{progress}</div>
+            <button className="btn" onClick={()=>{cancelRef.current=true;setStage("input");}} style={{fontSize:12.5,color:"var(--text3)",background:"var(--surface2)",padding:"8px 18px",borderRadius:"var(--rs)"}}>Cancel</button>
+          </div>
+        )}
+        {stage==="preview"&&(<>
+          <div style={{background:"var(--know-bg)",border:"1px solid var(--know-border)",borderRadius:"var(--rs)",padding:"11px 14px",fontSize:13.5,color:"var(--know)",fontWeight:600}}>
+            <Check size={14} style={{verticalAlign:-2}}/> Found {concepts.length} grammar concept{concepts.length!==1?"s":""} — review, prune, then save.
+          </div>
+          {warnings.map((w,i)=>(
+            <div key={i} style={{background:"var(--weak-bg)",border:"1px solid var(--weak-border)",borderRadius:"var(--rs)",padding:"9px 13px",fontSize:12,color:"var(--weak)"}}>⚠️ {w}</div>
+          ))}
+          {!targetDeck&&(
+            <div>
+              <div className="sec">Deck name</div>
+              <input value={deckTitle} onChange={e=>setDeckTitle(e.target.value)}
+                style={{width:"100%",background:"var(--surface)",border:"1.5px solid var(--border)",borderRadius:"var(--rs)",padding:"11px 13px",fontSize:14,color:"var(--text)",fontWeight:600}}/>
+            </div>
+          )}
+          <div style={{display:"flex",flexDirection:"column",gap:8}}>
+            {concepts.map((c,i)=>(
+              <div key={i} style={{background:"var(--surface)",border:"1px solid var(--border)",borderRadius:"var(--rs)",padding:"12px 14px"}}>
+                <div style={{display:"flex",alignItems:"center",gap:8}}>
+                  <button onClick={()=>setExpanded(expanded===i?-1:i)} style={{flex:1,display:"flex",alignItems:"center",gap:8,background:"none",border:"none",cursor:"pointer",textAlign:"left",padding:0,color:"var(--text)"}}>
+                    {expanded===i?<ChevronUp size={14} color="var(--text3)"/>:<ChevronDown size={14} color="var(--text3)"/>}
+                    <span style={{fontWeight:600,fontSize:13.5,flex:1}}>{c.title}</span>
+                    {c.arabicTerm&&<span className="ar" style={{fontSize:15,color:"var(--harf)"}}>{c.arabicTerm}</span>}
+                  </button>
+                  <button className="btn btn-ghost" title="Remove" onClick={()=>{setConcepts(p=>p.filter((_,j)=>j!==i));setExpanded(-1);}} style={{width:28,height:28,color:"var(--weak)"}}><Trash2 size={13}/></button>
+                </div>
+                {expanded===i&&(
+                  <div style={{marginTop:10,display:"flex",flexDirection:"column",gap:8}}>
+                    <div style={{fontSize:13,color:"var(--text2)",lineHeight:1.6}}>{c.explanation}</div>
+                    {c.examples.map((ex,j)=>(
+                      <div key={j} style={{background:"var(--accent-bg)",borderRadius:"var(--rxs)",padding:"8px 11px"}}>
+                        <div className="ar" style={{fontSize:17}}>{ex.ar}</div>
+                        <div style={{fontSize:11.5,color:"var(--text3)",fontStyle:"italic"}}>{ex.en}</div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+          <button className="btn btn-primary" onClick={save} disabled={concepts.length===0} style={{width:"100%",padding:"14px",borderRadius:"var(--r)",fontSize:14.5}}>
+            <Save size={15}/> {targetDeck?`Add ${concepts.length} cards to "${targetDeck.title}"`:`Save deck · ${concepts.length} cards`}
+          </button>
+          <button className="btn" onClick={()=>setStage("input")} style={{width:"100%",fontSize:12.5,color:"var(--text3)",background:"transparent"}}>← Back to input</button>
+        </>)}
+      </div>
+    </div>
+  );
+}
+
 // teaser). Kept to what actually exists to avoid implying features that don't.
 const CAPSULES=[
   {id:"island", title:"Language Island", titleAr:"جزيرة اللغة", icon:Globe, color:"#2563EB", status:"live", screen:"island",
@@ -6349,6 +6721,7 @@ export default function App() {
   const [profile,setProfile]=useState(null); // {displayName,workingLevel,personalizationOn,personalContext,nativeLanguage}
   const [sessionRating,setSessionRating]=useState(null);
   const [masterPool,setMasterPool]=useState("all"); // all, weak, due
+  const [grammarTarget,setGrammarTarget]=useState(null); // grammar deck to append to (null = create new)
   const [sessionRestored,setSessionRestored]=useState(false);
   const sessionRes=useRef({known:0,weak:0});
   const studyHistory=useRef([]); // [{prevCard, prevIdx, prevRes}] for undo
@@ -6470,6 +6843,22 @@ export default function App() {
     studyHistory.current=[];
     setSessionCards([]);setCurrentIdx(0);
     await signOut(auth);
+    setScreen("home");
+  };
+
+  // Save grammar cards from the Grammar Import screen — either into a brand
+  // new deckType:"grammar" deck or appended to an existing grammar deck.
+  const saveGrammarDeck=(title,cards,target)=>{
+    if(target){
+      setCardStates(p=>({...p,[target.id]:[...(p[target.id]||[]),...cards]}));
+      showToast(`Added ${cards.length} grammar cards to "${target.title}"`,"success");
+    } else {
+      const deck={id:`d${Date.now()}`,title,createdAt:Date.now(),deckType:"grammar"};
+      setDecks(p=>[deck,...p]);
+      setCardStates(p=>({...p,[deck.id]:cards}));
+      showToast(`Grammar deck "${title}" created — ${cards.length} concepts`,"success");
+    }
+    setGrammarTarget(null);
     setScreen("home");
   };
 
@@ -6675,6 +7064,7 @@ export default function App() {
   const handleSearchSelect=(card,deck)=>{
     setShowSearch(false);
     setActiveDeck(deck);
+    if(card.wordType==="grammar"){ go("deck"); return; } // grammar cards have no form editor — open their deck instead
     setActiveCard(card);
     go("editCard");
   };
@@ -6682,7 +7072,8 @@ export default function App() {
   const commonProps={decks,cardStates,trackUsage};
 
   const screens={
-    home:<HomeScreen {...commonProps} onOpenDeck={openDeck} onSettings={()=>go("settings")} onCreateDeck={()=>go("createDeck")} onReading={()=>go("reading")} onListening={()=>go("listening")} onConversation={()=>go("conversation")} onDictation={()=>go("dictation")} onCapsules={()=>go("capsules")} onSearch={()=>setShowSearch(true)} onProgress={()=>go("progress")} onMasterReview={()=>go("masterReview")} onGuide={()=>go("guide")} onPresets={()=>go("preset")} darkMode={darkMode} onToggleDark={()=>setDarkMode(d=>!d)} studyLog={studyLog}/>,
+    home:<HomeScreen {...commonProps} onOpenDeck={openDeck} onSettings={()=>go("settings")} onCreateDeck={()=>go("createDeck")} onReading={()=>go("reading")} onListening={()=>go("listening")} onConversation={()=>go("conversation")} onDictation={()=>go("dictation")} onCapsules={()=>go("capsules")} onSearch={()=>setShowSearch(true)} onProgress={()=>go("progress")} onMasterReview={()=>go("masterReview")} onGuide={()=>go("guide")} onPresets={()=>go("preset")} onGrammarImport={()=>{setGrammarTarget(null);go("grammarImport");}} darkMode={darkMode} onToggleDark={()=>setDarkMode(d=>!d)} studyLog={studyLog}/>,
+    grammarImport:<GrammarImportScreen key={grammarTarget?.id||"new"} onBack={()=>{setGrammarTarget(null);go("home");}} trackUsage={trackUsage} onSave={saveGrammarDeck} targetDeck={grammarTarget}/>,
     capsules:<CapsulesScreen profile={profile} onOpen={(s)=>go(s)} onBack={()=>go("home")}/>,
     preset:<PresetLibraryScreen profile={profile} decks={decks} onBack={()=>go("home")}/>,
     guide:<GuideScreen onBack={()=>go("home")} onReplayOnboarding={()=>{setShowOnboarding(true);go("home");}} onResetTips={()=>{resetTips();showToast("Tips reset — they'll show again as you explore.","success");}}/>,
@@ -6691,7 +7082,7 @@ export default function App() {
     settings:<SettingsScreen settings={settings} setSettings={setSettings} onBack={()=>go("home")} usage={usage} user={user} onSignOut={handleSignOut} onReplayOnboarding={()=>setShowOnboarding(true)} profile={profile} setProfile={setProfile} studyLog={studyLog} onUpdateTargets={(t)=>setStudyLog(sl=>({...sl,targets:t}))} decks={decks} cardStates={cardStates} setCardStates={setCardStates} trackUsage={trackUsage} onResetUsage={resetUsageCounters}/>,
     createDeck:<CreateDeckScreen onBack={()=>go("home")} onCreate={createDeck}/>,
     addCards:activeDeck&&<AddCardsScreen deck={activeDeck} onBack={()=>go("deck")} onSave={saveCards} trackUsage={trackUsage}/>,
-    deck:activeDeck&&<DeckScreen deck={activeDeck} cards={cardStates[activeDeck.id]||[]} onStartStudy={startStudy} onBack={()=>go("home")} onAddCards={()=>go("addCards")} onEditCard={c=>{setActiveCard(c);go("editCard");}} onDeleteCard={deleteCard} onRenameDeck={renameDeck} onDeleteDeck={deleteDeck} onSetDeckUnit={setDeckUnit} savedIdx={savedIdx.current[activeDeck.id+"_all"]||0}/>,
+    deck:activeDeck&&<DeckScreen deck={activeDeck} cards={cardStates[activeDeck.id]||[]} onStartStudy={startStudy} onBack={()=>go("home")} onAddCards={()=>{if(activeDeck.deckType==="grammar"){setGrammarTarget(activeDeck);go("grammarImport");}else go("addCards");}} onEditCard={c=>{if(c.wordType==="grammar"){showToast("Grammar cards can't be edited yet — remove it and re-import that section.","info");return;}setActiveCard(c);go("editCard");}} onDeleteCard={deleteCard} onRenameDeck={renameDeck} onDeleteDeck={deleteDeck} onSetDeckUnit={setDeckUnit} savedIdx={savedIdx.current[activeDeck.id+"_all"]||0}/>,
     editCard:activeCard&&activeDeck&&<EditCardScreen card={activeCard} onBack={()=>go("deck")} onSave={saveEditedCard} trackUsage={trackUsage}/>,
     study:activeDeck&&sessionCards.length>0&&<StudyScreen cards={sessionCards} currentIndex={currentIdx} onSwipe={handleSwipe} onBack={undoStudy} canUndo={studyHistory.current.length>0} onExit={()=>go("deck")} trackUsage={trackUsage} decks={decks} cardStates={cardStates} onAddToFlashcard={addToFlashcard}/>,
     complete:<CompleteScreen known={sessionRes.current.known} weak={sessionRes.current.weak} onBack={()=>go("deck")}/>,
