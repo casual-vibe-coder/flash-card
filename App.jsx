@@ -5301,6 +5301,7 @@ function MasterReviewScreen({decks,cardStates,onBack,onSwipeCard,onUndoSwipe,tra
   const [flipped,setFlipped]=useState(false);
   const [gen,setGen]=useState(null);
   const [genLoading,setGenLoading]=useState(false);
+  const [imgLoading,setImgLoading]=useState(false);
   const [mPlaying,setMPlaying]=useState(false);
   const [wordPopup,setWordPopup]=useState(null);
   const genRef=useRef(0);
@@ -5453,7 +5454,10 @@ function MasterReviewScreen({decks,cardStates,onBack,onSwipeCard,onUndoSwipe,tra
 
 You are creating a master-review sentence aid in this register.
 Word: "${card.english}" · Arabic form "${arabicForm}" (${FORM_LABELS[selForm]||selForm})
-Generate: 1) ONE short Arabic sentence (6-12 words) using EXACTLY: ${arabicForm}  2) English translation
+Generate:
+1) ONE short Arabic sentence (6-12 words) using EXACTLY: ${arabicForm}
+2) English translation
+3) A short mnemonic image idea (1-2 sentences) — ONE single iconic subject that visually captures the word's meaning. Think simple sticker-style flashcard art, not a busy scene. RELIGIOUS CONSTRAINT: do NOT describe people's faces, animal faces, or eyes of any kind. Prefer objects, symbols, scenery, hands, or back-views/silhouettes. Never mention eyes. No Arabic text in the image.
 
 QUALITY RULES — non-negotiable:
 - Sentence sounds like a real native speaker in daily life (home, masjid, market, with family) — never textbook filler.
@@ -5461,15 +5465,28 @@ QUALITY RULES — non-negotiable:
 - Grammatically correct and idiomatic Modern Standard Arabic.
 
 CRITICAL: Every Arabic word MUST have full tashkeel.
-Return ONLY valid JSON: {"sentence":"...","translation":"..."}`,
+Return ONLY valid JSON: {"sentence":"...","translation":"...","imagePrompt":"..."}`,
         350,"sentence",trackUsage
       );
       if(id!==genRef.current) return;
-      setGen(extractJSON(raw));
-    } catch {
+      const parsed=extractJSON(raw);
+      setGen({...parsed,imageUrl:null});
+      setGenLoading(false);
+      // Image generation is opt-in (Settings → Image Model → "Auto-generate
+      // images"), same as the per-deck study screen.
+      if(_autoGenerateImage){
+        setImgLoading(true);
+        const url=await generateImage(parsed.imagePrompt,trackUsage);
+        if(id!==genRef.current) return;
+        setGen(prev=>prev?{...prev,imageUrl:url}:prev);
+        setImgLoading(false);
+      }
+    } catch (err) {
       if(id!==genRef.current) return;
-      setGen({sentence:arabicForm,translation:card.english});
-    } finally { setGenLoading(false); }
+      setGen({sentence:arabicForm,translation:card.english,imagePrompt:`A warm everyday scene representing "${card.english}" in Arabic-speaking daily life, natural lighting.`,imageUrl:null,error:err?.message||"Generation failed"});
+      setGenLoading(false);setImgLoading(false);
+      showToast(`Couldn't generate: ${err?.message||"unknown error"} — check your OpenRouter key in Settings.`,"error");
+    }
   };
   const playMasterAudio=()=>{
     if(!gen?.sentence) return;
@@ -5544,6 +5561,55 @@ Return ONLY valid JSON: {"sentence":"...","translation":"..."}`,
               </button>
               {gen&&!genLoading&&(
                 <div className="gen-appear" style={{display:"flex",flexDirection:"column",gap:8}}>
+                  {gen.error&&(
+                    <div style={{background:"var(--weak-bg)",border:"1px solid var(--weak-border)",borderRadius:"var(--rs)",padding:"10px 13px",display:"flex",alignItems:"center",gap:10,fontSize:13}}>
+                      <span style={{fontSize:18}}>⚠️</span>
+                      <div style={{flex:1,color:"var(--weak)",lineHeight:1.5}}>
+                        <div style={{fontWeight:600,marginBottom:2}}>Couldn't generate fully</div>
+                        <div style={{fontSize:12,color:"var(--text3)"}}>{gen.error}</div>
+                      </div>
+                      <button className="btn" onClick={generateAid} style={{background:"var(--weak)",color:"white",fontSize:12,padding:"6px 12px",borderRadius:"var(--rxs)"}}>
+                        <RefreshCw size={12}/> Retry
+                      </button>
+                    </div>
+                  )}
+                  {/* Image — Nano Banana generated, skeleton while loading, or opt-in button */}
+                  {imgLoading?(
+                    <div style={{position:"relative",width:"100%",aspectRatio:"1",background:"linear-gradient(110deg,var(--surface2) 30%,var(--border) 50%,var(--surface2) 70%)",backgroundSize:"200% 100%",animation:"shimmer 2s linear infinite",border:"1px solid var(--border)",borderRadius:"var(--rs)",display:"flex",alignItems:"center",justifyContent:"center",flexDirection:"column",gap:8}}>
+                      <RefreshCw size={20} className="spin" color="var(--text3)"/>
+                      <div style={{fontSize:12,color:"var(--text3)",fontWeight:500}}>Drawing with Nano Banana…</div>
+                      <div style={{fontSize:10,color:"var(--text3)",opacity:.7}}>usually 3-5 seconds</div>
+                    </div>
+                  ):gen.imageUrl?(
+                    <div style={{position:"relative"}}>
+                      <img src={gen.imageUrl} alt={`Scene for ${card.english}`} style={{width:"100%",display:"block",borderRadius:"var(--rs)",border:"1px solid var(--border)"}}/>
+                      <button
+                        onClick={async()=>{
+                          if(!gen.imagePrompt) return;
+                          setImgLoading(true);
+                          const url=await generateImage(gen.imagePrompt,trackUsage);
+                          setGen(prev=>prev?{...prev,imageUrl:url}:prev);
+                          setImgLoading(false);
+                        }}
+                        title={`Regenerate this image · costs ~$${(IMAGE_PRICES[_imageModel]||0.039).toFixed(3)}`}
+                        style={{position:"absolute",top:8,right:8,width:32,height:32,borderRadius:"50%",background:"rgba(0,0,0,.55)",color:"white",border:"none",cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",backdropFilter:"blur(4px)"}}>
+                        <RefreshCw size={14}/>
+                      </button>
+                    </div>
+                  ):gen.imagePrompt?(
+                    <button
+                      onClick={async()=>{
+                        if(!gen.imagePrompt) return;
+                        setImgLoading(true);
+                        const url=await generateImage(gen.imagePrompt,trackUsage);
+                        setGen(prev=>prev?{...prev,imageUrl:url}:prev);
+                        setImgLoading(false);
+                      }}
+                      style={{background:"var(--surface2)",border:"1px dashed var(--border)",borderRadius:"var(--rs)",padding:"12px 14px",cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",gap:8,fontSize:12.5,color:"var(--text2)",fontWeight:500,width:"100%"}}>
+                      <ImageIcon size={14}/> Add a mnemonic image
+                      <span style={{fontSize:11,color:"var(--text3)",fontWeight:400,fontFamily:"monospace"}}>~${(IMAGE_PRICES[_imageModel]||0.039).toFixed(3)}</span>
+                    </button>
+                  ):null}
                   <div style={{background:"var(--accent-bg)",border:"1px solid var(--accent-border)",borderRadius:"var(--rs)",padding:"10px 12px"}}>
                     <div style={{fontSize:10,fontWeight:700,color:"var(--accent)",letterSpacing:".1em",textTransform:"uppercase",marginBottom:5}}>Example Sentence</div>
                     <ClickableArabic text={gen.sentence} highlightWords={[card.forms[selForm]||card.arabicBase]} onWordClick={(word,ctx)=>setWordPopup({word,context:ctx})} fontSize={20}/>
@@ -6028,6 +6094,9 @@ function saveSession(s){try{if(s===null) localStorage.removeItem(SESSION_KEY);el
 function loadScreen(name){try{const r=localStorage.getItem(SCREEN_PREFIX+name);if(!r) return null;const s=JSON.parse(r);if(Date.now()-(s.savedAt||0)>SESSION_TTL_MS){localStorage.removeItem(SCREEN_PREFIX+name);return null;}return s;}catch{return null;}}
 function saveScreen(name,s){try{if(s===null) localStorage.removeItem(SCREEN_PREFIX+name);else localStorage.setItem(SCREEN_PREFIX+name,JSON.stringify({...s,savedAt:Date.now()}));}catch{}}
 function clearAllSessions(){saveSession(null);SCREEN_KEYS.forEach(n=>saveScreen(n,null));}
+const DECKIDX_KEY="arabic_fc_deckidx";
+function loadDeckIdx(){try{return JSON.parse(localStorage.getItem(DECKIDX_KEY)||"{}");}catch{return {};}}
+function saveDeckIdx(o){try{localStorage.setItem(DECKIDX_KEY,JSON.stringify(o));}catch{}}
 
 // ─────────────────────────────────────────────────────────────
 // DICTATION / WRITING MODULE (Phase 4)
@@ -6809,7 +6878,17 @@ export default function App() {
           if(typeof saved.currentIdx==="number") setCurrentIdx(saved.currentIdx);
         }
         if(saved.sessionRes) sessionRes.current={...saved.sessionRes};
-        // Always land on home screen — user can tap "Resume Session" if they want to continue
+        // Jump straight back into the screen the user was on — that's the
+        // whole point of persisting this. "study" additionally needs its
+        // card queue to have actually been restored above; every other
+        // session screen (masterReview, reading, listening, conversation,
+        // and their master variants) manages its own finer-grained resume
+        // state via saveScreen/loadScreen and will pick up from there.
+        if(saved.screen&&SESSION_SCREENS.has(saved.screen)){
+          if(saved.screen!=="study"||(Array.isArray(saved.sessionCards)&&saved.sessionCards.length)){
+            setScreen(saved.screen);
+          }
+        }
       }
     }
     setSessionRestored(true);
@@ -6946,7 +7025,7 @@ export default function App() {
     setCardStates(p=>{const n={...p};delete n[id];return n;});
     go("home");
   };
-  const savedIdx=useRef({});
+  const savedIdx=useRef(loadDeckIdx());
   const studyStartRef=useRef(null);
   const startStudy=(mode,restart=false)=>{
     const dc=cardStates[activeDeck.id]||[];
@@ -6994,10 +7073,10 @@ export default function App() {
       const nextIdx=currentIdx+1;
       setCurrentIdx(nextIdx);
       // Save progress for resume
-      if(activeDeck) savedIdx.current[activeDeck.id+"_all"]=nextIdx;
+      if(activeDeck){savedIdx.current[activeDeck.id+"_all"]=nextIdx;saveDeckIdx(savedIdx.current);}
     } else {
       // Reset saved progress on completion, log study time, clear persisted session
-      if(activeDeck){savedIdx.current[activeDeck.id+"_all"]=0;savedIdx.current[activeDeck.id+"_weak"]=0;}
+      if(activeDeck){savedIdx.current[activeDeck.id+"_all"]=0;savedIdx.current[activeDeck.id+"_weak"]=0;saveDeckIdx(savedIdx.current);}
       if(studyStartRef.current){
         const mins=Math.max(1,Math.round((Date.now()-studyStartRef.current)/60000));
         logStudy({type:"app",module:"vocab",minutes:mins});studyStartRef.current=null;

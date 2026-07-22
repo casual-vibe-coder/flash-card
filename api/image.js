@@ -1,11 +1,13 @@
 // api/image.js — Vercel serverless function
-// Proxies Gemini "Nano Banana" (gemini-2.5-flash-image) so the Google key stays server-side.
+// Proxies Gemini "Nano Banana" (gemini-2.5-flash-image). A per-user key from
+// Settings (req.body.apiKey) always takes priority over the server's own
+// GOOGLE_API_KEY, matching api/claude.js's precedence.
 // Returns the generated image as a base64 data URL in DALL-E-compatible shape: { data: [{ url }] }.
 
 export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
-  const apiKey = process.env.GOOGLE_API_KEY || req.body.apiKey;
+  const apiKey = req.body.apiKey || process.env.GOOGLE_API_KEY;
   if (!apiKey) return res.status(200).json({ data: null, noKey: true });
 
   const prompt = req.body.prompt;
