@@ -2685,6 +2685,7 @@ function DeckScreen({deck,cards,onStartStudy,onBack,onAddCards,onEditCard,onDele
           const dueC=cards.filter(c=>c.srsLastReview&&c.srsNextReview&&c.srsNextReview<=now).length;
           const studyCounts={all:cards.length,new:newCount,weak,known,due:dueC};
           const studyCount=studyCounts[studyFilter]||cards.length;
+          const filterSavedIdx=savedIdx?.[studyFilter]||0;
           return (
             <div style={{display:"flex",flexDirection:"column",gap:8,marginBottom:20}}>
               <div className="sec">Study Filter</div>
@@ -2693,9 +2694,9 @@ function DeckScreen({deck,cards,onStartStudy,onBack,onAddCards,onEditCard,onDele
                   <button key={k} className={`chip ${studyFilter===k?"chip-on":""}`} onClick={()=>setStudyFilter(k)} style={{padding:"5px 11px",fontSize:12}}>{label}</button>
                 ))}
               </div>
-              {savedIdx>0&&savedIdx<cards.length&&studyFilter==="all"&&(
-                <button className="btn btn-primary" onClick={()=>onStartStudy("all",false)} style={{width:"100%",padding:"13px",borderRadius:"var(--r)",fontSize:14}}>
-                  <BookOpen size={16}/> Resume (Card {savedIdx+1}/{cards.length})
+              {filterSavedIdx>0&&filterSavedIdx<studyCount&&(
+                <button className="btn btn-primary" onClick={()=>onStartStudy(studyFilter,false)} style={{width:"100%",padding:"13px",borderRadius:"var(--r)",fontSize:14}}>
+                  <BookOpen size={16}/> Resume (Card {filterSavedIdx+1}/{studyCount})
                 </button>
               )}
               <button className="btn btn-primary" onClick={()=>onStartStudy(studyFilter,true)} disabled={!studyCount}
@@ -7027,6 +7028,7 @@ export default function App() {
   };
   const savedIdx=useRef(loadDeckIdx());
   const studyStartRef=useRef(null);
+  const studyModeRef=useRef("all"); // which filter the active study session was started with
   const startStudy=(mode,restart=false)=>{
     const dc=cardStates[activeDeck.id]||[];
     const now=Date.now();
@@ -7037,6 +7039,7 @@ export default function App() {
       :sortByDueDate(dc);
     if(!toStudy.length) return;
     studyStartRef.current=Date.now();
+    studyModeRef.current=mode;
     sessionRes.current={known:0,weak:0};
     studyHistory.current=[]; // fresh undo stack on (re)start
     setSessionCards(toStudy);
@@ -7072,11 +7075,11 @@ export default function App() {
     if(currentIdx<sessionCards.length-1){
       const nextIdx=currentIdx+1;
       setCurrentIdx(nextIdx);
-      // Save progress for resume
-      if(activeDeck){savedIdx.current[activeDeck.id+"_all"]=nextIdx;saveDeckIdx(savedIdx.current);}
+      // Save progress for resume, keyed by the filter this session started with
+      if(activeDeck){savedIdx.current[activeDeck.id+"_"+studyModeRef.current]=nextIdx;saveDeckIdx(savedIdx.current);}
     } else {
       // Reset saved progress on completion, log study time, clear persisted session
-      if(activeDeck){savedIdx.current[activeDeck.id+"_all"]=0;savedIdx.current[activeDeck.id+"_weak"]=0;saveDeckIdx(savedIdx.current);}
+      if(activeDeck){savedIdx.current[activeDeck.id+"_"+studyModeRef.current]=0;saveDeckIdx(savedIdx.current);}
       if(studyStartRef.current){
         const mins=Math.max(1,Math.round((Date.now()-studyStartRef.current)/60000));
         logStudy({type:"app",module:"vocab",minutes:mins});studyStartRef.current=null;
@@ -7161,7 +7164,7 @@ export default function App() {
     settings:<SettingsScreen settings={settings} setSettings={setSettings} onBack={()=>go("home")} usage={usage} user={user} onSignOut={handleSignOut} onReplayOnboarding={()=>setShowOnboarding(true)} profile={profile} setProfile={setProfile} studyLog={studyLog} onUpdateTargets={(t)=>setStudyLog(sl=>({...sl,targets:t}))} decks={decks} cardStates={cardStates} setCardStates={setCardStates} trackUsage={trackUsage} onResetUsage={resetUsageCounters}/>,
     createDeck:<CreateDeckScreen onBack={()=>go("home")} onCreate={createDeck}/>,
     addCards:activeDeck&&<AddCardsScreen deck={activeDeck} onBack={()=>go("deck")} onSave={saveCards} trackUsage={trackUsage}/>,
-    deck:activeDeck&&<DeckScreen deck={activeDeck} cards={cardStates[activeDeck.id]||[]} onStartStudy={startStudy} onBack={()=>go("home")} onAddCards={()=>{if(activeDeck.deckType==="grammar"){setGrammarTarget(activeDeck);go("grammarImport");}else go("addCards");}} onEditCard={c=>{if(c.wordType==="grammar"){showToast("Grammar cards can't be edited yet — remove it and re-import that section.","info");return;}setActiveCard(c);go("editCard");}} onDeleteCard={deleteCard} onRenameDeck={renameDeck} onDeleteDeck={deleteDeck} onSetDeckUnit={setDeckUnit} savedIdx={savedIdx.current[activeDeck.id+"_all"]||0}/>,
+    deck:activeDeck&&<DeckScreen deck={activeDeck} cards={cardStates[activeDeck.id]||[]} onStartStudy={startStudy} onBack={()=>go("home")} onAddCards={()=>{if(activeDeck.deckType==="grammar"){setGrammarTarget(activeDeck);go("grammarImport");}else go("addCards");}} onEditCard={c=>{if(c.wordType==="grammar"){showToast("Grammar cards can't be edited yet — remove it and re-import that section.","info");return;}setActiveCard(c);go("editCard");}} onDeleteCard={deleteCard} onRenameDeck={renameDeck} onDeleteDeck={deleteDeck} onSetDeckUnit={setDeckUnit} savedIdx={{all:savedIdx.current[activeDeck.id+"_all"]||0,new:savedIdx.current[activeDeck.id+"_new"]||0,weak:savedIdx.current[activeDeck.id+"_weak"]||0,known:savedIdx.current[activeDeck.id+"_known"]||0,due:savedIdx.current[activeDeck.id+"_due"]||0}}/>,
     editCard:activeCard&&activeDeck&&<EditCardScreen card={activeCard} onBack={()=>go("deck")} onSave={saveEditedCard} trackUsage={trackUsage}/>,
     study:activeDeck&&sessionCards.length>0&&<StudyScreen cards={sessionCards} currentIndex={currentIdx} onSwipe={handleSwipe} onBack={undoStudy} canUndo={studyHistory.current.length>0} onExit={()=>go("deck")} trackUsage={trackUsage} decks={decks} cardStates={cardStates} onAddToFlashcard={addToFlashcard}/>,
     complete:<CompleteScreen known={sessionRes.current.known} weak={sessionRes.current.weak} onBack={()=>go("deck")}/>,
