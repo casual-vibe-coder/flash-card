@@ -5506,7 +5506,7 @@ Return ONLY valid JSON: {"sentence":"...","translation":"...","imagePrompt":"...
     return (
       <div className="screen" style={{display:"flex",flexDirection:"column",padding:"18px 18px 20px"}}>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
-          <button className="btn btn-ghost" onClick={onBack} title="Leave — this session stays paused here, come back anytime" style={{width:32,height:32}}><X size={14}/></button>
+          <button className="btn btn-ghost" onClick={()=>setStarted(false)} title="Pause — resume from the menu anytime" style={{width:32,height:32}}><X size={14}/></button>
           <span style={{fontSize:13,color:"var(--text2)",fontWeight:600}}>{idx+1} / {sessionCards.length}</span>
           <div style={{display:"flex",alignItems:"center",gap:6}}>
             <button className="btn btn-ghost" onClick={undoMasterSwipe} disabled={!swipeHist.current.length} title="Undo last swipe" style={{width:32,height:32,opacity:swipeHist.current.length?1:0.3}}><ArrowLeft size={14}/></button>
