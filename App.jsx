@@ -334,6 +334,27 @@ const OR_MODELS = [
   {id:"meta-llama/llama-3.3-70b-instruct",label:"Llama 3.3 70B  · Open source"},
 ];
 
+// Quality-tier → model mapping. The client sends only the `tier`; the server
+// (api/_models.js) resolves it to a model, with env overrides for hot-swap.
+// These hardcoded defaults mirror the server defaults and are used here ONLY
+// for the spend preview in UsageMeter. If a model is overridden via env on the
+// server, the displayed price may drift slightly — the actual cap enforcement
+// reads the real cost from usage_events server-side.
+const TIER_TO_MODEL = {
+  normal:    "openai/gpt-4o-mini",
+  high:      "google/gemini-flash-1.5",
+  extrahigh: "openai/gpt-4o",
+};
+const FALLBACK_TIER = "normal";
+const TIER_OPTIONS = [
+  {id:"normal",    label:"Normal  · Fast & cheap (GPT-4o Mini)"},
+  {id:"high",      label:"High  · Balanced (Gemini Flash 1.5)"},
+  {id:"extrahigh", label:"Extra High  · Best quality (GPT-4o)"},
+];
+function resolveTierModel(tier){
+  return TIER_TO_MODEL[tier] || TIER_TO_MODEL[FALLBACK_TIER];
+}
+
 // Image generation models — Google's Gemini Flash Image family ("Nano Banana")
 const IMAGE_MODELS = [
   {id:"gemini-2.5-flash-image", label:"Nano Banana 1  · Gemini 2.5 · $0.039/img · fast, GA"},
@@ -660,7 +681,8 @@ textarea.input{resize:vertical;min-height:110px;line-height:1.7}
 // Module-level model refs — updated by root App when settings change.
 // Avoids threading model as a prop through every screen component.
 let _defaultModel = "openai/gpt-4o-mini";
-let _modelByTag = {}; // per-feature override: tag -> modelId
+let _tier = "normal"; // quality tier — synced from settings; server resolves to model
+let _modelByTag = {}; // per-feature override: tag -> modelId (legacy, kept for UsageMeter preview only)
 let _imageModel = "gemini-2.5-flash-image";
 let _ttsVoice = "ar-XA-Wavenet-C";
 let _ttsSpeed = 0.92;
@@ -669,7 +691,9 @@ let _convSilenceMs = 2500;
 let _convFuzzyThreshold = 0.8;
 let _autoGenerateImage = false; // opt-in per learning aid; off by default
 
-function pickModelForTag(tag){return _modelByTag[tag]||_defaultModel;}
+// pickModelForTag removed — the server now resolves tier → model.
+// Kept here as a comment marker; _modelByTag is retained only for UsageMeter
+// pricing preview (legacy per-feature overrides, if present in old user docs).
 
 async function callClaude(prompt, maxTokens=1500, tag="other", trackFn=null, timeoutMs=null) {
   // Optional client-side timeout so a hung request fails fast instead of
@@ -682,7 +706,7 @@ async function callClaude(prompt, maxTokens=1500, tag="other", trackFn=null, tim
       method:"POST",
       headers:{"Content-Type":"application/json"},
       body:JSON.stringify({
-        model: pickModelForTag(tag),
+        tier: _tier || "normal",
         max_tokens: maxTokens,
         messages:[{role:"user",content:prompt}],
       }),
@@ -724,7 +748,7 @@ async function callGenerate({kind, inputs, model=null, maxTokens=1024, personali
     headers:{"Content-Type":"application/json",...(token?{Authorization:`Bearer ${token}`}:{})},
     body:JSON.stringify({
       kind, inputs,
-      model: model||pickModelForTag(tag),
+      tier: _tier || "normal",
       maxTokens, personalized, noCache,
     }),
   });
@@ -1250,13 +1274,12 @@ Return ONLY valid JSON, no markdown. Put full tashkeel on Arabic text:
 function UsageMeter({usage, settings, onReset}) {
   const [open,setOpen]=useState(false);
   const [showCalc,setShowCalc]=useState(false);
-  // Resolve which text model is being used per usage tag. Per-feature
-  // overrides (settings.models[tag]) win; otherwise the global default.
-  // All cost numbers, daily projections, and "via X" indicators flow from
-  // this single resolver — so changing the dropdowns above instantly
-  // re-prices everything.
+  // Resolve a usage tag to the model that will actually be used server-side.
+  // With the tier system, all text features use the same tier-resolved model;
+  // legacy per-feature overrides (from old user docs) are still shown for
+  // pricing preview but no longer sent to the server.
   const modelForTag=(tag)=>{
-    return settings?.models?.[tag] || settings?.model || "openai/gpt-4o-mini";
+    return settings?.models?.[tag] || resolveTierModel(settings?.tier) || "openai/gpt-4o-mini";
   };
   const priceForTag=(tag)=>{
     return MODEL_PRICES[modelForTag(tag)] || PRICE_FALLBACK;
@@ -1287,7 +1310,7 @@ function UsageMeter({usage, settings, onReset}) {
   const totalCalls = Object.values(usage.byTag).reduce((s,v)=>s+v.calls,0);
 
   const barColor = totalCost<0.10?"var(--know)":totalCost<0.50?"#C07000":"var(--weak)";
-  const activeModel = settings?.model || "openai/gpt-4o-mini";
+  const activeModel = resolveTierModel(settings?.tier) || "openai/gpt-4o-mini";
   const unitsLabel=(tag,v)=>{
     if(NON_TEXT_TAGS.has(tag)){
       if(tag==="ttsGoogle") return `${v.inputTokens.toLocaleString()} ch`;
@@ -2097,6 +2120,19 @@ function SettingsScreen({settings,setSettings,onBack,usage,user,onSignOut,onRepl
         {/* Pass `local` (the in-edit settings) so cost previews react as you
             change settings above, before you've hit Save. */}
         <UsageMeter usage={usage} settings={local} onReset={onResetUsage}/>
+
+        {/* Quality tier — replaces the old per-feature model picker. The server
+            (api/_models.js) resolves the tier to a concrete OpenRouter model,
+            with env overrides so admins can hot-swap models without a redeploy. */}
+        <div style={{background:"var(--surface)",border:"1.5px solid var(--border)",borderRadius:"var(--r)",padding:"15px 17px"}}>
+          <div className="sec">AI Quality Tier</div>
+          <select className="input" value={local.tier||"normal"} onChange={e=>set("tier",e.target.value)} style={{marginBottom:8}}>
+            {TIER_OPTIONS.map(t=><option key={t.id} value={t.id}>{t.label}</option>)}
+          </select>
+          <div style={{fontSize:11.5,color:"var(--text3)",lineHeight:1.65}}>
+            Controls how the AI responds across all features. Higher tiers cost more credits. The model is chosen automatically — no key or model setup needed.
+          </div>
+        </div>
 
         {/* Auto-generate images toggle */}
         <div style={{background:"var(--surface)",border:"1.5px solid var(--border)",borderRadius:"var(--r)",padding:"15px 17px"}}>
@@ -6191,7 +6227,7 @@ export default function App() {
   const [cardStates,setCardStates]=useState(SEED_CARDS);
   const [activeDeck,setActiveDeck]=useState(null);
   const [activeCard,setActiveCard]=useState(null);
-  const [settings,setSettings]=useState({model:"openai/gpt-4o-mini"});
+  const [settings,setSettings]=useState({model:"openai/gpt-4o-mini",tier:"normal"});
   const [user,setUser]=useState(undefined); // undefined = loading, null = signed out
   const [dataLoaded,setDataLoaded]=useState(false);
   const [authLoading,setAuthLoading]=useState(false);
@@ -6343,16 +6379,17 @@ export default function App() {
   // Keep module-level refs in sync — picked up automatically by callClaude /
   // generateImage / synthesizeArabic / transcribeAudio.
   useEffect(()=>{
-    _defaultModel = settings.model || "openai/gpt-4o-mini";
+    _defaultModel = resolveTierModel(settings.tier) || "openai/gpt-4o-mini";
     _modelByTag = {...(settings.models||{})};
     _imageModel = settings.imageModel || "gemini-2.5-flash-image";
+    _tier = settings.tier || "normal";
     _ttsVoice = settings.ttsVoice||"ar-XA-Wavenet-C";
     _ttsSpeed = typeof settings.ttsSpeed==="number"?settings.ttsSpeed:0.92;
     _sttEnabled = !!settings.sttEnabled;
     _convSilenceMs = typeof settings.convSilenceMs==="number"?settings.convSilenceMs:2500;
     _convFuzzyThreshold = typeof settings.convFuzzyThreshold==="number"?settings.convFuzzyThreshold:0.8;
     _autoGenerateImage = !!settings.autoGenerateImage;
-  },[settings.model,settings.models,settings.imageModel,settings.ttsVoice,settings.ttsSpeed,settings.sttEnabled,settings.convSilenceMs,settings.convFuzzyThreshold,settings.autoGenerateImage]);
+  },[settings.model,settings.models,settings.imageModel,settings.tier,settings.ttsVoice,settings.ttsSpeed,settings.sttEnabled,settings.convSilenceMs,settings.convFuzzyThreshold,settings.autoGenerateImage]);
   const go=s=>setScreen(s);
 
   // Usage tracker function passed to all Claude calls

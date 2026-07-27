@@ -38,13 +38,16 @@
 - [x] Update all error messages that referenced "check your API key in Settings".
 - [x] `npm run build` passes.
 
-### [2] Add quality-tier selector + shared model map  *(new requirement)*
-- [ ] Create `api/_models.js` exporting `TIER_TO_MODEL` (env-overridable) + `FALLBACK_TIER`.
-- [ ] In Settings, add a single dropdown: **Normal / High / Extra High** (default `normal`).
-- [ ] Persist as `settings.tier` in the user doc.
-- [ ] Stop sending `model` from client; send `tier` instead.
-- [ ] Client imports hardcoded defaults for pricing preview only.
-- **~45 min**
+### [2] Add quality-tier selector + shared model map  *(new requirement)* — ✅ DONE
+- [x] Create `api/_models.js` exporting `TIER_TO_MODEL` (env-overridable) + `FALLBACK_TIER` + `resolveModel()`.
+- [x] In Settings, add a single dropdown: **Normal / High / Extra High** (default `normal`).
+- [x] Persist as `settings.tier` in the user doc.
+- [x] Stop sending `model` from client; send `tier` instead (callClaude + callGenerate).
+- [x] Client imports hardcoded defaults for pricing preview only (`TIER_TO_MODEL`, `resolveTierModel`).
+- [x] `api/claude.js` resolves tier → model, env-only key, fallback retry on 5xx/429.
+- [x] `api/generate.js` resolves tier → model, env-only key, fallback retry on 5xx/429.
+- [x] UsageMeter `modelForTag` + `activeModel` resolve via tier.
+- [x] `npm run build` passes; `node --check` passes on all api files.
 
 ### [3] Update UsageMeter UI to show remaining credit  *(PM 6 + new requirement)*
 - [ ] Change display to: **"$X.XX spent of $7.00 · $Y.YY remaining"** + progress bar.

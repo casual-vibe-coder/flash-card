@@ -14,6 +14,7 @@
 import crypto from "node:crypto";
 import { buildPrompt, parseQA } from "../language-island/core/generator.js";
 import { getAdmin } from "./_firebase.js";
+import { resolveModel, TIER_TO_MODEL, FALLBACK_TIER } from "./_models.js";
 
 const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
 
@@ -71,10 +72,12 @@ async function checkEntitlement(/* uid, kind, personalized */) {
 export default async function handler(req, res) {
   if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
 
-  const apiKey = req.body?.apiKey || process.env.OPENROUTER_API_KEY;
-  if (!apiKey) return res.status(400).json({ error: "No API key. Add your OpenRouter key in Settings or set OPENROUTER_API_KEY." });
+  // Env-only key — never accepted from the client.
+  const apiKey = process.env.OPENROUTER_API_KEY;
+  if (!apiKey) return res.status(500).json({ error: "AI service not configured (server key missing)." });
 
-  const { kind, model, maxTokens, inputs, personalized = false, noCache = false } = req.body || {};
+  const { kind, tier, maxTokens, inputs, personalized = false, noCache = false } = req.body || {};
+  const model = resolveModel(tier);
   const spec = KINDS[kind];
   if (!spec) return res.status(400).json({ error: `Unknown generation kind: ${kind}` });
   if (!inputs || typeof inputs !== "object") return res.status(400).json({ error: "Missing generation inputs." });
@@ -119,21 +122,30 @@ export default async function handler(req, res) {
   }
   let text = "", usage = { input_tokens: 0, output_tokens: 0 };
   try {
-    const r = await fetch(OPENROUTER_URL, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`,
-        "X-Title": "Arabic Immersion App",
-      },
-      body: JSON.stringify({
-        model: model || "openai/gpt-4o-mini",
-        max_tokens: maxTokens || 1024,
-        messages: [{ role: "user", content: prompt }],
-      }),
-    });
-    const data = await r.json();
-    if (!r.ok) return res.status(r.status).json({ error: data.error?.message || "Generation failed" });
+    const doFetch = async (mdl) => {
+      const r = await fetch(OPENROUTER_URL, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${apiKey}`,
+          "X-Title": "Arabic Immersion App",
+        },
+        body: JSON.stringify({
+          model: mdl,
+          max_tokens: maxTokens || 1024,
+          messages: [{ role: "user", content: prompt }],
+        }),
+      });
+      const data = await r.json();
+      return { ok: r.ok, status: r.status, data };
+    };
+    let { ok, status, data } = await doFetch(model);
+    // Retry once on 5xx / rate-limit using the fallback (normal-tier) model.
+    if (!ok && (status >= 500 || status === 429) && tier !== FALLBACK_TIER) {
+      const retry = await doFetch(TIER_TO_MODEL[FALLBACK_TIER]);
+      ok = retry.ok; status = retry.status; data = retry.data;
+    }
+    if (!ok) return res.status(status).json({ error: data.error?.message || "Generation failed" });
     text = data.choices?.[0]?.message?.content || "";
     usage = {
       input_tokens: data.usage?.prompt_tokens || 0,
