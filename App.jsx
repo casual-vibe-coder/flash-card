@@ -662,12 +662,8 @@ textarea.input{resize:vertical;min-height:110px;line-height:1.7}
 let _defaultModel = "openai/gpt-4o-mini";
 let _modelByTag = {}; // per-feature override: tag -> modelId
 let _imageModel = "gemini-2.5-flash-image";
-let _orKey = ""; // OpenRouter key — synced from settings
-let _gKey = ""; // Google AI Studio key for Nano Banana image gen — synced from settings
-let _ttsKey = ""; // Google Cloud TTS key (optional, separate from AI Studio key)
 let _ttsVoice = "ar-XA-Wavenet-C";
 let _ttsSpeed = 0.92;
-let _sttKey = ""; // OpenAI key, sent to /api/stt for Whisper
 let _sttEnabled = false; // user has explicitly opted in to enhanced STT
 let _convSilenceMs = 2500;
 let _convFuzzyThreshold = 0.8;
@@ -689,7 +685,6 @@ async function callClaude(prompt, maxTokens=1500, tag="other", trackFn=null, tim
         model: pickModelForTag(tag),
         max_tokens: maxTokens,
         messages:[{role:"user",content:prompt}],
-        ..._orKey ? {apiKey:_orKey} : {},
       }),
       ...(ctrl ? {signal:ctrl.signal} : {}),
     });
@@ -697,7 +692,7 @@ async function callClaude(prompt, maxTokens=1500, tag="other", trackFn=null, tim
     if(d.error) throw new Error(typeof d.error==="string"?d.error:(d.error.message||"AI request failed"));
     // api/claude.js normalises OpenRouter response → {content:[{type:"text",text}], usage:{input_tokens, output_tokens}}
     const outputText = d.content?.find(b=>b.type==="text")?.text || "";
-    if(!outputText) throw new Error("Empty response from AI — check your API key in Settings.");
+    if(!outputText) throw new Error("Empty response from AI — please try again.");
     if (trackFn) {
       trackFn(tag, prompt.length, outputText.length,
         d.usage?.input_tokens  || Math.ceil(prompt.length/4),
@@ -731,7 +726,6 @@ async function callGenerate({kind, inputs, model=null, maxTokens=1024, personali
       kind, inputs,
       model: model||pickModelForTag(tag),
       maxTokens, personalized, noCache,
-      ..._orKey ? {apiKey:_orKey} : {},
     }),
   });
   let d; try { d=await res.json(); } catch { throw new Error("The generation service returned an unexpected response."); }
@@ -939,11 +933,8 @@ async function synthesizeArabic(rawText,opts={}){
   };
   if(cached){play(cached);return;}
   try{
-    // Prefer the dedicated Google Cloud TTS key, fall back to AI Studio key
-    // (works if Cloud TTS is enabled on the same project), then to nothing.
-    const apiKey=_ttsKey||_gKey||"";
     const res=await fetch("/api/tts",{method:"POST",headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({text,voice,speed,...(apiKey?{apiKey}:{})})});
+      body:JSON.stringify({text,voice,speed})});
     if(!isCurrent()) return;
     const data=await res.json();
     if(!isCurrent()) return;
@@ -959,8 +950,8 @@ async function synthesizeArabic(rawText,opts={}){
 
 // Fetch a playable TTS source (data URL) WITHOUT auto-playing, at neutral
 // speed — so a player can control speed live via audio.playbackRate (Phase 4
-// dictation). Returns the src string, or null when no TTS key (caller falls
-// back to browserSpeak). Reuses the same on-disk cache as synthesizeArabic.
+// dictation). Returns the src string, or null when TTS is unavailable (caller
+// falls back to browserSpeak). Reuses the same on-disk cache as synthesizeArabic.
 async function getTtsSrc(rawText){
   const text=cleanArabicForSpeech(rawText);
   if(!text) return null;
@@ -970,9 +961,8 @@ async function getTtsSrc(rawText){
   const cached=ttsCacheRead(cacheKey);
   if(cached) return cached;
   try{
-    const apiKey=_ttsKey||_gKey||"";
     const res=await fetch("/api/tts",{method:"POST",headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({text,voice,speed,...(apiKey?{apiKey}:{})})});
+      body:JSON.stringify({text,voice,speed})});
     const data=await res.json();
     if(data.noKey||!data.audio) return null;
     ttsCacheWrite(cacheKey,data.audio);
@@ -1017,14 +1007,14 @@ function diffTokens(target,user){
 // Returns {transcript, error, noKey, disabled} so the caller can show the real
 // reason a transcription failed instead of a generic "out of credit" guess.
 async function transcribeAudio(blob, durationSec=null){
-  if(!_sttEnabled||!_sttKey) return {transcript:null,disabled:true};
+  if(!_sttEnabled) return {transcript:null,disabled:true};
   try{
     const buf=await blob.arrayBuffer();
     let bin=""; const bytes=new Uint8Array(buf);
     for(let i=0;i<bytes.length;i++) bin+=String.fromCharCode(bytes[i]);
     const audio=btoa(bin);
     const res=await fetch("/api/stt",{method:"POST",headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({audio,mime:blob.type||"audio/webm",language:"ar",openaiKey:_sttKey})});
+      body:JSON.stringify({audio,mime:blob.type||"audio/webm",language:"ar"})});
     const data=await res.json();
     if(data.noKey) return {transcript:null,noKey:true};
     if(data.error) return {transcript:null,error:data.error}; // surface the real Whisper/Deepgram error
@@ -1050,7 +1040,6 @@ async function generateImage(prompt, trackFn=null) {
       body:JSON.stringify({
         model,
         prompt:`${prompt} Style: minimalist flat sticker illustration, single bold subject centered on a plain white background, vivid simple colors, thick clean outlines, slightly exaggerated for memorability, no text or letters anywhere in the image. STRICT RELIGIOUS CONSTRAINT — non-negotiable: absolutely NO eyes anywhere in the image. No human faces, no animal faces, no eyes of any kind (no dots, no slits, no glint, no abstract eye shapes). If a person or animal must appear, depict only from behind or as a featureless silhouette with no facial features at all. Prefer objects, symbols, scenery, or hands over people and animals.`,
-        ..._gKey ? {apiKey:_gKey} : {},
       }),
     });
     const data = await res.json();
@@ -1395,17 +1384,6 @@ function UsageMeter({usage, settings, onReset}) {
             )}
           </div>
 
-          {/* Provider billing block */}
-          <div style={{marginTop:6,padding:"10px 12px",background:"var(--info-bg)",border:"1px solid var(--info-border)",borderRadius:"var(--rxs)"}}>
-            <div style={{fontSize:11,fontWeight:700,color:"var(--info)",letterSpacing:".08em",textTransform:"uppercase",marginBottom:6}}>Where you're billed</div>
-            <div style={{display:"flex",flexDirection:"column",gap:4,fontSize:12,color:"var(--text2)"}}>
-              <div style={{display:"flex",justifyContent:"space-between"}}><span>Text generation</span><a href="https://openrouter.ai/credits" target="_blank" rel="noopener noreferrer" style={{color:"var(--accent)",fontWeight:600}}>OpenRouter →</a></div>
-              <div style={{display:"flex",justifyContent:"space-between"}}><span>Nano Banana images</span><a href="https://aistudio.google.com/" target="_blank" rel="noopener noreferrer" style={{color:"var(--accent)",fontWeight:600}}>Google AI Studio →</a></div>
-              <div style={{display:"flex",justifyContent:"space-between"}}><span>Google TTS voice</span><a href="https://console.cloud.google.com/billing" target="_blank" rel="noopener noreferrer" style={{color:"var(--accent)",fontWeight:600}}>Google Cloud →</a></div>
-              <div style={{display:"flex",justifyContent:"space-between"}}><span>Whisper STT</span><a href="https://platform.openai.com/usage" target="_blank" rel="noopener noreferrer" style={{color:"var(--accent)",fontWeight:600}}>OpenAI →</a></div>
-            </div>
-          </div>
-
           {/* Daily-use calculator */}
           <div style={{marginTop:4,border:"1px solid var(--border)",borderRadius:"var(--rxs)",overflow:"hidden"}}>
             <div onClick={()=>setShowCalc(v=>!v)} style={{padding:"10px 12px",cursor:"pointer",display:"flex",justifyContent:"space-between",alignItems:"center",background:"var(--surface2)"}}>
@@ -1442,14 +1420,14 @@ function UsageMeter({usage, settings, onReset}) {
                   <span>Monthly (×30)</span><span style={{color:"var(--accent)"}}>${(dailyTotal*30).toFixed(2)}</span>
                 </div>
                 <div style={{fontSize:10.5,color:"var(--text3)",marginTop:4,lineHeight:1.5}}>
-                  Each row is priced by the model assigned to that feature (default: <span style={{fontFamily:"monospace",color:"var(--text2)"}}>{activeModel.split("/").pop()}</span>). Change a per-feature dropdown higher up to see the impact ripple through here in real time — no save needed.
+                  Each row is priced by the model assigned to that feature (default: <span style={{fontFamily:"monospace",color:"var(--text2)"}}>{activeModel.split("/").pop()}</span>).
                 </div>
               </div>
             )}
           </div>
 
           <div style={{fontSize:11,color:"var(--text3)",lineHeight:1.6}}>
-            Text cost uses your selected model's OpenRouter pricing. Image: $0.039 (NB1) / $0.067 (NB2 at 1K). TTS: $16/1M chars (Google Wavenet, cached after first play). STT: $0.006/min (OpenAI Whisper). Verify at openrouter.ai/models, ai.google.dev/pricing, cloud.google.com/text-to-speech/pricing, openai.com/api/pricing.
+            Cost estimates: Image $0.039 (NB1) / $0.067 (NB2 at 1K). TTS $16/1M chars (Google Wavenet, cached after first play). STT $0.006/min (OpenAI Whisper).
           </div>
         </div>
       )}
@@ -2117,49 +2095,13 @@ function SettingsScreen({settings,setSettings,onBack,usage,user,onSignOut,onRepl
         <ProfilePanel profile={profile} setProfile={setProfile} onRetake={onReplayOnboarding}/>
 
         {/* Pass `local` (the in-edit settings) so cost previews react as you
-            change model dropdowns above, before you've hit Save. */}
+            change settings above, before you've hit Save. */}
         <UsageMeter usage={usage} settings={local} onReset={onResetUsage}/>
 
-        {/* AI Models — default + per-feature overrides */}
+        {/* Auto-generate images toggle */}
         <div style={{background:"var(--surface)",border:"1.5px solid var(--border)",borderRadius:"var(--r)",padding:"15px 17px"}}>
-          <div className="sec">AI Model · Default (OpenRouter)</div>
-          <select className="input" value={local.model} onChange={e=>set("model",e.target.value)} style={{marginBottom:8}}>
-            {OR_MODELS.map(m=><option key={m.id} value={m.id}>{m.label}</option>)}
-          </select>
-          <div style={{fontSize:11.5,color:"var(--text3)",lineHeight:1.65,marginBottom:14}}>
-            Used wherever you haven't picked a per-feature override below. Pricing at <strong>openrouter.ai/models</strong>.
-          </div>
-
-          <div className="sec" style={{marginTop:6}}>Per-Feature Override</div>
-          <div style={{fontSize:11.5,color:"var(--text3)",lineHeight:1.65,marginBottom:10}}>
-            Use a stronger model where it matters (new cards, cleanup) and a cheaper one where you can save (reading, conversation). "(Use default)" falls back to the model above.
-          </div>
-          <div style={{display:"flex",flexDirection:"column",gap:10}}>
-            {MODEL_FEATURES.map(f=>{
-              const cur=local.models?.[f.tag]||"";
-              return (
-                <div key={f.tag}>
-                  <label className="lbl" style={{marginBottom:3}}>{f.label} <span style={{color:"var(--text3)",fontWeight:400,letterSpacing:0,textTransform:"none"}}>· {f.desc}</span></label>
-                  <select className="input" value={cur} onChange={e=>set("models",{...(local.models||{}),[f.tag]:e.target.value||undefined})} style={{fontSize:13}}>
-                    <option value="">(Use default)</option>
-                    {OR_MODELS.map(m=><option key={m.id} value={m.id}>{m.label}</option>)}
-                  </select>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-
-        {/* Image model */}
-        <div style={{background:"var(--surface)",border:"1.5px solid var(--border)",borderRadius:"var(--r)",padding:"15px 17px"}}>
-          <div className="sec">Image Model · via Google AI Studio</div>
-          <select className="input" value={local.imageModel||"gemini-2.5-flash-image"} onChange={e=>set("imageModel",e.target.value)} style={{marginBottom:8}}>
-            {IMAGE_MODELS.map(m=><option key={m.id} value={m.id}>{m.label}</option>)}
-          </select>
-          <div style={{fontSize:11.5,color:"var(--text3)",lineHeight:1.65,marginBottom:12}}>
-            Used for the optional mnemonic image on flashcards. Requires the Google AI Studio API key below.
-          </div>
-          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:10,paddingTop:10,borderTop:"1px solid var(--border)"}}>
+          <div className="sec">Image Generation</div>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:10}}>
             <div style={{flex:1}}>
               <div style={{fontSize:13,fontWeight:700,color:"var(--text)"}}>Auto-generate images</div>
               <div style={{fontSize:11.5,color:"var(--text3)",marginTop:2,lineHeight:1.5}}>When on, every "Generate Learning Aid" tap also draws an image (~$0.039 each). When off (default), you'll see an "Add image" button on each card so you only spend when you want to.</div>
@@ -2168,65 +2110,11 @@ function SettingsScreen({settings,setSettings,onBack,usage,user,onSignOut,onRepl
           </div>
         </div>
 
-        {/* API keys */}
-        <div style={{background:"var(--info-bg)",border:"1.5px solid var(--info-border)",borderRadius:"var(--r)",padding:"14px 16px"}}>
-          <div style={{display:"flex",alignItems:"center",gap:7,marginBottom:10}}><Info size={14} color="var(--info)"/><div className="sec" style={{margin:0,color:"var(--info)"}}>API Keys</div></div>
-          <div style={{fontSize:13,color:"var(--text2)",lineHeight:1.7,marginBottom:12}}>
-            Your API keys are stored securely in your account. Each user needs their own keys.
-          </div>
-          <div style={{display:"flex",flexDirection:"column",gap:14}}>
-            <div>
-              <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:5}}>
-                <div style={{display:"flex",alignItems:"center",gap:7}}>
-                  <span style={{fontSize:14}}>🔑</span>
-                  <div style={{fontSize:13,fontWeight:700,color:"var(--text)"}}>OpenRouter API Key</div>
-                  <span style={{fontSize:10,fontWeight:600,color:"var(--weak)",background:"var(--weak-bg)",border:"1px solid var(--weak-border)",padding:"1px 6px",borderRadius:100}}>Required</span>
-                  {local.orKey?.trim()
-                    ? <span style={{fontSize:10,fontWeight:600,color:"var(--know)"}}>● set</span>
-                    : <span style={{fontSize:10,fontWeight:600,color:"var(--text3)"}}>○ not set</span>}
-                </div>
-                <a href="https://openrouter.ai/keys" target="_blank" rel="noopener noreferrer" style={{fontSize:11,color:"var(--accent)",textDecoration:"none",fontWeight:600}}>Get key →</a>
-              </div>
-              <input
-                className="input"
-                type="password"
-                placeholder="sk-or-..."
-                value={local.orKey||""}
-                onChange={e=>set("orKey",e.target.value)}
-                style={{fontSize:12,padding:"8px 10px",fontFamily:"monospace"}}
-              />
-              <div style={{fontSize:11,color:"var(--text3)",marginTop:4,lineHeight:1.5}}>Powers all text generation: flashcards, sentences, reading, listening, conversation.</div>
-            </div>
-            <div>
-              <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:5}}>
-                <div style={{display:"flex",alignItems:"center",gap:7}}>
-                  <span style={{fontSize:14}}>🖼</span>
-                  <div style={{fontSize:13,fontWeight:700,color:"var(--text)"}}>Google AI Studio API Key</div>
-                  <span style={{fontSize:10,fontWeight:600,color:"var(--text3)",background:"var(--surface2)",border:"1px solid var(--border)",padding:"1px 6px",borderRadius:100}}>Optional</span>
-                  {local.gKey?.trim()
-                    ? <span style={{fontSize:10,fontWeight:600,color:"var(--know)"}}>● set</span>
-                    : <span style={{fontSize:10,fontWeight:600,color:"var(--text3)"}}>○ not set</span>}
-                </div>
-                <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener noreferrer" style={{fontSize:11,color:"var(--accent)",textDecoration:"none",fontWeight:600}}>Get key →</a>
-              </div>
-              <input
-                className="input"
-                type="password"
-                placeholder="AIza..."
-                value={local.gKey||""}
-                onChange={e=>set("gKey",e.target.value)}
-                style={{fontSize:12,padding:"8px 10px",fontFamily:"monospace"}}
-              />
-              <div style={{fontSize:11,color:"var(--text3)",marginTop:4,lineHeight:1.5}}>Enables Nano Banana mnemonic images on flashcards. ~$0.04 per image. App works fine without it.</div>
-            </div>
-          </div>
-        </div>
-
         {/* Voice & STT */}
         <div style={{background:"var(--surface)",border:"1.5px solid var(--border)",borderRadius:"var(--r)",padding:"15px 17px"}}>
           <div style={{display:"flex",alignItems:"center",gap:7,marginBottom:10}}><Volume2 size={14} color="var(--accent)"/><div className="sec" style={{margin:0}}>Voice (TTS & STT)</div></div>
           <div style={{fontSize:12,color:"var(--text3)",lineHeight:1.6,marginBottom:12}}>
-            When set, Arabic playback uses Google Cloud Wavenet voices (better tashkeel handling) and speech-to-text uses OpenAI Whisper (much better Arabic accuracy). Without keys, the app falls back to the browser's built-in voices/recognition.
+            Arabic playback uses Google Cloud Wavenet voices (better tashkeel handling) and speech-to-text uses OpenAI Whisper (much better Arabic accuracy). Falls back to the browser's built-in voices/recognition when unavailable.
           </div>
           <div style={{display:"flex",flexDirection:"column",gap:14}}>
             {/* TTS voice */}
@@ -2238,7 +2126,7 @@ function SettingsScreen({settings,setSettings,onBack,usage,user,onSignOut,onRepl
                 <option value="ar-XA-Wavenet-C">Wavenet-C · male (recommended)</option>
                 <option value="ar-XA-Wavenet-D">Wavenet-D · female</option>
               </select>
-              <div style={{fontSize:11,color:"var(--text3)",marginTop:4}}>Used by Google Cloud TTS. Falls back to browser voice if no Cloud TTS key.</div>
+              <div style={{fontSize:11,color:"var(--text3)",marginTop:4}}>Arabic voice for playback. Falls back to browser voice if Cloud TTS is unavailable.</div>
             </div>
             {/* TTS speed */}
             <div>
@@ -2249,22 +2137,6 @@ function SettingsScreen({settings,setSettings,onBack,usage,user,onSignOut,onRepl
               <input type="range" min="0.7" max="1.2" step="0.02" value={local.ttsSpeed??0.92} onChange={e=>set("ttsSpeed",parseFloat(e.target.value))} style={{width:"100%"}}/>
               <div style={{fontSize:11,color:"var(--text3)",marginTop:2}}>0.92× is the default — clear MSA pacing for learners.</div>
             </div>
-            {/* Google TTS key */}
-            <div>
-              <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:5}}>
-                <div style={{display:"flex",alignItems:"center",gap:7}}>
-                  <span style={{fontSize:14}}>🎙</span>
-                  <div style={{fontSize:13,fontWeight:700,color:"var(--text)"}}>Google Cloud TTS Key</div>
-                  <span style={{fontSize:10,fontWeight:600,color:"var(--text3)",background:"var(--surface2)",border:"1px solid var(--border)",padding:"1px 6px",borderRadius:100}}>Optional</span>
-                  {local.ttsKey?.trim()
-                    ? <span style={{fontSize:10,fontWeight:600,color:"var(--know)"}}>● set</span>
-                    : <span style={{fontSize:10,fontWeight:600,color:"var(--text3)"}}>○ not set</span>}
-                </div>
-                <a href="https://console.cloud.google.com/apis/library/texttospeech.googleapis.com" target="_blank" rel="noopener noreferrer" style={{fontSize:11,color:"var(--accent)",textDecoration:"none",fontWeight:600}}>Enable API →</a>
-              </div>
-              <input className="input" type="password" placeholder="AIza... (or leave blank to use AI Studio key)" value={local.ttsKey||""} onChange={e=>set("ttsKey",e.target.value)} style={{fontSize:12,padding:"8px 10px",fontFamily:"monospace"}}/>
-              <div style={{fontSize:11,color:"var(--text3)",marginTop:4,lineHeight:1.5}}>Free tier covers 1M chars/month — personal use is effectively free with caching.</div>
-            </div>
             {/* Enhanced STT toggle */}
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:10}}>
               <div style={{flex:1}}>
@@ -2272,22 +2144,6 @@ function SettingsScreen({settings,setSettings,onBack,usage,user,onSignOut,onRepl
                 <div style={{fontSize:11,color:"var(--text3)",marginTop:2,lineHeight:1.5}}>When on, your mic audio is sent to OpenAI Whisper for Arabic transcription instead of the browser. Much higher accuracy. Costs ~$0.006/minute.</div>
               </div>
               <div className={`chk ${local.sttEnabled?"on":""}`} onClick={()=>set("sttEnabled",!local.sttEnabled)}>{local.sttEnabled&&<Check size={11} color="white"/>}</div>
-            </div>
-            {/* OpenAI key for STT */}
-            <div>
-              <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:5}}>
-                <div style={{display:"flex",alignItems:"center",gap:7}}>
-                  <span style={{fontSize:14}}>🎧</span>
-                  <div style={{fontSize:13,fontWeight:700,color:"var(--text)"}}>OpenAI API Key (Whisper)</div>
-                  <span style={{fontSize:10,fontWeight:600,color:"var(--text3)",background:"var(--surface2)",border:"1px solid var(--border)",padding:"1px 6px",borderRadius:100}}>Optional</span>
-                  {local.sttKey?.trim()
-                    ? <span style={{fontSize:10,fontWeight:600,color:"var(--know)"}}>● set</span>
-                    : <span style={{fontSize:10,fontWeight:600,color:"var(--text3)"}}>○ not set</span>}
-                </div>
-                <a href="https://platform.openai.com/api-keys" target="_blank" rel="noopener noreferrer" style={{fontSize:11,color:"var(--accent)",textDecoration:"none",fontWeight:600}}>Get key →</a>
-              </div>
-              <input className="input" type="password" placeholder="sk-..." value={local.sttKey||""} onChange={e=>set("sttKey",e.target.value)} style={{fontSize:12,padding:"8px 10px",fontFamily:"monospace"}}/>
-              <div style={{fontSize:11,color:"var(--text3)",marginTop:4,lineHeight:1.5}}>Powers Enhanced STT. No effect unless the toggle above is on.</div>
             </div>
           </div>
         </div>
@@ -2450,7 +2306,7 @@ CRITICAL: Every Arabic word MUST have full tashkeel (فَتْحَة ضَمَّة
       setPreview(allCards);
       if(failed>0) setErr(`${failed} batch${failed>1?"es":""} failed — ${allCards.length} cards generated successfully. You can save these and retry the rest.`);
     } else {
-      setErr("Generation failed — check your OpenRouter API key in Settings and try again.");
+      setErr("Generation failed — please try again.");
     }
     setGenerating(false);setGenProgress("");
   };
@@ -2976,7 +2832,7 @@ Return ONLY valid JSON: {"sentence":"...","translation":"...","imagePrompt":"...
       // that hides "your API key is empty / out of credits / model down."
       setGen({sentence:arabicForm,translation:card.english,imagePrompt:`A warm everyday scene representing "${card.english}" in Arabic-speaking daily life, natural lighting.`,imageUrl:null,error:err?.message||"Generation failed"});
       setGenLoading(false);setImgLoading(false);
-      showToast(`Couldn't generate: ${err?.message||"unknown error"} — check your OpenRouter key in Settings.`,"error");
+      showToast(`Couldn't generate: ${err?.message||"unknown error"} — please try again.`,"error");
     }
   };
 
@@ -4713,7 +4569,7 @@ function ConversationScreen({decks,cardStates,onBack,onFinish,trackUsage,onLogSt
     }
     // Barge-in: silence any AI speech so the mic doesn't pick it up.
     if(speaking){ stopTtsAudio(); setSpeaking(false); }
-    const useWhisper = _sttEnabled && _sttKey;
+    const useWhisper = _sttEnabled;
     if (useWhisper) startWhisperListening();
     else startWebSpeechListening();
   };
@@ -5149,7 +5005,7 @@ CRITICAL: Every Arabic phrase must have full tashkeel.`,
           {listening&&(
             <div style={{alignSelf:"center",padding:"6px 14px",color:"var(--text3)",fontSize:12,background:"var(--surface2)",borderRadius:100,display:"flex",alignItems:"center",gap:6}}>
               <span style={{width:6,height:6,borderRadius:"50%",background:"var(--weak)",display:"inline-block",animation:"pulse 1.2s infinite"}}/>
-              Listening{_sttEnabled&&_sttKey?" (Whisper)":""}… pause for {Math.round(SILENCE_MS/100)/10}s to send
+              Listening{_sttEnabled?" (Whisper)":""}… pause for {Math.round(SILENCE_MS/100)/10}s to send
             </div>
           )}
           {transcribing&&(
@@ -6335,7 +6191,7 @@ export default function App() {
   const [cardStates,setCardStates]=useState(SEED_CARDS);
   const [activeDeck,setActiveDeck]=useState(null);
   const [activeCard,setActiveCard]=useState(null);
-  const [settings,setSettings]=useState({orKey:"",gKey:"",model:"openai/gpt-4o-mini"});
+  const [settings,setSettings]=useState({model:"openai/gpt-4o-mini"});
   const [user,setUser]=useState(undefined); // undefined = loading, null = signed out
   const [dataLoaded,setDataLoaded]=useState(false);
   const [authLoading,setAuthLoading]=useState(false);
@@ -6490,17 +6346,13 @@ export default function App() {
     _defaultModel = settings.model || "openai/gpt-4o-mini";
     _modelByTag = {...(settings.models||{})};
     _imageModel = settings.imageModel || "gemini-2.5-flash-image";
-    _orKey = settings.orKey||"";
-    _gKey = settings.gKey||"";
-    _ttsKey = settings.ttsKey||"";
     _ttsVoice = settings.ttsVoice||"ar-XA-Wavenet-C";
     _ttsSpeed = typeof settings.ttsSpeed==="number"?settings.ttsSpeed:0.92;
-    _sttKey = settings.sttKey||"";
     _sttEnabled = !!settings.sttEnabled;
     _convSilenceMs = typeof settings.convSilenceMs==="number"?settings.convSilenceMs:2500;
     _convFuzzyThreshold = typeof settings.convFuzzyThreshold==="number"?settings.convFuzzyThreshold:0.8;
     _autoGenerateImage = !!settings.autoGenerateImage;
-  },[settings.model,settings.models,settings.imageModel,settings.orKey,settings.gKey,settings.ttsKey,settings.ttsVoice,settings.ttsSpeed,settings.sttKey,settings.sttEnabled,settings.convSilenceMs,settings.convFuzzyThreshold,settings.autoGenerateImage]);
+  },[settings.model,settings.models,settings.imageModel,settings.ttsVoice,settings.ttsSpeed,settings.sttEnabled,settings.convSilenceMs,settings.convFuzzyThreshold,settings.autoGenerateImage]);
   const go=s=>setScreen(s);
 
   // Usage tracker function passed to all Claude calls
