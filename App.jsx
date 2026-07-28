@@ -746,6 +746,9 @@ function checkCap() {
 
 async function callClaude(prompt, maxTokens=1500, tag="other", trackFn=null, timeoutMs=null) {
   checkCap(); // blocks if user hit their $7 cap
+  // Send Firebase ID token so the server can verify identity + enforce the cap.
+  let authToken = "";
+  try { if (auth.currentUser) authToken = await auth.currentUser.getIdToken(); } catch {}
   // Optional client-side timeout so a hung request fails fast instead of
   // leaving the UI spinning forever (used by quick interactive calls like
   // word lookups).
@@ -754,7 +757,7 @@ async function callClaude(prompt, maxTokens=1500, tag="other", trackFn=null, tim
   try {
     const res = await fetch("/api/claude", {
       method:"POST",
-      headers:{"Content-Type":"application/json"},
+      headers:{"Content-Type":"application/json",...(authToken?{Authorization:`Bearer ${authToken}`}:{})},
       body:JSON.stringify({
         tier: _tier || "normal",
         max_tokens: maxTokens,
@@ -763,6 +766,7 @@ async function callClaude(prompt, maxTokens=1500, tag="other", trackFn=null, tim
       ...(ctrl ? {signal:ctrl.signal} : {}),
     });
     const d = await res.json();
+    if(res.status===402 && d.reason==="cap_reached") throw new CapReachedError(d.spent||0, d.cap||7);
     if(d.error) throw new Error(typeof d.error==="string"?d.error:(d.error.message||"AI request failed"));
     // api/claude.js normalises OpenRouter response → {content:[{type:"text",text}], usage:{input_tokens, output_tokens}}
     const outputText = d.content?.find(b=>b.type==="text")?.text || "";
@@ -804,6 +808,7 @@ async function callGenerate({kind, inputs, model=null, maxTokens=1024, personali
     }),
   });
   let d; try { d=await res.json(); } catch { throw new Error("The generation service returned an unexpected response."); }
+  if(res.status===402 && d.reason==="cap_reached") throw new CapReachedError(d.spent||0, d.cap||7);
   if(res.status===402){ const e=new Error("Upgrade required to generate this content."); e.paywall=true; e.reason=d.reason; throw e; }
   if(!res.ok||d.error) throw new Error(typeof d.error==="string"?d.error:(d.error?.message||"Generation failed"));
   if(trackFn && !d.cached && d.usage){
@@ -6303,7 +6308,7 @@ export default function App() {
   const [cardStates,setCardStates]=useState(SEED_CARDS);
   const [activeDeck,setActiveDeck]=useState(null);
   const [activeCard,setActiveCard]=useState(null);
-  const [settings,setSettings]=useState({model:"openai/gpt-4o-mini",tier:"normal"});
+  const [settings,setSettings]=useState({model:"openai/gpt-4o-mini",tier:"normal",usageCap:7});
   const [user,setUser]=useState(undefined); // undefined = loading, null = signed out
   const [dataLoaded,setDataLoaded]=useState(false);
   const [authLoading,setAuthLoading]=useState(false);
@@ -6361,6 +6366,14 @@ export default function App() {
               // Sync admin flag for client-side cap bypass
               _isAdmin = d.role === "admin";
             } catch(e){ console.error("Data parse error:",e); }
+          } else {
+            // First-time user — initialize their doc with defaults so the $7 cap
+            // and role are enforced from the very first request, before auto-save fires.
+            setDoc(doc(db,"users",u.uid),{
+              role: "user",
+              settings: { usageCap: 7, tier: "normal" },
+              createdAt: Date.now(),
+            }, { merge: true }).catch(()=>{});
           }
           setDataLoaded(true);
           // Show onboarding for first-time users

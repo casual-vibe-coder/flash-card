@@ -13,7 +13,7 @@
 
 import crypto from "node:crypto";
 import { buildPrompt, parseQA } from "../language-island/core/generator.js";
-import { getAdmin } from "./_firebase.js";
+import { getAdmin, checkCap } from "./_firebase.js";
 import { resolveModel, TIER_TO_MODEL, FALLBACK_TIER } from "./_models.js";
 
 const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
@@ -63,11 +63,7 @@ const KINDS = {
 const sha = (obj) =>
   crypto.createHash("sha256").update(JSON.stringify(obj)).digest("hex").slice(0, 40);
 
-// Entitlement stub — Phase 6 replaces this with real free/paid + quota logic.
-// Returns { allowed, tier, reason? }.
-async function checkEntitlement(/* uid, kind, personalized */) {
-  return { allowed: true, tier: "free" };
-}
+// Entitlement is now handled by checkCap in api/_firebase.js (per-user $7 cap).
 
 export default async function handler(req, res) {
   if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
@@ -92,9 +88,14 @@ export default async function handler(req, res) {
     if (token) { try { uid = (await admin.auth().verifyIdToken(token)).uid; } catch { /* anon */ } }
   }
 
-  // 2. Entitlement (stub until Phase 6).
-  const ent = await checkEntitlement(uid, kind, personalized);
-  if (!ent.allowed) return res.status(402).json({ error: "paywall", reason: ent.reason || "upgrade_required" });
+  // 2. Usage cap enforcement — replaces the old entitlement stub.
+  //    Checks the user's total spend against their $7 cap (or custom cap).
+  if (uid) {
+    const cap = await checkCap(uid, tier || "normal");
+    if (!cap.allowed) {
+      return res.status(402).json({ error: "cap_reached", reason: "cap_reached", spent: cap.spent, cap: cap.cap });
+    }
+  }
 
   // 3. Cache lookup. inputsHash dedupes identical requests; `personalized`
   //    content is keyed per-user so it never leaks into the shared library.

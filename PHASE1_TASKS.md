@@ -72,19 +72,26 @@
 
 ## ☀️ Afternoon — Server-side (env ideal, codeable without)
 
-### [5] Init `usageCap:7` on new user signup  *(PM 7)*
-- [ ] In the user-doc creation path, write `usageCap: 7`, `role: "user"`.
-- [ ] Existing users with missing `usageCap` → treated as `7` in code (no migration).
-- **~15 min**
+### [5] Init `usageCap:7` on new user signup  *(PM 7)* — ✅ DONE
+- [x] Added `usageCap: 7` to the default `settings` object.
+- [x] On first sign-in (user doc doesn't exist), explicitly creates the doc with `role: "user"`, `settings: { usageCap: 7, tier: "normal" }`, `createdAt`.
+- [x] Existing users with missing `usageCap` → treated as `7` in code (no migration needed).
+- [x] `_isAdmin` synced from `d.role === "admin"` on user doc load.
+- [x] `npm run build` passes.
 
-### [6] Write `checkCap(uid)` helper in `api/_firebase.js`  *(PM 7)*
-- [ ] Read `users/{uid}` via Firebase Admin.
-- [ ] Sum costs from `usage.byTag` (existing meter shape).
-- [ ] Read `usageCap ?? 7` and `role`.
-- [ ] If `role === "admin"` → always allow.
-- [ ] Else if `spent >= usageCap` → return `{ allowed: false, spent, cap }`.
-- [ ] Else return `{ allowed: true, spent, cap }`.
-- **~30 min**
+### [6] Write `checkCap(uid)` helper in `api/_firebase.js`  *(PM 7)* — ✅ DONE
+- [x] Added server-side pricing tables (mirror of client `MODEL_PRICES`, `IMAGE_PRICES`, etc.).
+- [x] Added `computeSpent(byTag, tier)` function using `resolveModel()` from `_models.js`.
+- [x] Added `checkCap(uid, tier)` — reads `users/{uid}` via Firebase Admin.
+- [x] Reads `settings.usageCap ?? 7` and `role`.
+- [x] Admin bypass: `role === "admin"` OR email in `ADMINS` env allowlist.
+- [x] If `spent >= cap` → returns `{ allowed: false, spent, cap, reason: "cap_reached" }`.
+- [x] Graceful fallback: if Admin SDK not configured, allows (client guard is fallback).
+- [x] Wired `checkCap` into `api/claude.js` (verifies Firebase ID token first).
+- [x] Wired `checkCap` into `api/generate.js` (replaced old `checkEntitlement` stub).
+- [x] `callClaude` now sends Firebase ID token (was missing before).
+- [x] Client handles 402 `cap_reached` → throws `CapReachedError`.
+- [x] `node --check` passes on all API files; `npm run build` passes.
 
 ### [7] Wire `checkCap` + tier resolution into `api/claude.js` and `api/generate.js`  *(PM 4, 7, 13)*
 - [ ] Remove `req.body?.apiKey` / `userKey` fallback → env-only.

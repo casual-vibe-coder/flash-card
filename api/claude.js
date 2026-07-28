@@ -1,4 +1,5 @@
 import { resolveModel, TIER_TO_MODEL, FALLBACK_TIER } from "./_models.js";
+import { getAdmin, checkCap } from "./_firebase.js";
 
 export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
@@ -9,6 +10,22 @@ export default async function handler(req, res) {
 
   const { tier, max_tokens, messages } = req.body;
   const model = resolveModel(tier);
+
+  // Authenticate the caller (verify Firebase ID token) + enforce the $7 cap.
+  let uid = null;
+  const admin = await getAdmin();
+  if (admin) {
+    const token = (req.headers.authorization || "").replace(/^Bearer\s+/i, "");
+    if (token) {
+      try { uid = (await admin.auth().verifyIdToken(token)).uid; } catch { /* anon */ }
+    }
+    if (uid) {
+      const cap = await checkCap(uid, tier || "normal");
+      if (!cap.allowed) {
+        return res.status(402).json({ error: "cap_reached", reason: "cap_reached", spent: cap.spent, cap: cap.cap });
+      }
+    }
+  }
 
   try {
     const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
