@@ -93,19 +93,24 @@
 - [x] Client handles 402 `cap_reached` → throws `CapReachedError`.
 - [x] `node --check` passes on all API files; `npm run build` passes.
 
-### [7] Wire `checkCap` + tier resolution into `api/claude.js` and `api/generate.js`  *(PM 4, 7, 13)*
-- [ ] Remove `req.body?.apiKey` / `userKey` fallback → env-only.
-- [ ] Resolve `tier → TIER_TO_MODEL[tier]`, fallback to `normal` if invalid.
-- [ ] Call `checkCap(uid)` before the OpenRouter request.
-- [ ] If blocked → return `402 { error: "cap_reached", spent, cap }`.
-- [ ] On provider 5xx/rate-limit → retry once with `normal` model.
-- [ ] Keep writing `usage_events` (already done in `generate.js:165`).
-- **~1 hr**
+### [7] Wire `checkCap` + tier resolution into `api/claude.js` and `api/generate.js`  *(PM 4, 7, 13)* — ✅ DONE (completed alongside Task 6)
+- [x] Remove `req.body?.apiKey` / `userKey` fallback → env-only.
+- [x] Resolve `tier → TIER_TO_MODEL[tier]`, fallback to `normal` if invalid.
+- [x] Call `checkCap(uid)` before the OpenRouter request.
+- [x] If blocked → return `402 { error: "cap_reached", spent, cap }`.
+- [x] On provider 5xx/rate-limit → retry once with `normal` model.
+- [x] Keep writing `usage_events` (already done in `generate.js:165`).
+- [x] `callClaude` now sends Firebase ID token (was missing before).
+- [x] `checkEntitlement` stub removed from `generate.js`, replaced by `checkCap`.
 
-### [8] Lock `api/tts.js`, `api/stt.js`, `api/image.js` to env-only  *(PM 4, 5)*
-- [ ] Remove `req.body.apiKey` fallback in each → env-only.
-- [ ] Optionally add `checkCap` here too (cap covers all AI per decision).
-- **~20 min**
+### [8] Lock `api/tts.js`, `api/stt.js`, `api/image.js` to env-only  *(PM 4, 5)* — ✅ DONE
+- [x] `api/tts.js`: removed `req.body.apiKey` fallback → env-only (`GOOGLE_TTS_API_KEY` / `GOOGLE_API_KEY`).
+- [x] `api/stt.js`: removed `req.body.openaiKey` / `req.body.deepgramKey` fallbacks → env-only.
+- [x] `api/image.js`: removed `req.body.apiKey` fallback → env-only (`GOOGLE_API_KEY`).
+- [x] Added `checkCap` enforcement to all three (auth + cap check before the provider call).
+- [x] Client sends Firebase ID token on TTS, STT, and image calls.
+- [x] Client handles 402 `cap_reached` from all three.
+- [x] `node --check` passes on all API files; `npm run build` passes.
 
 ### [9] Admin allowlist  *(PM 7 admin flag)*
 - [ ] Read `ADMINS` env var (comma-separated emails) in `api/_firebase.js`.

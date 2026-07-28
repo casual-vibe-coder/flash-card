@@ -3,13 +3,18 @@
 // hint, transcribes via OpenAI Whisper or Deepgram, returns plain text.
 //
 // Provider selection order:
-//   1. req.body.provider explicit override
-//   2. DEEPGRAM_API_KEY env var → Deepgram
-//   3. OPENAI_API_KEY env var (or req.body.openaiKey) → Whisper
-//   4. Nothing set → { transcript: null, noKey: true } (client falls back to
+//   1. DEEPGRAM_API_KEY env var → Deepgram
+//   2. OPENAI_API_KEY env var → Whisper
+//   3. Nothing set → { transcript: null, noKey: true } (client falls back to
 //      browser Web Speech API)
 //
+// Security: API keys are env-only (never accepted from the client). The $7
+// usage cap is enforced server-side via checkCap when Firebase Admin is
+// configured.
+//
 // Audio is expected as a base64-encoded webm/ogg/wav blob from MediaRecorder.
+
+import { getAdmin, checkCap } from "./_firebase.js";
 
 export const config = { api: { bodyParser: { sizeLimit: '8mb' } } };
 
@@ -20,12 +25,27 @@ export default async function handler(req, res) {
   const mime = req.body.mime || 'audio/webm';
   const language = req.body.language || 'ar';
   const providerHint = (req.body.provider || '').toLowerCase();
-  const openaiKey = process.env.OPENAI_API_KEY || req.body.openaiKey || '';
-  const deepgramKey = process.env.DEEPGRAM_API_KEY || req.body.deepgramKey || '';
+  // Env-only keys — never accepted from the client.
+  const openaiKey = process.env.OPENAI_API_KEY || '';
+  const deepgramKey = process.env.DEEPGRAM_API_KEY || '';
 
   if (!audioB64) return res.status(400).json({ transcript: null, error: 'Missing audio' });
   if (!openaiKey && !deepgramKey) {
     return res.status(200).json({ transcript: null, noKey: true });
+  }
+
+  // Authenticate + enforce the $7 cap.
+  const admin = await getAdmin();
+  if (admin) {
+    const token = (req.headers.authorization || "").replace(/^Bearer\s+/i, "");
+    let uid = null;
+    if (token) { try { uid = (await admin.auth().verifyIdToken(token)).uid; } catch { /* anon */ } }
+    if (uid) {
+      const cap = await checkCap(uid, "normal");
+      if (!cap.allowed) {
+        return res.status(402).json({ error: "cap_reached", reason: "cap_reached", spent: cap.spent, cap: cap.cap });
+      }
+    }
   }
 
   const useDeepgram =

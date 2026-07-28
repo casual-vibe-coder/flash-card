@@ -1014,11 +1014,13 @@ async function synthesizeArabic(rawText,opts={}){
   };
   if(cached){play(cached);return;}
   try{
-    const res=await fetch("/api/tts",{method:"POST",headers:{"Content-Type":"application/json"},
+    let ttsAuthToken=""; try{ if(auth.currentUser) ttsAuthToken=await auth.currentUser.getIdToken(); }catch{}
+    const res=await fetch("/api/tts",{method:"POST",headers:{"Content-Type":"application/json",...(ttsAuthToken?{Authorization:`Bearer ${ttsAuthToken}`}:{})},
       body:JSON.stringify({text,voice,speed})});
     if(!isCurrent()) return;
     const data=await res.json();
     if(!isCurrent()) return;
+    if(res.status===402 && data.reason==="cap_reached") throw new CapReachedError(data.spent||0,data.cap||7);
     if(data.noKey||!data.audio){browserSpeak(text,onEnd);onStart?.();return;}
     ttsCacheWrite(cacheKey,data.audio);
     // Track only NEW synthesis (cache hits cost nothing).
@@ -1043,7 +1045,8 @@ async function getTtsSrc(rawText){
   const cached=ttsCacheRead(cacheKey);
   if(cached) return cached;
   try{
-    const res=await fetch("/api/tts",{method:"POST",headers:{"Content-Type":"application/json"},
+    let ttsAuthToken=""; try{ if(auth.currentUser) ttsAuthToken=await auth.currentUser.getIdToken(); }catch{}
+    const res=await fetch("/api/tts",{method:"POST",headers:{"Content-Type":"application/json",...(ttsAuthToken?{Authorization:`Bearer ${ttsAuthToken}`}:{})},
       body:JSON.stringify({text,voice,speed})});
     const data=await res.json();
     if(data.noKey||!data.audio) return null;
@@ -1096,9 +1099,11 @@ async function transcribeAudio(blob, durationSec=null){
     let bin=""; const bytes=new Uint8Array(buf);
     for(let i=0;i<bytes.length;i++) bin+=String.fromCharCode(bytes[i]);
     const audio=btoa(bin);
-    const res=await fetch("/api/stt",{method:"POST",headers:{"Content-Type":"application/json"},
+    let sttAuthToken=""; try{ if(auth.currentUser) sttAuthToken=await auth.currentUser.getIdToken(); }catch{}
+    const res=await fetch("/api/stt",{method:"POST",headers:{"Content-Type":"application/json",...(sttAuthToken?{Authorization:`Bearer ${sttAuthToken}`}:{})},
       body:JSON.stringify({audio,mime:blob.type||"audio/webm",language:"ar"})});
     const data=await res.json();
+    if(res.status===402 && data.reason==="cap_reached") return {transcript:null,error:`AI credit cap reached ($${(data.cap||7).toFixed(2)})`};
     if(data.noKey) return {transcript:null,noKey:true};
     if(data.error) return {transcript:null,error:data.error}; // surface the real Whisper/Deepgram error
     if(!data.transcript) return {transcript:null};
@@ -1118,15 +1123,17 @@ async function generateImage(prompt, trackFn=null) {
   checkCap(); // blocks if user hit their $7 cap
   const model = _imageModel || "gemini-2.5-flash-image";
   try {
+    let imgAuthToken=""; try{ if(auth.currentUser) imgAuthToken=await auth.currentUser.getIdToken(); }catch{}
     const res = await fetch("/api/image", {
       method:"POST",
-      headers:{"Content-Type":"application/json"},
+      headers:{"Content-Type":"application/json",...(imgAuthToken?{Authorization:`Bearer ${imgAuthToken}`}:{})},
       body:JSON.stringify({
         model,
         prompt:`${prompt} Style: minimalist flat sticker illustration, single bold subject centered on a plain white background, vivid simple colors, thick clean outlines, slightly exaggerated for memorability, no text or letters anywhere in the image. STRICT RELIGIOUS CONSTRAINT — non-negotiable: absolutely NO eyes anywhere in the image. No human faces, no animal faces, no eyes of any kind (no dots, no slits, no glint, no abstract eye shapes). If a person or animal must appear, depict only from behind or as a featureless silhouette with no facial features at all. Prefer objects, symbols, scenery, or hands over people and animals.`,
       }),
     });
     const data = await res.json();
+    if (res.status===402 && data.reason==="cap_reached") throw new CapReachedError(data.spent||0,data.cap||7);
     if (data.noKey) return null;
     const url = data.data?.[0]?.url || null;
     if (url && trackFn) {
