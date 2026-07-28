@@ -1309,7 +1309,11 @@ function UsageMeter({usage, settings, onReset}) {
   const totalCost = Object.entries(usage.byTag).reduce((s,[t,v])=>s+costForTag(t,v),0);
   const totalCalls = Object.values(usage.byTag).reduce((s,v)=>s+v.calls,0);
 
-  const barColor = totalCost<0.10?"var(--know)":totalCost<0.50?"#C07000":"var(--weak)";
+  const usageCap = settings?.usageCap ?? 7;
+  const remaining = Math.max(0, usageCap - totalCost);
+  const pctUsed = usageCap > 0 ? Math.min(100, (totalCost / usageCap) * 100) : 100;
+  const capReached = totalCost >= usageCap;
+  const barColor = capReached ? "var(--weak)" : pctUsed < 15 ? "var(--know)" : pctUsed < 70 ? "#C07000" : "var(--weak)";
   const activeModel = resolveTierModel(settings?.tier) || "openai/gpt-4o-mini";
   const unitsLabel=(tag,v)=>{
     if(NON_TEXT_TAGS.has(tag)){
@@ -1349,18 +1353,31 @@ function UsageMeter({usage, settings, onReset}) {
   return (
     <div style={{background:"var(--surface)",border:"1.5px solid var(--border)",borderRadius:"var(--r)",overflow:"hidden"}}>
       <div style={{padding:"14px 16px",cursor:"pointer",display:"flex",justifyContent:"space-between",alignItems:"center"}} onClick={()=>setOpen(v=>!v)}>
-        <div style={{display:"flex",alignItems:"center",gap:8}}>
+        <div style={{display:"flex",alignItems:"center",gap:8,flex:1}}>
           <DollarSign size={15} color={barColor}/>
-          <div>
+          <div style={{flex:1}}>
             <div className="sec" style={{margin:0,color:barColor}}>AI Credit Usage</div>
-            <div style={{fontSize:14,fontWeight:700,color:"var(--text)",marginTop:1}}>
-              ~${totalCost.toFixed(4)}
-              <span style={{fontSize:11,fontWeight:400,color:"var(--text3)",marginLeft:6}}>{totalCalls} calls · priced for {activeModel.split("/").pop()}</span>
+            <div style={{fontSize:14,fontWeight:700,color:capReached?"var(--weak)":"var(--text)",marginTop:1}}>
+              ${totalCost.toFixed(2)} <span style={{fontSize:12,fontWeight:400,color:"var(--text3)"}}>of ${usageCap.toFixed(2)}</span>
+              <span style={{fontSize:11,fontWeight:400,color:"var(--text3)",marginLeft:6}}>· ${remaining.toFixed(2)} remaining</span>
             </div>
+            {/* Progress bar — fills as the user spends toward their cap */}
+            <div style={{marginTop:6,height:6,background:"var(--surface2)",borderRadius:100,overflow:"hidden"}}>
+              <div style={{height:"100%",width:`${pctUsed}%`,background:barColor,borderRadius:100,transition:"width 0.3s ease"}}/>
+            </div>
+          </div>
+          <div style={{fontSize:11,fontWeight:400,color:"var(--text3)",textAlign:"right",whiteSpace:"nowrap"}}>
+            {totalCalls} calls · {activeModel.split("/").pop()}
           </div>
         </div>
         {open?<ChevronUp size={15} color="var(--text3)"/>:<ChevronDown size={15} color="var(--text3)"/>}
       </div>
+
+      {capReached && (
+        <div style={{padding:"8px 16px",background:"var(--weak-bg)",borderBottom:"1px solid var(--weak-border)",fontSize:12,fontWeight:600,color:"var(--weak)",display:"flex",alignItems:"center",gap:6}}>
+          ⚠ You've reached your ${usageCap.toFixed(2)} AI credit cap. Contact an admin to extend.
+        </div>
+      )}
 
       {open&&(
         <div style={{borderTop:"1px solid var(--border)",padding:"12px 16px",display:"flex",flexDirection:"column",gap:10}}>
@@ -1389,8 +1406,12 @@ function UsageMeter({usage, settings, onReset}) {
           })}
           <div className="divider" style={{margin:"6px 0"}}/>
           <div style={{display:"flex",justifyContent:"space-between",fontSize:13,fontWeight:700}}>
-            <span>Total (est.)</span>
-            <span style={{color:barColor}}>${totalCost.toFixed(4)}</span>
+            <span>Spent</span>
+            <span style={{color:barColor}}>${totalCost.toFixed(4)} / ${usageCap.toFixed(2)}</span>
+          </div>
+          <div style={{display:"flex",justifyContent:"space-between",fontSize:12,color:"var(--text3)"}}>
+            <span>Remaining</span>
+            <span>${remaining.toFixed(4)}</span>
           </div>
 
           {/* Tracking window + reset */}

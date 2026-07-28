@@ -49,11 +49,14 @@
 - [x] UsageMeter `modelForTag` + `activeModel` resolve via tier.
 - [x] `npm run build` passes; `node --check` passes on all api files.
 
-### [3] Update UsageMeter UI to show remaining credit  *(PM 6 + new requirement)*
-- [ ] Change display to: **"$X.XX spent of $7.00 · $Y.YY remaining"** + progress bar.
-- [ ] Read cap from `settings.usageCap ?? 7`.
-- [ ] Use existing `usage.byTag` + `MODEL_PRICES` (already wired).
-- **~30 min**
+### [3] Update UsageMeter UI to show remaining credit  *(PM 6 + new requirement)* — ✅ DONE
+- [x] Header now shows: **"$X.XX of $7.00 · $Y.YY remaining"** + a progress bar.
+- [x] Read cap from `settings.usageCap ?? 7`.
+- [x] Use existing `usage.byTag` + `MODEL_PRICES` (already wired).
+- [x] Color-coded bar: green (<15%), amber (<70%), red (≥cap).
+- [x] Warning banner shown when cap is reached: "⚠ You've reached your $7 AI credit cap."
+- [x] Expanded view shows Spent (vs cap) + Remaining lines.
+- [x] `npm run build` passes.
 
 ### [4] Client-side cap guard  *(PM 7, 13)*
 - [ ] Before every `callClaude` / `callGenerate` / TTS / STT / image call, compute total spent.
