@@ -2140,6 +2140,47 @@ function ProfilePanel({profile,setProfile,onRetake}) {
   );
 }
 
+// Personal backup export — base words only (arabicBase + english + wordType),
+// no forms/SRS/status. Forms are regeneratable from the base word on demand,
+// so they're deliberately left out to keep this a lean, human-readable backup
+// rather than a full state dump.
+function ExportDataPanel({decks,cardStates}) {
+  const totalCards=Object.values(cardStates||{}).reduce((s,arr)=>s+(arr?.length||0),0);
+  const doExport=()=>{
+    const payload={
+      exportedAt:new Date().toISOString(),
+      deckCount:decks.length,
+      cardCount:totalCards,
+      decks:decks.map(d=>({
+        title:d.title,
+        cards:(cardStates[d.id]||[]).map(c=>({english:c.english,arabic:c.arabicBase,type:c.wordType})),
+      })),
+    };
+    const blob=new Blob([JSON.stringify(payload,null,2)],{type:"application/json"});
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement("a");
+    a.href=url;
+    a.download=`arabic-flashcards-export-${new Date().toISOString().slice(0,10)}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    showToast(`Exported ${totalCards} cards across ${decks.length} decks`,"success");
+  };
+  return (
+    <div style={{background:"var(--surface)",border:"1.5px solid var(--border)",borderRadius:"var(--r)",padding:"15px 17px"}}>
+      <div className="sec">Export Flashcards</div>
+      <div style={{fontSize:13,color:"var(--text2)",lineHeight:1.6,marginBottom:10}}>
+        Downloads a JSON backup of every deck and card — English meaning + the base Arabic word only (singular for nouns, third-person-masculine-past for verbs). Forms, SRS progress, and status aren't included; regenerate those from the base word if you ever need to restore.
+      </div>
+      <button className="btn btn-primary" onClick={doExport} disabled={!totalCards}
+        style={{width:"100%",padding:12,borderRadius:"var(--rs)",fontSize:13,opacity:totalCards?1:0.5}}>
+        <Download size={14}/> Export {totalCards} card{totalCards===1?"":"s"} as JSON
+      </button>
+    </div>
+  );
+}
+
 function SettingsScreen({settings,setSettings,onBack,usage,user,onSignOut,onReplayOnboarding,profile,setProfile,studyLog,onUpdateTargets,decks,cardStates,setCardStates,trackUsage,onResetUsage}) {
   const [local,setLocal]=useState(settings);
   const [saved,setSaved]=useState(false);
@@ -2400,6 +2441,8 @@ function SettingsScreen({settings,setSettings,onBack,usage,user,onSignOut,onRepl
         <CardCleanupTool decks={decks} cardStates={cardStates} setCardStates={setCardStates} trackUsage={trackUsage}/>
 
         <DuplicateFinder decks={decks} cardStates={cardStates} setCardStates={setCardStates}/>
+
+        <ExportDataPanel decks={decks} cardStates={cardStates}/>
 
         <button className="btn btn-primary" onClick={save} style={{width:"100%",padding:14,borderRadius:"var(--r)",fontSize:15}}>
           {saved?<><Check size={16}/>Saved</>:<><Save size={15}/>Save Settings</>}
@@ -6780,6 +6823,8 @@ export default function App() {
   const [settings,setSettings]=useState({orKey:"",gKey:"",model:"openai/gpt-4o-mini"});
   const [user,setUser]=useState(undefined); // undefined = loading, null = signed out
   const [dataLoaded,setDataLoaded]=useState(false);
+  const [loadError,setLoadError]=useState(false);
+  const [loadRetryTick,setLoadRetryTick]=useState(0);
   const [authLoading,setAuthLoading]=useState(false);
   const [authError,setAuthError]=useState("");
   const [sessionCards,setSessionCards]=useState([]);
@@ -6808,16 +6853,24 @@ export default function App() {
   // Firebase auth state listener
   useEffect(()=>{
     let mounted=true;
-    const unsub=onAuthStateChanged(auth,u=>{
-      if(!mounted) return;
-      if(u){
-        setUser(u);
-        getDoc(doc(db,"users",u.uid)).then(snap=>{
+    const loadUserDoc=(u)=>{
+      setLoadError(false);
+      getDoc(doc(db,"users",u.uid)).then(snap=>{
           if(!mounted) return;
           if(snap.exists()){
             const d=snap.data();
             try {
-              if(d.decks?.length) {
+              // Trust an explicitly-present `decks` array as-is — including an
+              // empty one, which is a legitimate "user deleted everything"
+              // state. Only fall back to the local seed when the field is
+              // truly ABSENT (e.g. a doc predating this field). Previously this
+              // checked `d.decks?.length`, so any load that returned a falsy/
+              // empty decks array (transient read glitch, etc.) silently kept
+              // the in-memory SEED_DECKS/SEED_CARDS, which then got written
+              // back over the real cloud data by the autosave effect below —
+              // wiping the user's real decks. cardStates cleaning is nested in
+              // here for the same reason: never derive it from local seed data.
+              if(Array.isArray(d.decks)) {
                 setDecks(d.decks);
                 // Clean orphaned cardStates — only keep keys matching existing decks
                 if(d.cardStates){
@@ -6840,15 +6893,26 @@ export default function App() {
           if(!snap.exists()||!snap.data()?.onboardingDone) setShowOnboarding(true);
         }).catch(e=>{
           console.error("Firestore load error:",e);
-          if(mounted) setDataLoaded(true);
+          // Do NOT setDataLoaded(true) here — that would arm the autosave
+          // effect below with whatever is still in local state (seed data on
+          // a fresh mount), which would then overwrite the user's real cloud
+          // data. Leaving dataLoaded false blocks autosave and surfaces a
+          // retry instead of silently deleting the account's decks.
+          if(mounted) setLoadError(true);
         });
+    };
+    const unsub=onAuthStateChanged(auth,u=>{
+      if(!mounted) return;
+      if(u){
+        setUser(u);
+        loadUserDoc(u);
       } else {
         setUser(null);
         setDataLoaded(false);
       }
     });
     return ()=>{mounted=false;unsub();};
-  },[]);
+  },[loadRetryTick]);
 
   // Auto-save to Firestore whenever data changes
   useEffect(()=>{
@@ -7193,6 +7257,17 @@ export default function App() {
   if(!user) return (
     <><style>{CSS}</style>
     <div className="app"><LoginScreen onLogin={handleSignIn} loading={authLoading} error={authError}/></div></>
+  );
+
+  // Couldn't reach Firestore — show a retry instead of silently continuing
+  // with empty/default local state (which the autosave effect would then
+  // write over the user's real cloud data).
+  if(loadError) return (
+    <><style>{CSS}</style>
+    <div className="app" style={{display:"flex",flexDirection:"column",gap:14,alignItems:"center",justifyContent:"center",minHeight:"100vh",padding:24,textAlign:"center"}}>
+      <div style={{fontSize:14,color:"var(--text2)"}}>Couldn't load your data. Your decks are safe in the cloud — this device just couldn't reach it.</div>
+      <button className="btn btn-primary" onClick={()=>setLoadRetryTick(t=>t+1)} style={{padding:"10px 18px",borderRadius:"var(--r)"}}>Retry</button>
+    </div></>
   );
 
   // While Firestore loads or session is restoring, show spinner so we don't flash HomeScreen before resuming
