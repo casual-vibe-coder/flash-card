@@ -1,0 +1,52 @@
+rules_version = '2';
+
+// Phase 1 Security Rules — strict user data isolation.
+// - users/{uid} and subcollections: owner-only.
+// - preset_decks: read-only for authenticated users (team-curated content).
+// - generations, usage_events: NO client access (server-only via Admin SDK).
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ─── User data — owner-only ───
+    // Each user's data lives at users/{uid}. Only the authenticated owner
+    // can read or write their own document. This includes decks, cardStates,
+    // settings (with usageCap + tier), usage (byTag spend tracking), studyLog,
+    // profile, and role.
+    match /users/{uid} {
+      allow read, write: if request.auth != null && request.auth.uid == uid;
+
+      // Language Island capsule sync — owner-only subcollection.
+      match /island/{key} {
+        allow read, write: if request.auth != null && request.auth.uid == uid;
+      }
+    }
+
+    // ─── Preset decks — read-only for authenticated users ───
+    // Team-curated starter decks published by admins. Clients can read but
+    // never write (admins manage these via Firebase Console or Admin SDK).
+    match /preset_decks {
+      allow read: if request.auth != null;
+      allow write: if false;
+    }
+
+    // ─── Server-only collections — NO client access ───
+    // These are written exclusively by the Admin SDK (serverless functions).
+    // No client should ever read or write these directly.
+
+    // AI generation cache (api/generate.js).
+    match /generations/{docId} {
+      allow read, write: if false;
+    }
+
+    // Per-user usage audit log (api/generate.js, api/claude.js).
+    match /usage_events/{docId} {
+      allow read, write: if false;
+    }
+
+    // ─── Default deny — anything not matched above is blocked ───
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

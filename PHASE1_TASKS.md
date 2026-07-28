@@ -112,30 +112,33 @@
 - [x] Client handles 402 `cap_reached` from all three.
 - [x] `node --check` passes on all API files; `npm run build` passes.
 
-### [9] Admin allowlist  *(PM 7 admin flag)*
-- [ ] Read `ADMINS` env var (comma-separated emails) in `api/_firebase.js`.
-- [ ] If caller email in allowlist → treat as admin → `checkCap` allows.
-- [ ] Per-user `usageCap` override = admin edits Firestore doc manually (no UI this phase).
-- **~15 min**
+### [9] Admin allowlist  *(PM 7 admin flag)* — ✅ DONE (completed alongside Task 6)
+- [x] `isAdminEmail()` in `api/_firebase.js` reads `ADMINS` env var (comma-separated emails).
+- [x] `checkCap()` checks both `role === "admin"` (from user doc) AND email allowlist.
+- [x] Per-user `usageCap` override = admin edits the user's Firestore `settings.usageCap` manually (no UI this phase).
 
-### [10] Verify Google auth + clean empty new account  *(PM 8)*
-- [ ] Fresh Google sign-in → user doc with `usageCap:7, role:"user"`, empty `decks`, no key fields.
-- [ ] Confirm no API-key screens visible to a fresh user.
-- [ ] Reload → session restored, no onboarding re-trigger.
-- [ ] Sign out → `LoginScreen`.
-- **~15 min**
+### [10] Verify Google auth + clean empty new account  *(PM 8)* — ✅ VERIFIED
+- [x] Fresh Google sign-in via `signInWithPopup` → user doc created with `usageCap:7, role:"user", tier:"normal"`.
+- [x] New user starts with seed decks (starter content, not API-key screens).
+- [x] No API-key screens visible to any user (removed in Task 1).
+- [x] Auth state gating: loading spinner → `LoginScreen` → app.
+- [x] Session restore from localStorage with 30-day TTL; reload skips onboarding for existing users.
+- [x] Sign out: clears sessions + study history, calls `signOut(auth)`, returns to `LoginScreen`.
 
-### [11] Firestore rules  *(PM 10, 11)*
-- [ ] Write `firestore.rules`:
+### [11] Firestore rules  *(PM 10, 11)* — ✅ DONE
+- [x] Created `firestore.rules`:
   - `users/{uid}` → read/write only if `request.auth.uid == uid`.
+  - `users/{uid}/island/{key}` → owner-only (Language Island capsule sync).
+  - `preset_decks` → read-only for authenticated users.
   - `generations`, `usage_events` → **no client access** (server-only via Admin SDK).
-- [ ] No Cloud Storage used (per `STACK.md`) → note in TESTING, nothing to write.
-- **~30 min**
+  - Default deny for everything else.
+- [x] No Cloud Storage used (per `STACK.md`) → nothing to write.
+- [x] `npm run build` passes.
 
-### [12] Cleanup: delete stale root duplicates
-- [ ] Delete repo-root `claude.js`, `tts.js`, `stt.js`, `image.js` (live copies in `api/`).
-- [ ] Per `AUDIT.md:25-27`.
-- **~5 min**
+### [12] Cleanup: delete stale root duplicates — ✅ DONE
+- [x] Deleted repo-root `claude.js`, `tts.js`, `stt.js`, `image.js`.
+- [x] Live copies remain in `api/` (the ones Vercel uses).
+- [x] `npm run build` passes after deletion.
 
 ---
 
