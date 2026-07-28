@@ -58,12 +58,15 @@
 - [x] Expanded view shows Spent (vs cap) + Remaining lines.
 - [x] `npm run build` passes.
 
-### [4] Client-side cap guard  *(PM 7, 13)*
-- [ ] Before every `callClaude` / `callGenerate` / TTS / STT / image call, compute total spent.
-- [ ] If `spent >= usageCap ?? 7` → block the call.
-- [ ] Show toast: **"You've reached your $7 AI credit cap. Contact an admin to extend."**
-- [ ] Throw a typed error so callers render a friendly state.
-- **~45 min**
+### [4] Client-side cap guard  *(PM 7, 13)* — ✅ DONE
+- [x] Added module-level `CapReachedError` class (typed error with `capReached` flag).
+- [x] Added `computeSpent(byTag)` function using the same pricing tables as UsageMeter.
+- [x] Added `checkCap()` that throws `CapReachedError` + shows toast when cap is hit.
+- [x] Added `checkCap()` guard at the start of: `callClaude`, `callGenerate`, `synthesizeArabic`, `getTtsSrc`, `transcribeAudio`, `generateImage`.
+- [x] Added module-level refs `_usageByTag`, `_usageCap`, `_isAdmin` synced from App state.
+- [x] Admin users (`role === "admin"` in user doc) bypass the cap.
+- [x] Existing callers' catch blocks display the error message gracefully.
+- [x] `npm run build` passes.
 
 ---
 

@@ -691,11 +691,61 @@ let _convSilenceMs = 2500;
 let _convFuzzyThreshold = 0.8;
 let _autoGenerateImage = false; // opt-in per learning aid; off by default
 
+// ─── Client-side usage cap guard ───
+// Mirrors the server-side checkCap. Prevents the request from even firing
+// when the user has spent their full cap, giving instant feedback. The
+// server-side check (api/_firebase.js → checkCap) remains the source of truth.
+let _usageByTag = {};   // synced from App's usage state
+let _usageCap = 7;      // synced from settings.usageCap
+let _isAdmin = false;   // synced from auth state; admins bypass the cap
+
+// Typed error so callers can distinguish "cap reached" from other failures
+// and render a friendly state instead of a generic error message.
+class CapReachedError extends Error {
+  constructor(spent, cap) {
+    super(`AI credit cap reached: $${spent.toFixed(2)} of $${cap.toFixed(2)} used.`);
+    this.name = "CapReachedError";
+    this.capReached = true;
+    this.spent = spent;
+    this.cap = cap;
+  }
+}
+
+// Compute total spent (USD) from a usage.byTag object, using the same
+// pricing tables as UsageMeter. Module-level so the guard can run without
+// access to React state.
+function computeSpent(byTag) {
+  if (!byTag) return 0;
+  let total = 0;
+  for (const [tag, v] of Object.entries(byTag)) {
+    if (!v || v.calls === 0) continue;
+    const imgModel = TAG_TO_IMAGE_MODEL[tag];
+    if (imgModel) { total += v.calls * (IMAGE_PRICES[imgModel] || 0); continue; }
+    if (tag === "ttsGoogle") { total += v.inputTokens * TTS_PRICE_PER_CHAR; continue; }
+    if (tag === "sttWhisper") { total += v.inputTokens * STT_PRICE_PER_SECOND; continue; }
+    const model = _modelByTag[tag] || resolveTierModel(_tier) || "openai/gpt-4o-mini";
+    const p = MODEL_PRICES[model] || PRICE_FALLBACK;
+    total += v.inputTokens * p.in / 1_000_000 + v.outputTokens * p.out / 1_000_000;
+  }
+  return total;
+}
+
+// Throws CapReachedError if the user has hit their cap (and isn't an admin).
+function checkCap() {
+  if (_isAdmin) return;
+  const spent = computeSpent(_usageByTag);
+  if (spent >= _usageCap) {
+    showToast(`You've reached your $${_usageCap.toFixed(2)} AI credit cap. Contact an admin to extend.`, "error", 4000);
+    throw new CapReachedError(spent, _usageCap);
+  }
+}
+
 // pickModelForTag removed — the server now resolves tier → model.
 // Kept here as a comment marker; _modelByTag is retained only for UsageMeter
 // pricing preview (legacy per-feature overrides, if present in old user docs).
 
 async function callClaude(prompt, maxTokens=1500, tag="other", trackFn=null, timeoutMs=null) {
+  checkCap(); // blocks if user hit their $7 cap
   // Optional client-side timeout so a hung request fails fast instead of
   // leaving the UI spinning forever (used by quick interactive calls like
   // word lookups).
@@ -741,6 +791,7 @@ async function callClaude(prompt, maxTokens=1500, tag="other", trackFn=null, tim
 // Throws err.paywall=true on a 402 (wired to a paywall UI in Phase 6).
 // ─────────────────────────────────────────────────────────────
 async function callGenerate({kind, inputs, model=null, maxTokens=1024, personalized=false, noCache=false, tag="other", trackFn=null}){
+  checkCap(); // blocks if user hit their $7 cap
   let token="";
   try { if(auth.currentUser) token=await auth.currentUser.getIdToken(); } catch {}
   const res=await fetch("/api/generate",{
@@ -935,6 +986,7 @@ function browserSpeak(text,onEnd){
 async function synthesizeArabic(rawText,opts={}){
   const text=cleanArabicForSpeech(rawText);
   if(!text){opts.onEnd?.();return;}
+  checkCap(); // blocks if user hit their $7 cap
   const voice=opts.voice||_ttsVoice||"ar-XA-Wavenet-C";
   const speed=opts.speed??_ttsSpeed??0.92;
   const {onStart,onEnd}=opts;
@@ -979,6 +1031,7 @@ async function synthesizeArabic(rawText,opts={}){
 async function getTtsSrc(rawText){
   const text=cleanArabicForSpeech(rawText);
   if(!text) return null;
+  checkCap(); // blocks if user hit their $7 cap
   const voice=_ttsVoice||"ar-XA-Wavenet-C";
   const speed=1.0; // neutral; playback rate is applied client-side
   const cacheKey=ttsHash(`${voice}|${speed}|${text}`);
@@ -1032,6 +1085,7 @@ function diffTokens(target,user){
 // reason a transcription failed instead of a generic "out of credit" guess.
 async function transcribeAudio(blob, durationSec=null){
   if(!_sttEnabled) return {transcript:null,disabled:true};
+  checkCap(); // blocks if user hit their $7 cap
   try{
     const buf=await blob.arrayBuffer();
     let bin=""; const bytes=new Uint8Array(buf);
@@ -1056,6 +1110,7 @@ async function transcribeAudio(blob, durationSec=null){
 // Image generation via Nano Banana (Gemini Flash Image) — through /api/image proxy
 // Returns image URL (base64 data URL) or null (app shows scene description as fallback)
 async function generateImage(prompt, trackFn=null) {
+  checkCap(); // blocks if user hit their $7 cap
   const model = _imageModel || "gemini-2.5-flash-image";
   try {
     const res = await fetch("/api/image", {
@@ -6303,6 +6358,8 @@ export default function App() {
               if(d.profile) setProfile(d.profile);
               if(d.usage?.byTag) setUsage(d.usage);
               if(d.studyLog) setStudyLog(sl=>({...initStudyLog(),...d.studyLog}));
+              // Sync admin flag for client-side cap bypass
+              _isAdmin = d.role === "admin";
             } catch(e){ console.error("Data parse error:",e); }
           }
           setDataLoaded(true);
@@ -6410,7 +6467,14 @@ export default function App() {
     _convSilenceMs = typeof settings.convSilenceMs==="number"?settings.convSilenceMs:2500;
     _convFuzzyThreshold = typeof settings.convFuzzyThreshold==="number"?settings.convFuzzyThreshold:0.8;
     _autoGenerateImage = !!settings.autoGenerateImage;
-  },[settings.model,settings.models,settings.imageModel,settings.tier,settings.ttsVoice,settings.ttsSpeed,settings.sttEnabled,settings.convSilenceMs,settings.convFuzzyThreshold,settings.autoGenerateImage]);
+    _usageCap = settings.usageCap ?? 7;
+  },[settings.model,settings.models,settings.imageModel,settings.tier,settings.ttsVoice,settings.ttsSpeed,settings.sttEnabled,settings.convSilenceMs,settings.convFuzzyThreshold,settings.autoGenerateImage,settings.usageCap]);
+
+  // Sync usage state to the module-level guard (separate effect so high-frequency
+  // usage updates don't re-run the settings sync above).
+  useEffect(()=>{
+    _usageByTag = usage.byTag || {};
+  },[usage]);
   const go=s=>setScreen(s);
 
   // Usage tracker function passed to all Claude calls
