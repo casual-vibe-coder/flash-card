@@ -2727,10 +2727,12 @@ CRITICAL: Every Arabic word MUST have full tashkeel (فَتْحَة ضَمَّة
 // ─────────────────────────────────────────────────────────────
 // DECK SCREEN — with edit/delete deck
 // ─────────────────────────────────────────────────────────────
-function DeckScreen({deck,cards,onStartStudy,onBack,onAddCards,onEditCard,onDeleteCard,onRenameDeck,onDeleteDeck,onSetDeckUnit,savedIdx}) {
+function DeckScreen({deck,cards,onStartStudy,onBack,onAddCards,onEditCard,onDeleteCard,onRenameDeck,onDeleteDeck,onSetDeckUnit,onSetDeckLastStudied,savedIdx}) {
   const [deckMenu,setDeckMenu]=useState(false);
   const [renaming,setRenaming]=useState(false);
   const [linkingUnit,setLinkingUnit]=useState(false);
+  const [settingStudied,setSettingStudied]=useState(false);
+  const [studiedDate,setStudiedDate]=useState(()=>new Date(deck.lastStudiedAt||Date.now()).toISOString().slice(0,10));
   const [newTitle,setNewTitle]=useState(deck.title);
   const [confirmDelete,setConfirmDelete]=useState(false);
   const linkedUnit=deck.unitId?unitById(deck.unitId):null;
@@ -2868,14 +2870,14 @@ function DeckScreen({deck,cards,onStartStudy,onBack,onAddCards,onEditCard,onDele
 
       {/* Deck options drawer */}
       {deckMenu&&(
-        <div className="overlay" onClick={e=>{if(e.target===e.currentTarget){setDeckMenu(false);setRenaming(false);setConfirmDelete(false);setLinkingUnit(false);}}}>
+        <div className="overlay" onClick={e=>{if(e.target===e.currentTarget){setDeckMenu(false);setRenaming(false);setConfirmDelete(false);setLinkingUnit(false);setSettingStudied(false);}}}>
           <div className="drawer">
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:18}}>
               <div style={{fontFamily:"Lora,serif",fontSize:17,fontWeight:600}}>Deck Options</div>
-              <button className="btn btn-ghost" onClick={()=>{setDeckMenu(false);setRenaming(false);setConfirmDelete(false);setLinkingUnit(false);}} style={{width:30,height:30}}><X size={13}/></button>
+              <button className="btn btn-ghost" onClick={()=>{setDeckMenu(false);setRenaming(false);setConfirmDelete(false);setLinkingUnit(false);setSettingStudied(false);}} style={{width:30,height:30}}><X size={13}/></button>
             </div>
 
-            {!renaming&&!confirmDelete&&!linkingUnit&&(
+            {!renaming&&!confirmDelete&&!linkingUnit&&!settingStudied&&(
               <div style={{display:"flex",flexDirection:"column",gap:10}}>
                 <button className="btn" onClick={()=>setRenaming(true)}
                   style={{background:"var(--surface2)",color:"var(--text)",padding:"13px 16px",borderRadius:"var(--rs)",justifyContent:"flex-start",gap:12,fontSize:14}}>
@@ -2885,6 +2887,12 @@ function DeckScreen({deck,cards,onStartStudy,onBack,onAddCards,onEditCard,onDele
                   style={{background:"var(--surface2)",color:"var(--text)",padding:"13px 16px",borderRadius:"var(--rs)",justifyContent:"flex-start",gap:12,fontSize:14}}>
                   <BookOpen size={15} color="var(--text2)"/> {linkedUnit?"Change Curriculum Unit":"Link to Curriculum Unit"}
                 </button>
+                {deck.deckType!=="grammar"&&(
+                  <button className="btn" onClick={()=>{setStudiedDate(new Date(deck.lastStudiedAt||Date.now()).toISOString().slice(0,10));setSettingStudied(true);}}
+                    style={{background:"var(--surface2)",color:"var(--text)",padding:"13px 16px",borderRadius:"var(--rs)",justifyContent:"flex-start",gap:12,fontSize:14}}>
+                    <Clock size={15} color="var(--text2)"/> Set Last Studied Date <span style={{marginLeft:"auto",fontSize:11.5,color:"var(--text3)",fontWeight:400}}>{daysAgoLabel(deck.lastStudiedAt)}</span>
+                  </button>
+                )}
                 <button className="btn" onClick={()=>{
                   const data=JSON.stringify({deck,cards},null,2);
                   const blob=new Blob([data],{type:"application/json"});
@@ -2929,6 +2937,20 @@ function DeckScreen({deck,cards,onStartStudy,onBack,onAddCards,onEditCard,onDele
                   ))}
                 </select>
                 <button className="btn" onClick={()=>setLinkingUnit(false)} style={{background:"var(--surface2)",color:"var(--text2)",padding:"12px"}}>Cancel</button>
+              </div>
+            )}
+
+            {settingStudied&&(
+              <div style={{display:"flex",flexDirection:"column",gap:12}}>
+                <label className="lbl">Last studied</label>
+                <div style={{fontSize:12,color:"var(--text3)",lineHeight:1.5,marginTop:-4}}>Overrides what the app tracked automatically — use this if you studied this deck before the rotation feature existed, or outside the app. The Rotation queue in Master Review uses this date to decide what's stalest.</div>
+                <input type="date" className="input" value={studiedDate} max={new Date().toISOString().slice(0,10)} onChange={e=>setStudiedDate(e.target.value)}/>
+                <div style={{display:"flex",gap:8}}>
+                  <button className="btn" onClick={()=>{onSetDeckLastStudied(deck.id,null);showToast("Marked as never studied","success");setSettingStudied(false);setDeckMenu(false);}}
+                    style={{flex:1,background:"var(--surface2)",color:"var(--text2)",padding:"12px",borderRadius:"var(--rs)",fontSize:12.5}}>Clear (never studied)</button>
+                  <button className="btn btn-primary" onClick={()=>{onSetDeckLastStudied(deck.id,new Date(studiedDate+"T12:00:00").getTime());showToast("Last studied date updated","success");setSettingStudied(false);setDeckMenu(false);}}
+                    disabled={!studiedDate} style={{flex:1,padding:"12px",borderRadius:"var(--rs)"}}><Check size={14}/> Save</button>
+                </div>
               </div>
             )}
 
@@ -7187,6 +7209,9 @@ export default function App() {
   // not state) so it doesn't refire on every subsequent swipe past 20.
   const deckTouchStampedRef=useRef(false);
   const touchDeck=(deckId)=>setDecks(p=>p.map(d=>d.id===deckId?{...d,lastStudiedAt:Date.now()}:d));
+  // Manual override from the deck menu — corrects decks studied before this
+  // feature existed, or outside the app. ts=null clears back to "never studied".
+  const setDeckLastStudied=(deckId,ts)=>setDecks(p=>p.map(d=>d.id===deckId?{...d,lastStudiedAt:ts}:d));
   const startStudy=(mode,restart=false)=>{
     const dc=cardStates[activeDeck.id]||[];
     const now=Date.now();
@@ -7329,7 +7354,7 @@ export default function App() {
     settings:<SettingsScreen settings={settings} setSettings={setSettings} onBack={()=>go("home")} usage={usage} user={user} onSignOut={handleSignOut} onReplayOnboarding={()=>setShowOnboarding(true)} profile={profile} setProfile={setProfile} studyLog={studyLog} onUpdateTargets={(t)=>setStudyLog(sl=>({...sl,targets:t}))} decks={decks} cardStates={cardStates} setCardStates={setCardStates} trackUsage={trackUsage} onResetUsage={resetUsageCounters}/>,
     createDeck:<CreateDeckScreen onBack={()=>go("home")} onCreate={createDeck}/>,
     addCards:activeDeck&&<AddCardsScreen deck={activeDeck} onBack={()=>go("deck")} onSave={saveCards} trackUsage={trackUsage}/>,
-    deck:activeDeck&&<DeckScreen deck={activeDeck} cards={cardStates[activeDeck.id]||[]} onStartStudy={startStudy} onBack={()=>go("home")} onAddCards={()=>{if(activeDeck.deckType==="grammar"){setGrammarTarget(activeDeck);go("grammarImport");}else go("addCards");}} onEditCard={c=>{if(c.wordType==="grammar"){showToast("Grammar cards can't be edited yet — remove it and re-import that section.","info");return;}setActiveCard(c);go("editCard");}} onDeleteCard={deleteCard} onRenameDeck={renameDeck} onDeleteDeck={deleteDeck} onSetDeckUnit={setDeckUnit} savedIdx={{all:savedIdx.current[activeDeck.id+"_all"]||0,new:savedIdx.current[activeDeck.id+"_new"]||0,weak:savedIdx.current[activeDeck.id+"_weak"]||0,known:savedIdx.current[activeDeck.id+"_known"]||0,due:savedIdx.current[activeDeck.id+"_due"]||0}}/>,
+    deck:activeDeck&&<DeckScreen deck={activeDeck} cards={cardStates[activeDeck.id]||[]} onStartStudy={startStudy} onBack={()=>go("home")} onAddCards={()=>{if(activeDeck.deckType==="grammar"){setGrammarTarget(activeDeck);go("grammarImport");}else go("addCards");}} onEditCard={c=>{if(c.wordType==="grammar"){showToast("Grammar cards can't be edited yet — remove it and re-import that section.","info");return;}setActiveCard(c);go("editCard");}} onDeleteCard={deleteCard} onRenameDeck={renameDeck} onDeleteDeck={deleteDeck} onSetDeckUnit={setDeckUnit} onSetDeckLastStudied={setDeckLastStudied} savedIdx={{all:savedIdx.current[activeDeck.id+"_all"]||0,new:savedIdx.current[activeDeck.id+"_new"]||0,weak:savedIdx.current[activeDeck.id+"_weak"]||0,known:savedIdx.current[activeDeck.id+"_known"]||0,due:savedIdx.current[activeDeck.id+"_due"]||0}}/>,
     editCard:activeCard&&activeDeck&&<EditCardScreen card={activeCard} onBack={()=>go("deck")} onSave={saveEditedCard} trackUsage={trackUsage}/>,
     study:activeDeck&&sessionCards.length>0&&<StudyScreen cards={sessionCards} currentIndex={currentIdx} onSwipe={handleSwipe} onBack={undoStudy} canUndo={studyHistory.current.length>0} onExit={()=>go("deck")} trackUsage={trackUsage} decks={decks} cardStates={cardStates} onAddToFlashcard={addToFlashcard}/>,
     complete:<CompleteScreen known={sessionRes.current.known} weak={sessionRes.current.weak} onBack={()=>go("deck")}/>,
