@@ -703,7 +703,7 @@ let _isAdmin = false;   // synced from auth state; admins bypass the cap
 // and render a friendly state instead of a generic error message.
 class CapReachedError extends Error {
   constructor(spent, cap) {
-    super(`AI credit cap reached: $${spent.toFixed(2)} of $${cap.toFixed(2)} used.`);
+    super(`AI credit limit reached: $${spent.toFixed(2)} of $${cap.toFixed(2)} used.`);
     this.name = "CapReachedError";
     this.capReached = true;
     this.spent = spent;
@@ -735,7 +735,7 @@ function checkCap() {
   if (_isAdmin) return;
   const spent = computeSpent(_usageByTag);
   if (spent >= _usageCap) {
-    showToast(`You've reached your $${_usageCap.toFixed(2)} AI credit cap. Contact an admin to extend.`, "error", 4000);
+    showToast(`You've reached your $${_usageCap.toFixed(2)} AI credit limit. Contact an admin to extend it.`, "error", 4000);
     throw new CapReachedError(spent, _usageCap);
   }
 }
@@ -1336,210 +1336,41 @@ Return ONLY valid JSON, no markdown. Put full tashkeel on Arabic text:
 }
 
 // ─────────────────────────────────────────────────────────────
-// USAGE METER component
+// USAGE METER component — simplified for Phase 1.
+// Shows only the $7 cap, amount spent, and remaining balance.
+// The detailed per-feature breakdown, daily calculator, and reset
+// button are intentionally removed — users just see the big number.
 // ─────────────────────────────────────────────────────────────
 function UsageMeter({usage, settings, onReset}) {
-  const [open,setOpen]=useState(false);
-  const [showCalc,setShowCalc]=useState(false);
-  // Resolve a usage tag to the model that will actually be used server-side.
-  // With the tier system, all text features use the same tier-resolved model;
-  // legacy per-feature overrides (from old user docs) are still shown for
-  // pricing preview but no longer sent to the server.
-  const modelForTag=(tag)=>{
-    return settings?.models?.[tag] || resolveTierModel(settings?.tier) || "openai/gpt-4o-mini";
-  };
-  const priceForTag=(tag)=>{
-    return MODEL_PRICES[modelForTag(tag)] || PRICE_FALLBACK;
-  };
-  // Display-friendly short model name ("claude-sonnet-4-5" not "anthropic/...").
-  const shortModel=(m)=>m?(m.split("/").pop()||m):"—";
-  const costForTag=(tag,v)=>{
-    const imgModel=TAG_TO_IMAGE_MODEL[tag];
-    if(imgModel) return v.calls*(IMAGE_PRICES[imgModel]||0);
-    if(tag==="ttsGoogle") return v.inputTokens * TTS_PRICE_PER_CHAR;     // inputTokens = chars
-    if(tag==="sttWhisper") return v.inputTokens * STT_PRICE_PER_SECOND;  // inputTokens = seconds
-    const p = priceForTag(tag);
-    return v.inputTokens*p.in/1_000_000 + v.outputTokens*p.out/1_000_000;
-  };
-  // Provider label for non-text tags so the user can see where each row's
-  // cost flows even without a text model.
-  const providerForTag=(tag)=>{
-    if(tag==="imageNB1") return "nano banana 1";
-    if(tag==="imageNB2") return "nano banana 2";
-    if(tag==="ttsGoogle") return "google tts";
-    if(tag==="sttWhisper") return "whisper";
-    return shortModel(modelForTag(tag));
-  };
-  // For the header summary, only count tokens from real text tags.
-  const totalInputTok  = Object.entries(usage.byTag).filter(([t])=>!NON_TEXT_TAGS.has(t)).reduce((s,[,v])=>s+v.inputTokens,0);
-  const totalOutputTok = Object.entries(usage.byTag).filter(([t])=>!NON_TEXT_TAGS.has(t)).reduce((s,[,v])=>s+v.outputTokens,0);
-  const totalCost = Object.entries(usage.byTag).reduce((s,[t,v])=>s+costForTag(t,v),0);
-  const totalCalls = Object.values(usage.byTag).reduce((s,v)=>s+v.calls,0);
+  const totalCost = Object.entries(usage.byTag).reduce((s,[t,v])=>s+computeSpent({[t]:v}),0);
 
   const usageCap = settings?.usageCap ?? 7;
   const remaining = Math.max(0, usageCap - totalCost);
   const pctUsed = usageCap > 0 ? Math.min(100, (totalCost / usageCap) * 100) : 100;
   const capReached = totalCost >= usageCap;
-  const barColor = capReached ? "var(--weak)" : pctUsed < 15 ? "var(--know)" : pctUsed < 70 ? "#C07000" : "var(--weak)";
-  const activeModel = resolveTierModel(settings?.tier) || "openai/gpt-4o-mini";
-  const unitsLabel=(tag,v)=>{
-    if(NON_TEXT_TAGS.has(tag)){
-      if(tag==="ttsGoogle") return `${v.inputTokens.toLocaleString()} ch`;
-      if(tag==="sttWhisper") return `${Math.round(v.inputTokens)}s`;
-      return "—";
-    }
-    return (v.inputTokens+v.outputTokens).toLocaleString();
-  };
-
-  // Daily-use calculator presets. inputs / outputs / images / chars / seconds
-  // per single action. Adjust to roughly match observed averages.
-  const ACTIONS = [
-    {key:"flashcards", label:"New flashcards", tag:"flashcard", tokenIn:300, tokenOut:600, perDay:10},
-    {key:"sentences",  label:"Sentence aids",  tag:"sentence",  tokenIn:200, tokenOut:300, perDay:10},
-    {key:"lookups",    label:"Word lookups",   tag:"wordLookup",tokenIn:80,  tokenOut:120, perDay:15},
-    {key:"reading",    label:"Reading passages", tag:"reading", tokenIn:300, tokenOut:1500,perDay:1},
-    {key:"listening",  label:"Listening passages",tag:"listening",tokenIn:300,tokenOut:1200,perDay:1},
-    {key:"convoTurns", label:"Conversation turns", tag:"other", tokenIn:400, tokenOut:500, perDay:20},
-    {key:"islandBatches", label:"Language Island batches", tag:"island", tokenIn:300, tokenOut:900, perDay:3},
-    {key:"dictationSets", label:"Dictation sets", tag:"dictation", tokenIn:200, tokenOut:500, perDay:2},
-    {key:"images",     label:"Nano Banana images", tag:"imageNB1", perDay:5},
-    {key:"ttsPlays",   label:"TTS plays (~120 ch each, first-time only)", tag:"ttsGoogle", chars:120, perDay:10},
-    {key:"sttMinutes", label:"Whisper STT minutes", tag:"sttWhisper", seconds:60, perDay:5},
-  ];
-  const [counts,setCounts]=useState(()=>Object.fromEntries(ACTIONS.map(a=>[a.key,a.perDay])));
-  const calcOne = (a)=>{
-    const n = counts[a.key] || 0;
-    if(a.tag==="imageNB1") return n*(IMAGE_PRICES["gemini-2.5-flash-image"]||0.039);
-    if(a.tag==="ttsGoogle") return n*(a.chars||120)*TTS_PRICE_PER_CHAR;
-    if(a.tag==="sttWhisper") return n*(a.seconds||60)*STT_PRICE_PER_SECOND;
-    const p=priceForTag(a.tag);
-    return n*(a.tokenIn*p.in + a.tokenOut*p.out)/1_000_000;
-  };
-  const dailyTotal = ACTIONS.reduce((s,a)=>s+calcOne(a),0);
+  const barColor = capReached ? "var(--weak)" : pctUsed < 50 ? "var(--know)" : pctUsed < 85 ? "#C07000" : "var(--weak)";
 
   return (
     <div style={{background:"var(--surface)",border:"1.5px solid var(--border)",borderRadius:"var(--r)",overflow:"hidden"}}>
-      <div style={{padding:"14px 16px",cursor:"pointer",display:"flex",justifyContent:"space-between",alignItems:"center"}} onClick={()=>setOpen(v=>!v)}>
-        <div style={{display:"flex",alignItems:"center",gap:8,flex:1}}>
-          <DollarSign size={15} color={barColor}/>
+      <div style={{padding:"14px 16px",display:"flex",justifyContent:"space-between",alignItems:"center",gap:10}}>
+        <div style={{display:"flex",alignItems:"center",gap:10,flex:1}}>
+          <DollarSign size={18} color={barColor}/>
           <div style={{flex:1}}>
-            <div className="sec" style={{margin:0,color:barColor}}>AI Credit Usage</div>
-            <div style={{fontSize:14,fontWeight:700,color:capReached?"var(--weak)":"var(--text)",marginTop:1}}>
-              ${totalCost.toFixed(2)} <span style={{fontSize:12,fontWeight:400,color:"var(--text3)"}}>of ${usageCap.toFixed(2)}</span>
-              <span style={{fontSize:11,fontWeight:400,color:"var(--text3)",marginLeft:6}}>· ${remaining.toFixed(2)} remaining</span>
+            <div className="sec" style={{margin:0,color:barColor}}>AI Credit Balance</div>
+            <div style={{fontSize:20,fontWeight:700,color:capReached?"var(--weak)":"var(--text)",marginTop:2}}>
+              ${remaining.toFixed(2)}
+              <span style={{fontSize:13,fontWeight:400,color:"var(--text3)",marginLeft:4}}>remaining of ${usageCap.toFixed(2)}</span>
             </div>
-            {/* Progress bar — fills as the user spends toward their cap */}
             <div style={{marginTop:6,height:6,background:"var(--surface2)",borderRadius:100,overflow:"hidden"}}>
               <div style={{height:"100%",width:`${pctUsed}%`,background:barColor,borderRadius:100,transition:"width 0.3s ease"}}/>
             </div>
           </div>
-          <div style={{fontSize:11,fontWeight:400,color:"var(--text3)",textAlign:"right",whiteSpace:"nowrap"}}>
-            {totalCalls} calls · {activeModel.split("/").pop()}
-          </div>
         </div>
-        {open?<ChevronUp size={15} color="var(--text3)"/>:<ChevronDown size={15} color="var(--text3)"/>}
       </div>
 
       {capReached && (
-        <div style={{padding:"8px 16px",background:"var(--weak-bg)",borderBottom:"1px solid var(--weak-border)",fontSize:12,fontWeight:600,color:"var(--weak)",display:"flex",alignItems:"center",gap:6}}>
-          ⚠ You've reached your ${usageCap.toFixed(2)} AI credit cap. Contact an admin to extend.
-        </div>
-      )}
-
-      {open&&(
-        <div style={{borderTop:"1px solid var(--border)",padding:"12px 16px",display:"flex",flexDirection:"column",gap:10}}>
-          <div style={{fontSize:11,fontWeight:700,color:"var(--text3)",letterSpacing:".08em",textTransform:"uppercase",marginBottom:4,display:"grid",gridTemplateColumns:"1.3fr 50px 60px 60px 60px",gap:4}}>
-            <span>Feature</span><span style={{textAlign:"right"}}>Calls</span><span style={{textAlign:"right"}}>Units</span><span style={{textAlign:"right"}}>Avg</span><span style={{textAlign:"right"}}>Cost</span>
-          </div>
-          {Object.entries(usage.byTag).filter(([t,v])=>v.calls>0 || t==="sttWhisper" || t==="ttsGoogle").map(([tag,v])=>{
-            const cost = costForTag(tag,v);
-            const avg = v.calls>0 ? cost/v.calls : 0;
-            const isTextTag = !NON_TEXT_TAGS.has(tag);
-            const overridden = isTextTag && !!settings?.models?.[tag];
-            return (
-              <div key={tag} style={{display:"grid",gridTemplateColumns:"1.3fr 50px 60px 60px 60px",gap:4,fontSize:12.5,color:"var(--text2)",alignItems:"center"}}>
-                <div style={{minWidth:0}}>
-                  <div style={{color:"var(--text)",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{USAGE_LABELS[tag]||tag}</div>
-                  <div style={{fontSize:10,color:overridden?"var(--accent)":"var(--text3)",fontFamily:"monospace",marginTop:1}}>
-                    via {providerForTag(tag)}{overridden?" (override)":""}
-                  </div>
-                </div>
-                <span style={{textAlign:"right",color:"var(--text3)"}}>{v.calls}</span>
-                <span style={{textAlign:"right",color:"var(--text3)"}}>{unitsLabel(tag,v)}</span>
-                <span style={{textAlign:"right",color:"var(--text3)",fontSize:11.5,fontFamily:"monospace"}}>${avg<0.01?avg.toFixed(4):avg.toFixed(3)}</span>
-                <span style={{textAlign:"right",fontWeight:600,color:"var(--accent)"}}>${cost.toFixed(4)}</span>
-              </div>
-            );
-          })}
-          <div className="divider" style={{margin:"6px 0"}}/>
-          <div style={{display:"flex",justifyContent:"space-between",fontSize:13,fontWeight:700}}>
-            <span>Spent</span>
-            <span style={{color:barColor}}>${totalCost.toFixed(4)} / ${usageCap.toFixed(2)}</span>
-          </div>
-          <div style={{display:"flex",justifyContent:"space-between",fontSize:12,color:"var(--text3)"}}>
-            <span>Remaining</span>
-            <span>${remaining.toFixed(4)}</span>
-          </div>
-
-          {/* Tracking window + reset */}
-          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",fontSize:11.5,color:"var(--text3)",marginTop:2}}>
-            <span>
-              Tracking since {usage.trackingSince
-                ? new Date(usage.trackingSince).toLocaleDateString(undefined,{month:"short",day:"numeric"}) + ", " + new Date(usage.trackingSince).toLocaleTimeString(undefined,{hour:"numeric",minute:"2-digit"})
-                : "first call"}
-            </span>
-            {onReset&&(
-              <button onClick={onReset} style={{background:"transparent",border:"none",color:"var(--weak)",fontSize:11,fontWeight:600,cursor:"pointer",padding:"4px 8px",borderRadius:"var(--rxs)"}}>
-                ⟲ Reset counters
-              </button>
-            )}
-          </div>
-
-          {/* Daily-use calculator */}
-          <div style={{marginTop:4,border:"1px solid var(--border)",borderRadius:"var(--rxs)",overflow:"hidden"}}>
-            <div onClick={()=>setShowCalc(v=>!v)} style={{padding:"10px 12px",cursor:"pointer",display:"flex",justifyContent:"space-between",alignItems:"center",background:"var(--surface2)"}}>
-              <div style={{fontSize:12,fontWeight:700,color:"var(--text)"}}>
-                💡 Daily-use calculator
-                <span style={{fontSize:11,fontWeight:400,color:"var(--text3)",marginLeft:8}}>~${dailyTotal.toFixed(3)}/day · ~${(dailyTotal*30).toFixed(2)}/month</span>
-              </div>
-              {showCalc?<ChevronUp size={13} color="var(--text3)"/>:<ChevronDown size={13} color="var(--text3)"/>}
-            </div>
-            {showCalc&&(
-              <div style={{padding:"10px 12px",display:"flex",flexDirection:"column",gap:6}}>
-                {ACTIONS.map(a=>{
-                  const isTextTag = !NON_TEXT_TAGS.has(a.tag);
-                  const overridden = isTextTag && !!settings?.models?.[a.tag];
-                  return (
-                    <div key={a.key} style={{display:"grid",gridTemplateColumns:"1fr 60px 70px",gap:6,fontSize:12,alignItems:"center"}}>
-                      <div style={{minWidth:0}}>
-                        <div style={{color:"var(--text2)",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{a.label}</div>
-                        <div style={{fontSize:10,color:overridden?"var(--accent)":"var(--text3)",fontFamily:"monospace",marginTop:1}}>
-                          via {providerForTag(a.tag)}{overridden?" (override)":""}
-                        </div>
-                      </div>
-                      <input type="number" min="0" step="1" value={counts[a.key]} onChange={e=>setCounts(p=>({...p,[a.key]:Math.max(0,parseInt(e.target.value||"0",10))}))}
-                        style={{padding:"4px 6px",fontSize:12,border:"1px solid var(--border)",borderRadius:4,background:"var(--surface)",textAlign:"right",fontFamily:"monospace"}}/>
-                      <span style={{textAlign:"right",fontWeight:600,color:"var(--accent)",fontFamily:"monospace"}}>${calcOne(a).toFixed(4)}</span>
-                    </div>
-                  );
-                })}
-                <div className="divider" style={{margin:"4px 0"}}/>
-                <div style={{display:"flex",justifyContent:"space-between",fontSize:12.5,fontWeight:700}}>
-                  <span>Daily total</span><span style={{color:"var(--accent)"}}>${dailyTotal.toFixed(3)}</span>
-                </div>
-                <div style={{display:"flex",justifyContent:"space-between",fontSize:12.5,fontWeight:700}}>
-                  <span>Monthly (×30)</span><span style={{color:"var(--accent)"}}>${(dailyTotal*30).toFixed(2)}</span>
-                </div>
-                <div style={{fontSize:10.5,color:"var(--text3)",marginTop:4,lineHeight:1.5}}>
-                  Each row is priced by the model assigned to that feature (default: <span style={{fontFamily:"monospace",color:"var(--text2)"}}>{activeModel.split("/").pop()}</span>).
-                </div>
-              </div>
-            )}
-          </div>
-
-          <div style={{fontSize:11,color:"var(--text3)",lineHeight:1.6}}>
-            Cost estimates: Image $0.039 (NB1) / $0.067 (NB2 at 1K). TTS $16/1M chars (Google Wavenet, cached after first play). STT $0.006/min (OpenAI Whisper).
-          </div>
+        <div style={{padding:"10px 16px",background:"var(--weak-bg)",borderTop:"1px solid var(--weak-border)",fontSize:13,fontWeight:600,color:"var(--weak)",display:"flex",alignItems:"center",gap:6}}>
+          ⚠ You've reached your ${usageCap.toFixed(2)} AI credit limit. Contact an admin to extend it.
         </div>
       )}
     </div>
@@ -1549,7 +1380,7 @@ function UsageMeter({usage, settings, onReset}) {
 // ─────────────────────────────────────────────────────────────
 // HOME
 // ─────────────────────────────────────────────────────────────
-function HomeScreen({decks,cardStates,onOpenDeck,onSettings,onCreateDeck,onReading,onListening,onConversation,onDictation,onCapsules,onSearch,onProgress,onMasterReview,onGuide,onPresets,darkMode,onToggleDark,studyLog}) {
+function HomeScreen({decks,cardStates,usage,usageCap,onOpenDeck,onSettings,onCreateDeck,onReading,onListening,onConversation,onDictation,onCapsules,onSearch,onProgress,onMasterReview,onGuide,onPresets,darkMode,onToggleDark,studyLog}) {
   const sorted=[...decks].sort((a,b)=>b.createdAt-a.createdAt);
   const importRef=useRef(null);
   const handleImport=(e)=>{
@@ -1580,6 +1411,13 @@ function HomeScreen({decks,cardStates,onOpenDeck,onSettings,onCreateDeck,onReadi
   const totalInstances=countWordInstances(cardStates);
   const dueCount=getDueCount(allCards);
 
+  // Compact credit summary for the header pill.
+  const spent = Object.entries(usage?.byTag || {}).reduce((s,[t,v])=>s+computeSpent({[t]:v}),0);
+  const cap = usageCap ?? 7;
+  const remaining = Math.max(0, cap - spent);
+  const capReached = spent >= cap;
+  const creditColor = capReached ? "var(--weak)" : remaining < cap * 0.15 ? "var(--weak)" : remaining < cap * 0.5 ? "#C07000" : "var(--know)";
+
   return (
     <div className="screen">
       <div style={{padding:"26px 20px 0",display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
@@ -1588,7 +1426,12 @@ function HomeScreen({decks,cardStates,onOpenDeck,onSettings,onCreateDeck,onReadi
           <div style={{fontFamily:"Lora,serif",fontSize:26,fontWeight:600}}>My Decks</div>
           <div className="ar" style={{fontSize:15,color:"var(--text3)",marginTop:4}}>بِسْمِ اللهِ</div>
         </div>
-        <div style={{display:"flex",gap:6}}>
+        <div style={{display:"flex",gap:6,alignItems:"center"}}>
+          <button onClick={onSettings} title="AI credit balance" style={{background:"var(--surface2)",border:"1px solid var(--border)",borderRadius:100,padding:"5px 12px",display:"flex",alignItems:"center",gap:5,cursor:"pointer",fontFamily:"inherit"}}>
+            <DollarSign size={13} color={creditColor}/>
+            <span style={{fontSize:12,fontWeight:700,color:creditColor,fontFamily:"monospace"}}>${remaining.toFixed(2)}</span>
+            <span style={{fontSize:10,color:"var(--text3)"}}>/ ${cap.toFixed(0)}</span>
+          </button>
           <button className="btn btn-ghost" onClick={onSearch} style={{width:36,height:36}} title="Search all cards"><Search size={16}/></button>
           <button className="btn btn-ghost" onClick={onGuide} style={{width:36,height:36}} title="Help & tips"><HelpCircle size={17}/></button>
           <button className="btn btn-ghost" onClick={onToggleDark} style={{width:36,height:36}} title={darkMode?"Light mode":"Dark mode"}>{darkMode?<Sun size={16}/>:<Moon size={16}/>}</button>
@@ -2176,7 +2019,7 @@ function ProfilePanel({profile,setProfile,onRetake}) {
   );
 }
 
-function SettingsScreen({settings,setSettings,onBack,usage,user,onSignOut,onReplayOnboarding,profile,setProfile,studyLog,onUpdateTargets,decks,cardStates,setCardStates,trackUsage,onResetUsage}) {
+function SettingsScreen({settings,setSettings,onBack,usage,user,onSignOut,onReplayOnboarding,profile,setProfile,studyLog,onUpdateTargets,decks,cardStates,setCardStates,trackUsage}) {
   const [local,setLocal]=useState(settings);
   const [saved,setSaved]=useState(false);
   const set=(k,v)=>setLocal(p=>({...p,[k]:v}));
@@ -2207,7 +2050,7 @@ function SettingsScreen({settings,setSettings,onBack,usage,user,onSignOut,onRepl
 
         {/* Pass `local` (the in-edit settings) so cost previews react as you
             change settings above, before you've hit Save. */}
-        <UsageMeter usage={usage} settings={local} onReset={onResetUsage}/>
+        <UsageMeter usage={usage} settings={local}/>
 
         {/* Quality tier — replaces the old per-feature model picker. The server
             (api/_models.js) resolves the tier to a concrete OpenRouter model,
@@ -6676,13 +6519,13 @@ export default function App() {
   const commonProps={decks,cardStates,trackUsage};
 
   const screens={
-    home:<HomeScreen {...commonProps} onOpenDeck={openDeck} onSettings={()=>go("settings")} onCreateDeck={()=>go("createDeck")} onReading={()=>go("reading")} onListening={()=>go("listening")} onConversation={()=>go("conversation")} onDictation={()=>go("dictation")} onCapsules={()=>go("capsules")} onSearch={()=>setShowSearch(true)} onProgress={()=>go("progress")} onMasterReview={()=>go("masterReview")} onGuide={()=>go("guide")} onPresets={()=>go("preset")} darkMode={darkMode} onToggleDark={()=>setDarkMode(d=>!d)} studyLog={studyLog}/>,
+    home:<HomeScreen {...commonProps} usage={usage} usageCap={settings.usageCap ?? 7} onOpenDeck={openDeck} onSettings={()=>go("settings")} onCreateDeck={()=>go("createDeck")} onReading={()=>go("reading")} onListening={()=>go("listening")} onConversation={()=>go("conversation")} onDictation={()=>go("dictation")} onCapsules={()=>go("capsules")} onSearch={()=>setShowSearch(true)} onProgress={()=>go("progress")} onMasterReview={()=>go("masterReview")} onGuide={()=>go("guide")} onPresets={()=>go("preset")} darkMode={darkMode} onToggleDark={()=>setDarkMode(d=>!d)} studyLog={studyLog}/>,
     capsules:<CapsulesScreen profile={profile} onOpen={(s)=>go(s)} onBack={()=>go("home")}/>,
     preset:<PresetLibraryScreen profile={profile} decks={decks} onBack={()=>go("home")}/>,
     guide:<GuideScreen onBack={()=>go("home")} onReplayOnboarding={()=>{setShowOnboarding(true);go("home");}} onResetTips={()=>{resetTips();showToast("Tips reset — they'll show again as you explore.","success");}}/>,
     island:<LanguageIslandScreen decks={decks} cardStates={cardStates} profile={profile} trackUsage={trackUsage} onBack={()=>go("capsules")}/>,
     dictation:<DictationScreen decks={decks} cardStates={cardStates} profile={profile} trackUsage={trackUsage} onBack={()=>go("home")} onLogStudy={logStudy} onFinish={()=>{go("home");setSessionRating({module:"writing"});}}/>,
-    settings:<SettingsScreen settings={settings} setSettings={setSettings} onBack={()=>go("home")} usage={usage} user={user} onSignOut={handleSignOut} onReplayOnboarding={()=>setShowOnboarding(true)} profile={profile} setProfile={setProfile} studyLog={studyLog} onUpdateTargets={(t)=>setStudyLog(sl=>({...sl,targets:t}))} decks={decks} cardStates={cardStates} setCardStates={setCardStates} trackUsage={trackUsage} onResetUsage={resetUsageCounters}/>,
+    settings:<SettingsScreen settings={settings} setSettings={setSettings} onBack={()=>go("home")} usage={usage} user={user} onSignOut={handleSignOut} onReplayOnboarding={()=>setShowOnboarding(true)} profile={profile} setProfile={setProfile} studyLog={studyLog} onUpdateTargets={(t)=>setStudyLog(sl=>({...sl,targets:t}))} decks={decks} cardStates={cardStates} setCardStates={setCardStates} trackUsage={trackUsage}/>,
     createDeck:<CreateDeckScreen onBack={()=>go("home")} onCreate={createDeck}/>,
     addCards:activeDeck&&<AddCardsScreen deck={activeDeck} onBack={()=>go("deck")} onSave={saveCards} trackUsage={trackUsage}/>,
     deck:activeDeck&&<DeckScreen deck={activeDeck} cards={cardStates[activeDeck.id]||[]} onStartStudy={startStudy} onBack={()=>go("home")} onAddCards={()=>go("addCards")} onEditCard={c=>{setActiveCard(c);go("editCard");}} onDeleteCard={deleteCard} onRenameDeck={renameDeck} onDeleteDeck={deleteDeck} onSetDeckUnit={setDeckUnit} savedIdx={savedIdx.current[activeDeck.id+"_all"]||0}/>,
