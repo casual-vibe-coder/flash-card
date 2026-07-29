@@ -5478,10 +5478,12 @@ function MasterReviewScreen({decks,cardStates,onBack,onSwipeCard,onUndoSwipe,onD
     else if(startMode==="rotation"){
       // Cycle through every deck evenly instead of letting due-dates decide —
       // whole decks pulled stalest-first (never-studied decks first), each
-      // deck's own cards ordered due/weak-first internally. Once this fills
-      // `limit`, later (fresher) decks simply don't make the cut this round.
+      // deck's own cards kept in their natural/creation order (deliberately
+      // NOT due/weak-sorted — the point of Rotation is going through a deck
+      // top-to-bottom for context and coverage, not an optimized queue).
+      // Once this fills `limit`, later (fresher) decks don't make the cut.
       const staleDecks=[...decks].filter(d=>d.deckType!=="grammar").sort((a,b)=>(a.lastStudiedAt||0)-(b.lastStudiedAt||0));
-      for(const deck of staleDecks) pool.push(...sortByDueDate((cardStates[deck.id]||[]).filter(c=>c.wordType!=="grammar")));
+      for(const deck of staleDecks) pool.push(...(cardStates[deck.id]||[]).filter(c=>c.wordType!=="grammar"));
     }
     else pool=[...sortByDueDate(allCards)];
     pool=pool.slice(0,limit);
@@ -5649,6 +5651,17 @@ Return ONLY valid JSON: {"sentence":"...","translation":"...","imagePrompt":"...
     if(!selForm&&availForms.length){
       setTimeout(()=>setSelForm(testForm||availForms[0]?.[0]||null),0);
     }
+    // Rotation groups whole decks together in session order, so "which deck
+    // am I in, how far through it" is meaningful here (unlike Smart/Due/Weak,
+    // which jumble cards from many decks and would make this flicker).
+    let deckBreadcrumb=null;
+    if(mode==="rotation"&&card._deckId){
+      const cardDeck=decks.find(d=>d.id===card._deckId);
+      if(cardDeck){
+        const deckCardsInSession=sessionCards.filter(c=>c._deckId===card._deckId);
+        deckBreadcrumb={title:cardDeck.title,pos:deckCardsInSession.findIndex(c=>c.id===card.id)+1,total:deckCardsInSession.length};
+      }
+    }
     return (
       <div className="screen" style={{display:"flex",flexDirection:"column",padding:"18px 18px 20px"}}>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
@@ -5659,7 +5672,13 @@ Return ONLY valid JSON: {"sentence":"...","translation":"...","imagePrompt":"...
             <span style={{fontSize:12,color:"var(--text3)"}}><span style={{color:"var(--know)"}}>{results.known}✓</span> <span style={{color:"var(--weak)"}}>{results.weak}✗</span></span>
           </div>
         </div>
-        <div className="progress-track" style={{marginBottom:16}}><div className="progress-fill" style={{width:`${((idx+1)/sessionCards.length)*100}%`,background:"var(--accent)"}}/></div>
+        <div className="progress-track" style={{marginBottom:deckBreadcrumb?8:16}}><div className="progress-fill" style={{width:`${((idx+1)/sessionCards.length)*100}%`,background:"var(--accent)"}}/></div>
+        {deckBreadcrumb&&(
+          <div style={{fontSize:12,fontWeight:600,color:"var(--text2)",marginBottom:16,display:"flex",alignItems:"center",gap:6}}>
+            <Layers size={12} color="var(--text3)"/> {deckBreadcrumb.title}
+            <span style={{color:"var(--text3)",fontWeight:400}}>· card {deckBreadcrumb.pos}/{deckBreadcrumb.total} of this deck</span>
+          </div>
+        )}
 
         <div style={{flex:1,display:"flex",flexDirection:"column",gap:13,overflowY:"auto"}}>
           {/* True 2-faced flip card — click anywhere on the card to toggle */}
