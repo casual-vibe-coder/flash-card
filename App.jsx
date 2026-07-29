@@ -162,6 +162,20 @@ function getDueCount(cards) {
 }
 
 /**
+ * A card with an inflectional weak form pending (e.g. failed "plural" last
+ * time) should be TESTED on that form next — not just offer it as an
+ * optional reference. Returns the form key to show as the primary answer,
+ * or null to fall back to the base word as usual. Filters defensively to
+ * INFLECTIONAL_FORMS in case older data has synonym/antonym in weakForms
+ * from before that was guarded against.
+ */
+function pendingTestForm(card) {
+  const availForms = Object.entries(card.forms || {}).filter(([, v]) => v);
+  const inflectionalWeak = (card.weakForms || []).filter(f => INFLECTIONAL_FORMS.has(f));
+  return inflectionalWeak.find(f => availForms.some(([k]) => k === f)) || null;
+}
+
+/**
  * Count total unique word instances across all cards.
  * - Does NOT count arabicBase separately (it's the same as singular/past)
  * - Counts each non-empty form value (singular, plural, synonym, etc.)
@@ -318,6 +332,17 @@ const FORMS_BY_TYPE = {
   adjective: ["masculine","feminine","plural","antonym","antonymPlural","harf"],
   other:     ["singular","plural","plural2","synonym","antonym","harf"],
 };
+// Forms that are the SAME word, just a different inflection (singular↔plural,
+// masc↔fem, verb conjugations). synonym/antonym are deliberately excluded —
+// those are different words with their own separate cards, so getting one
+// wrong shouldn't mark THIS card weak or get remembered as this card's gap.
+const INFLECTIONAL_FORMS = new Set([
+  "singular","plural","plural2","masculine","feminine",
+  "past","present","imperative","masdar","activePart","passivePart",
+]);
+// A deck counts as "studied" for the rotation queue once this many cards
+// from it have been rated in one sitting.
+const DECK_TOUCH_THRESHOLD = 20;
 const OR_MODELS = [
   // OpenAI
   {id:"openai/gpt-4o-mini",        label:"GPT-4o Mini  · Fast · Cheap"},
@@ -1493,6 +1518,15 @@ function UsageMeter({usage, settings, onReset}) {
 // ─────────────────────────────────────────────────────────────
 // HOME
 // ─────────────────────────────────────────────────────────────
+// "3 days ago" / "Today" / "Never studied" — used on deck cards + rotation sort.
+function daysAgoLabel(ts){
+  if(!ts) return "Never studied";
+  const days=Math.floor((Date.now()-ts)/86400000);
+  if(days<=0) return "Studied today";
+  if(days===1) return "Studied yesterday";
+  return `Studied ${days}d ago`;
+}
+
 // Shared deck-card renderer for the Home lists (vocab + grammar sections).
 // Shows weak/known/new pills so untouched cards are visible at a glance.
 function renderDeckCard(deck,cardStates,onOpenDeck,isGrammar=false){
@@ -1511,11 +1545,12 @@ function renderDeckCard(deck,cardStates,onOpenDeck,isGrammar=false){
         </span>
         <ChevronRight size={15} color="var(--text3)"/>
       </div>
-      <div style={{display:"flex",gap:7,alignItems:"center"}}>
+      <div style={{display:"flex",gap:7,alignItems:"center",flexWrap:"wrap"}}>
         <span style={{fontSize:12.5,color:"var(--text3)"}}>{dc.length} cards</span>
         {weak>0&&<span className="tag tag-weak">{weak} weak</span>}
         {known>0&&<span className="tag tag-know">{known} known</span>}
         {newC>0&&<span style={{fontSize:11,fontWeight:600,color:"var(--text3)",background:"var(--surface2)",border:"1px solid var(--border)",borderRadius:100,padding:"2px 9px"}}>{newC} new</span>}
+        {!isGrammar&&<span style={{fontSize:11,color:"var(--text3)",marginLeft:"auto"}}>{daysAgoLabel(deck.lastStudiedAt)}</span>}
       </div>
       <div className="progress-track"><div className="progress-fill" style={{width:`${pct}%`,background:"var(--know)"}}/></div>
     </button>
@@ -1523,9 +1558,17 @@ function renderDeckCard(deck,cardStates,onOpenDeck,isGrammar=false){
 }
 
 function HomeScreen({decks,cardStates,onOpenDeck,onSettings,onCreateDeck,onReading,onListening,onConversation,onDictation,onCapsules,onSearch,onProgress,onMasterReview,onGuide,onPresets,onGrammarImport,darkMode,onToggleDark,studyLog}) {
-  const sorted=[...decks].sort((a,b)=>b.createdAt-a.createdAt);
-  const vocabDecks=sorted.filter(d=>d.deckType!=="grammar");
-  const grammarDecks=sorted.filter(d=>d.deckType==="grammar");
+  const [deckSort,setDeckSort]=useState(()=>localStorage.getItem("arabic_fc_deck_sort")||"newest");
+  useEffect(()=>{localStorage.setItem("arabic_fc_deck_sort",deckSort);},[deckSort]);
+  const sortDecks=(arr)=>{
+    const copy=[...arr];
+    if(deckSort==="oldest") return copy.sort((a,b)=>a.createdAt-b.createdAt);
+    if(deckSort==="az") return copy.sort((a,b)=>a.title.localeCompare(b.title));
+    if(deckSort==="stale") return copy.sort((a,b)=>(a.lastStudiedAt||0)-(b.lastStudiedAt||0)); // never-studied first
+    return copy.sort((a,b)=>b.createdAt-a.createdAt); // newest first (default)
+  };
+  const vocabDecks=sortDecks(decks.filter(d=>d.deckType!=="grammar"));
+  const grammarDecks=sortDecks(decks.filter(d=>d.deckType==="grammar"));
   const importRef=useRef(null);
   const handleImport=(e)=>{
     const file=e.target.files?.[0];
@@ -1546,14 +1589,21 @@ function HomeScreen({decks,cardStates,onOpenDeck,onSettings,onCreateDeck,onReadi
     e.target.value="";
   };
 
-  // Dashboard stats
-  const allCards=Object.values(cardStates).flat();
-  const totalCards=allCards.length;
-  const knownCount=allCards.filter(c=>c.status==="known").length;
-  const weakCount=allCards.filter(c=>c.status==="weak").length;
-  const newCount=allCards.filter(c=>c.status==="new"||!c.status).length;
-  const totalInstances=countWordInstances(cardStates);
-  const dueCount=getDueCount(allCards);
+  // Dashboard stats — vocab and grammar counted separately so a mastered
+  // grammar deck doesn't inflate the vocabulary "known" number.
+  const vocabCardStates=Object.fromEntries(vocabDecks.map(d=>[d.id,cardStates[d.id]||[]]));
+  const vocabCards=Object.values(vocabCardStates).flat();
+  const totalCards=vocabCards.length;
+  const knownCount=vocabCards.filter(c=>c.status==="known").length;
+  const weakCount=vocabCards.filter(c=>c.status==="weak").length;
+  const newCount=vocabCards.filter(c=>c.status==="new"||!c.status).length;
+  const totalInstances=countWordInstances(vocabCardStates);
+  const dueCount=getDueCount(vocabCards);
+
+  const grammarCards=grammarDecks.flatMap(d=>cardStates[d.id]||[]);
+  const grammarKnown=grammarCards.filter(c=>c.status==="known").length;
+  const grammarWeak=grammarCards.filter(c=>c.status==="weak").length;
+  const grammarNew=grammarCards.filter(c=>c.status==="new"||!c.status).length;
 
   return (
     <div className="screen">
@@ -1651,7 +1701,14 @@ function HomeScreen({decks,cardStates,onOpenDeck,onSettings,onCreateDeck,onReadi
             <ChevronRight size={15} color="var(--text3)"/>
           </div>
         </div>
-        <div className="sec">Flashcard Decks</div>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+          <div className="sec" style={{margin:0}}>Flashcard Decks</div>
+          <div style={{display:"flex",gap:4}}>
+            {[["newest","Newest"],["oldest","Oldest"],["az","A–Z"],["stale","Stalest"]].map(([val,label])=>(
+              <button key={val} onClick={()=>setDeckSort(val)} className={`chip ${deckSort===val?"chip-on":""}`} style={{padding:"3px 9px",fontSize:11}}>{label}</button>
+            ))}
+          </div>
+        </div>
         <div style={{display:"flex",gap:8,marginBottom:8}}>
           <button className="btn btn-primary" onClick={onCreateDeck} style={{flex:1,padding:"13px",borderRadius:"var(--r)",fontSize:14}}>
             <Plus size={15}/> Create New Deck
@@ -1669,7 +1726,10 @@ function HomeScreen({decks,cardStates,onOpenDeck,onSettings,onCreateDeck,onReadi
           {vocabDecks.map(deck=>renderDeckCard(deck,cardStates,onOpenDeck))}
         </div>
 
-        <div className="sec" style={{marginTop:22}}>Grammar</div>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginTop:22,marginBottom:10}}>
+          <div className="sec" style={{margin:0}}>Grammar</div>
+          {grammarCards.length>0&&<div style={{fontSize:11,color:"var(--text3)"}}>{grammarKnown} known · {grammarWeak} weak · {grammarNew} new</div>}
+        </div>
         <button className="btn" onClick={onGrammarImport} style={{width:"100%",marginBottom:12,padding:"13px",borderRadius:"var(--r)",fontSize:13.5,background:"var(--harf-bg)",border:"1.5px solid var(--harf-border)",color:"var(--harf)",fontWeight:600,gap:7}}>
           <Upload size={14}/> Import grammar notes (PDF / images / text)
         </button>
@@ -3013,13 +3073,15 @@ function StudyScreen({cards,currentIndex,onSwipe,onBack,canUndo,onExit,trackUsag
   const isGrammar=card.wordType==="grammar";
   const grammar=card.grammar||{explanation:"",examples:[]};
   const availForms=Object.entries(card.forms||{}).filter(([,v])=>v);
+  // A pending inflectional weak form (e.g. failed "plural" last time) means
+  // THIS review should test that form as the primary answer, not the base word.
+  const testForm=pendingTestForm(card);
 
   useEffect(()=>{
     genRef.current++;
-    // Default to weak form if card has weakForms tracked
-    const weakForms=card.weakForms||[];
-    const defaultForm=weakForms.find(f=>availForms.some(([k])=>k===f))||availForms[0]?.[0]||null;
-    setFlipped(false);setSelForm(defaultForm);setGen(null);setGenLoading(false);setImgLoading(false);
+    // Reference-chip default: the pending test form if any, else the first
+    // available form — same as before, just scoped to inflectional forms now.
+    setFlipped(false);setSelForm(testForm||availForms[0]?.[0]||null);setGen(null);setGenLoading(false);setImgLoading(false);
     if(window.speechSynthesis) window.speechSynthesis.cancel();
     stopTtsAudio();
     setPlaying(false);setPlayingEx(-1);
@@ -3118,18 +3180,23 @@ Return ONLY valid JSON: {"sentence":"...","translation":"...","imagePrompt":"...
           <div className="flip-card-inner">
             {/* Front face — English (or grammar concept) */}
             <div className="flip-card-face">
-              <div className="sec" style={{marginBottom:16}}>{isGrammar?<>Grammar · <span className="ar">قَوَاعِد</span></>:"English"}</div>
+              <div className="sec" style={{marginBottom:16}}>{isGrammar?<>Grammar · <span className="ar">قَوَاعِد</span></>:testForm?`English · Give the ${FORM_LABELS[testForm]||testForm}`:"English"}</div>
               <div style={{fontFamily:"Lora,serif",fontSize:isGrammar?(card.english.length>40?22:28):38,fontWeight:600,lineHeight:1.25}}>{card.english}</div>
               {isGrammar&&card.arabicBase&&<div className="ar" style={{fontSize:24,color:"var(--harf)",marginTop:10}}>{card.arabicBase}</div>}
-              <div style={{fontSize:12,color:"var(--text3)",marginTop:20,fontWeight:500}}>{isGrammar?"Recall the rule, then tap to check ↓":"Tap to reveal Arabic ↓"}</div>
+              <div style={{fontSize:12,color:"var(--text3)",marginTop:20,fontWeight:500}}>{isGrammar?"Recall the rule, then tap to check ↓":testForm?`Tap to reveal the ${FORM_LABELS[testForm]||testForm} ↓`:"Tap to reveal Arabic ↓"}</div>
             </div>
             {/* Back face — Arabic (or grammar rule) */}
             <div className="flip-card-face flip-card-back">
-              <div className="sec" style={{marginBottom:5}}>{isGrammar?"The Rule":<>Arabic · <span style={{textTransform:"capitalize"}}>{card.wordType}</span></>}</div>
+              <div className="sec" style={{marginBottom:5}}>{isGrammar?"The Rule":testForm?<>Arabic · <span style={{color:"var(--weak)"}}>{FORM_LABELS[testForm]||testForm} (retest)</span></>:<>Arabic · <span style={{textTransform:"capitalize"}}>{card.wordType}</span></>}</div>
               {isGrammar?(
                 <>
                   {card.arabicBase&&<div className="ar" style={{fontSize:30,color:"var(--text)"}}>{card.arabicBase}</div>}
                   <div style={{fontSize:14,color:"var(--text2)",lineHeight:1.55,maxHeight:120,overflowY:"auto",padding:"0 4px"}}>{grammar.explanation}</div>
+                </>
+              ):testForm?(
+                <>
+                  <div className="ar" style={{fontSize:42,color:"var(--text)"}}>{card.forms[testForm]}</div>
+                  <div style={{fontSize:13,color:"var(--text3)"}}>{card.english} · {FORM_LABELS[testForm]||testForm}</div>
                 </>
               ):(
                 <>
@@ -5332,7 +5399,7 @@ CRITICAL: Every Arabic phrase must have full tashkeel.`,
 // ─────────────────────────────────────────────────────────────
 // MASTER REVIEW — Anki-style across all decks
 // ─────────────────────────────────────────────────────────────
-function MasterReviewScreen({decks,cardStates,onBack,onSwipeCard,onUndoSwipe,trackUsage,onAddToFlashcard,studyLog,onLogStudy,onMasterReading,onMasterListening,onMasterSpeaking}) {
+function MasterReviewScreen({decks,cardStates,onBack,onSwipeCard,onUndoSwipe,onDeckTouched,trackUsage,onAddToFlashcard,studyLog,onLogStudy,onMasterReading,onMasterListening,onMasterSpeaking}) {
   const SCREEN_NAME="masterReview";
   const saved=useRef(loadScreen(SCREEN_NAME)||{}).current;
   const [started,setStarted]=useState(saved.started||false);
@@ -5355,6 +5422,9 @@ function MasterReviewScreen({decks,cardStates,onBack,onSwipeCard,onUndoSwipe,tra
   const [savedSession,setSavedSession]=useState(saved.savedSession||null); // {cards,idx,results,mode}
   // Undo history: snapshots of {prevCard, prevIdx, prevResults, deckId}
   const swipeHist=useRef([]);
+  // Per-deck rated-card counts THIS sitting — Master Review pools many decks
+  // into one session, so "studied" has to be tracked per deck, not per session.
+  const touchCounts=useRef({});
 
   // Persist screen state only while a session is active or pausable; otherwise leave storage cleared
   useEffect(()=>{
@@ -5371,6 +5441,8 @@ function MasterReviewScreen({decks,cardStates,onBack,onSwipeCard,onUndoSwipe,tra
   const weakCards=allCards.filter(c=>c.status==="weak");
   const newCards=allCards.filter(c=>c.status==="new"||!c.status);
   const knownCards=allCards.filter(c=>c.status==="known");
+  const vocabDeckCount=decks.filter(d=>d.deckType!=="grammar").length;
+  const neverStudiedDeckCount=decks.filter(d=>d.deckType!=="grammar"&&!d.lastStudiedAt).length;
 
   const start=(m)=>{
     const startMode=m||mode;
@@ -5381,6 +5453,14 @@ function MasterReviewScreen({decks,cardStates,onBack,onSwipeCard,onUndoSwipe,tra
     } else if(startMode==="due") pool=[...sortByDueDate(dueCards)];
     else if(startMode==="weak") pool=[...weakCards];
     else if(startMode==="new") pool=[...newCards];
+    else if(startMode==="rotation"){
+      // Cycle through every deck evenly instead of letting due-dates decide —
+      // whole decks pulled stalest-first (never-studied decks first), each
+      // deck's own cards ordered due/weak-first internally. Once this fills
+      // `limit`, later (fresher) decks simply don't make the cut this round.
+      const staleDecks=[...decks].filter(d=>d.deckType!=="grammar").sort((a,b)=>(a.lastStudiedAt||0)-(b.lastStudiedAt||0));
+      for(const deck of staleDecks) pool.push(...sortByDueDate((cardStates[deck.id]||[]).filter(c=>c.wordType!=="grammar")));
+    }
     else pool=[...sortByDueDate(allCards)];
     pool=pool.slice(0,limit);
     if(!pool.length){showToast("No cards available for this mode","error");return;}
@@ -5391,7 +5471,7 @@ function MasterReviewScreen({decks,cardStates,onBack,onSwipeCard,onUndoSwipe,tra
       pool.forEach(c=>{if(deckCards.has(c.id)&&!tagged.find(t=>t.id===c.id)) tagged.push({...c,_deckId:deck.id});});
     }
     setSessionCards(tagged);setIdx(0);setResults({known:0,weak:0});setFlipped(false);setStarted(true);
-    setSavedSession(null);swipeHist.current=[];startRef.current=Date.now();
+    setSavedSession(null);swipeHist.current=[];touchCounts.current={};startRef.current=Date.now();
   };
 
   const resumeSession=()=>{
@@ -5417,6 +5497,8 @@ function MasterReviewScreen({decks,cardStates,onBack,onSwipeCard,onUndoSwipe,tra
     const newResults={...results,[ns]:results[ns]+1};
     setResults(newResults);
     onSwipeCard(card._deckId,card.id,ns,selForm);
+    touchCounts.current[card._deckId]=(touchCounts.current[card._deckId]||0)+1;
+    if(touchCounts.current[card._deckId]===DECK_TOUCH_THRESHOLD&&onDeckTouched) onDeckTouched(card._deckId);
     if(idx<sessionCards.length-1){
       const nextIdx=idx+1;
       setIdx(nextIdx);setFlipped(false);setSelForm(null);setGen(null);setGenLoading(false);
@@ -5541,10 +5623,9 @@ Return ONLY valid JSON: {"sentence":"...","translation":"...","imagePrompt":"...
   // Active study
   if(started&&card){
     const availForms=Object.entries(card.forms||{}).filter(([,v])=>v);
+    const testForm=pendingTestForm(card);
     if(!selForm&&availForms.length){
-      const weakForms=card.weakForms||[];
-      const def=weakForms.find(f=>availForms.some(([k])=>k===f))||availForms[0]?.[0]||null;
-      setTimeout(()=>setSelForm(def),0);
+      setTimeout(()=>setSelForm(testForm||availForms[0]?.[0]||null),0);
     }
     return (
       <div className="screen" style={{display:"flex",flexDirection:"column",padding:"18px 18px 20px"}}>
@@ -5563,14 +5644,14 @@ Return ONLY valid JSON: {"sentence":"...","translation":"...","imagePrompt":"...
           <div key={`flip${idx}`} className={`flip-card ${flipped?'is-flipped':''}`} onClick={()=>setFlipped(f=>!f)}>
             <div className="flip-card-inner">
               <div className="flip-card-face">
-                <div className="sec" style={{marginBottom:16}}>English</div>
+                <div className="sec" style={{marginBottom:16}}>{testForm?`English · Give the ${FORM_LABELS[testForm]||testForm}`:"English"}</div>
                 <div style={{fontFamily:"Lora,serif",fontSize:36,fontWeight:600,lineHeight:1.2}}>{card.english}</div>
                 <div style={{fontSize:12,color:"var(--text3)",marginTop:20}}>Tap to reveal · <span className="kbd">Space</span></div>
               </div>
               <div className="flip-card-face flip-card-back">
-                <div className="sec" style={{marginBottom:5}}>Arabic · <span style={{textTransform:"capitalize"}}>{card.wordType}</span></div>
-                <div className="ar" style={{fontSize:40,color:"var(--text)"}}>{card.arabicBase}</div>
-                <div style={{fontSize:13,color:"var(--text3)"}}>{card.english}</div>
+                <div className="sec" style={{marginBottom:5}}>{testForm?<>Arabic · <span style={{color:"var(--weak)"}}>{FORM_LABELS[testForm]||testForm} (retest)</span></>:<>Arabic · <span style={{textTransform:"capitalize"}}>{card.wordType}</span></>}</div>
+                <div className="ar" style={{fontSize:40,color:"var(--text)"}}>{testForm?card.forms[testForm]:card.arabicBase}</div>
+                <div style={{fontSize:13,color:"var(--text3)"}}>{card.english}{testForm?` · ${FORM_LABELS[testForm]||testForm}`:""}</div>
                 {card.srsStreak>0&&<div style={{display:"inline-flex",alignItems:"center",gap:4,marginTop:6,fontSize:11,color:"var(--know)"}}>{"🔥".repeat(Math.min(card.srsStreak,5))} {card.srsStreak} streak</div>}
                 {card.forms?.harf&&<div style={{display:"inline-flex",alignItems:"center",gap:5,marginTop:7,background:"var(--harf-bg)",border:"1px solid var(--harf-border)",borderRadius:100,padding:"3px 11px"}}><span className="ar" style={{fontSize:17,color:"var(--harf)",fontWeight:600}}>{card.forms.harf}</span></div>}
                 <div style={{fontSize:11,color:"var(--text3)",marginTop:14,fontWeight:500}}>↻ Tap to flip back</div>
@@ -5716,6 +5797,13 @@ Return ONLY valid JSON: {"sentence":"...","translation":"...","imagePrompt":"...
           <div style={{flex:1}}>
             <div style={{fontWeight:600,fontSize:14}}>Smart Review</div>
             <div style={{fontSize:12,color:"var(--text3)",marginTop:2}}>Due ({dueCards.length}) → Weak ({weakCards.length}) → New ({newCards.length})</div>
+          </div>
+        </div>
+        <div className="test-option" onClick={()=>{setMode("rotation");start("rotation");}}>
+          <div style={{width:40,height:40,borderRadius:12,background:"var(--know-bg)",display:"flex",alignItems:"center",justifyContent:"center"}}><RotateCcw size={18} color="var(--know)"/></div>
+          <div style={{flex:1}}>
+            <div style={{fontWeight:600,fontSize:14}}>Rotation</div>
+            <div style={{fontSize:12,color:"var(--text3)",marginTop:2}}>Cycles every deck evenly, staleest first · {vocabDeckCount} decks{neverStudiedDeckCount?`, ${neverStudiedDeckCount} never studied`:""}</div>
           </div>
         </div>
         {dueCards.length>0&&(
@@ -7093,6 +7181,12 @@ export default function App() {
   const savedIdx=useRef(loadDeckIdx());
   const studyStartRef=useRef(null);
   const studyModeRef=useRef("all"); // which filter the active study session was started with
+  // A deck only counts as "studied" for rotation purposes once you've rated
+  // >=DECK_TOUCH_THRESHOLD cards from it in one sitting — a couple of stray
+  // swipes shouldn't mark a whole deck fresh. Stamped once per session (ref,
+  // not state) so it doesn't refire on every subsequent swipe past 20.
+  const deckTouchStampedRef=useRef(false);
+  const touchDeck=(deckId)=>setDecks(p=>p.map(d=>d.id===deckId?{...d,lastStudiedAt:Date.now()}:d));
   const startStudy=(mode,restart=false)=>{
     const dc=cardStates[activeDeck.id]||[];
     const now=Date.now();
@@ -7105,6 +7199,7 @@ export default function App() {
     studyStartRef.current=Date.now();
     studyModeRef.current=mode;
     sessionRes.current={known:0,weak:0};
+    deckTouchStampedRef.current=false;
     studyHistory.current=[]; // fresh undo stack on (re)start
     setSessionCards(toStudy);
     const key=activeDeck.id+"_"+mode;
@@ -7124,14 +7219,20 @@ export default function App() {
       });
     }
     sessionRes.current[ns==="known"?"known":"weak"]++;
+    if(!deckTouchStampedRef.current&&sessionRes.current.known+sessionRes.current.weak>=DECK_TOUCH_THRESHOLD&&activeDeck){
+      deckTouchStampedRef.current=true;
+      touchDeck(activeDeck.id);
+    }
     setCardStates(p=>({...p,[activeDeck.id]:p[activeDeck.id].map(c=>{
       if(c.id!==cardId) return c;
       const srs=calculateSRS(c,ns);
-      // Per-instance weakness tracking
+      // Per-instance weakness tracking — inflectional forms only (see
+      // INFLECTIONAL_FORMS); synonym/antonym are different words and must
+      // never drive this card's weak-form retest queue.
       let weakForms=c.weakForms?[...c.weakForms]:[];
-      if(ns==="weak"&&activeForm){
+      if(ns==="weak"&&activeForm&&INFLECTIONAL_FORMS.has(activeForm)){
         if(!weakForms.includes(activeForm)) weakForms.push(activeForm);
-      } else if(ns==="known"&&activeForm){
+      } else if(ns==="known"&&activeForm&&INFLECTIONAL_FORMS.has(activeForm)){
         weakForms=weakForms.filter(f=>f!==activeForm);
       }
       return {...c,status:ns,weakForms,...srs};
@@ -7187,8 +7288,8 @@ export default function App() {
       if(c.id!==cardId) return c;
       const srs=calculateSRS(c,status);
       let weakForms=c.weakForms?[...c.weakForms]:[];
-      if(status==="weak"&&activeForm){if(!weakForms.includes(activeForm)) weakForms.push(activeForm);}
-      else if(status==="known"&&activeForm){weakForms=weakForms.filter(f=>f!==activeForm);}
+      if(status==="weak"&&activeForm&&INFLECTIONAL_FORMS.has(activeForm)){if(!weakForms.includes(activeForm)) weakForms.push(activeForm);}
+      else if(status==="known"&&activeForm&&INFLECTIONAL_FORMS.has(activeForm)){weakForms=weakForms.filter(f=>f!==activeForm);}
       return {...c,status,weakForms,...srs};
     })}));
   };
@@ -7239,7 +7340,7 @@ export default function App() {
     masterSpeaking:<ConversationScreen {...commonProps} master={true} masterPool={masterPool} onBack={()=>go("masterReview")} onFinish={()=>{saveScreen("masterSpeaking",null);saveSession(null);go("home");setSessionRating({module:"speaking",master:true});}} onLogStudy={logStudy} onAddToFlashcard={addToFlashcard}/>,
     conversation:<ConversationScreen {...commonProps} onBack={()=>go("home")} onFinish={()=>{saveScreen("conversation",null);saveSession(null);go("home");setSessionRating({module:"speaking"});}} onLogStudy={logStudy} onAddToFlashcard={addToFlashcard}/>,
     progress:<ProgressScreen cardStates={cardStates} studyLog={studyLog} onBack={()=>go("home")} onLogManual={(e)=>logStudy(e)}/>,
-    masterReview:<MasterReviewScreen decks={decks} cardStates={cardStates} onBack={()=>go("home")} onSwipeCard={handleMasterSwipe} onUndoSwipe={restoreCard} trackUsage={trackUsage} onAddToFlashcard={addToFlashcard} studyLog={studyLog} onLogStudy={logStudy}
+    masterReview:<MasterReviewScreen decks={decks} cardStates={cardStates} onBack={()=>go("home")} onSwipeCard={handleMasterSwipe} onUndoSwipe={restoreCard} onDeckTouched={touchDeck} trackUsage={trackUsage} onAddToFlashcard={addToFlashcard} studyLog={studyLog} onLogStudy={logStudy}
       onMasterReading={(pool)=>{setMasterPool(pool);go("masterReading");}}
       onMasterListening={(pool)=>{setMasterPool(pool);go("masterListening");}}
       onMasterSpeaking={(pool)=>{setMasterPool(pool);go("masterSpeaking");}}/>,
