@@ -6325,11 +6325,64 @@ const SCREEN_PREFIX="arabic_fc_screen_";
 const SESSION_TTL_MS=30*24*60*60*1000;
 const SESSION_SCREENS=new Set(["study","reading","listening","conversation","masterReading","masterListening","masterSpeaking","masterReview"]);
 const SCREEN_KEYS=["study","reading","listening","conversation","masterReading","masterListening","masterSpeaking","masterReview"];
+
+// Mirror in-progress session/screen state to Firestore so pausing on one
+// device (e.g. mid-Rotation) can resume on another — these were previously
+// localStorage-only, which meant a paused session never left the device it
+// was paused on and silently restarted from scratch elsewhere. Debounced
+// per-key so rapid swipes don't hammer Firestore on every card.
+let _sessionSyncUid=null;
+function setSessionSyncUser(uid){_sessionSyncUid=uid;}
+const _sessionSyncTimers={};
+function cloudSyncSession(key,payload){
+  if(!_sessionSyncUid) return;
+  clearTimeout(_sessionSyncTimers[key]);
+  _sessionSyncTimers[key]=setTimeout(()=>{
+    setDoc(doc(db,"users",_sessionSyncUid),payload,{merge:true}).catch(()=>{});
+  },1200);
+}
 function loadSession(){try{const r=localStorage.getItem(SESSION_KEY);if(!r) return null;const s=JSON.parse(r);if(Date.now()-(s.savedAt||0)>SESSION_TTL_MS){localStorage.removeItem(SESSION_KEY);return null;}return s;}catch{return null;}}
-function saveSession(s){try{if(s===null) localStorage.removeItem(SESSION_KEY);else setLocalStorageResilient(SESSION_KEY,JSON.stringify({...s,savedAt:Date.now()}));}catch{}}
+function saveSession(s){
+  try{
+    if(s===null){localStorage.removeItem(SESSION_KEY);cloudSyncSession("activeSession",{activeSession:null});return;}
+    const stamped={...s,savedAt:Date.now()};
+    setLocalStorageResilient(SESSION_KEY,JSON.stringify(stamped));
+    cloudSyncSession("activeSession",{activeSession:stamped});
+  }catch{}
+}
 function loadScreen(name){try{const r=localStorage.getItem(SCREEN_PREFIX+name);if(!r) return null;const s=JSON.parse(r);if(Date.now()-(s.savedAt||0)>SESSION_TTL_MS){localStorage.removeItem(SCREEN_PREFIX+name);return null;}return s;}catch{return null;}}
-function saveScreen(name,s){try{if(s===null) localStorage.removeItem(SCREEN_PREFIX+name);else setLocalStorageResilient(SCREEN_PREFIX+name,JSON.stringify({...s,savedAt:Date.now()}));}catch{}}
+function saveScreen(name,s){
+  try{
+    if(s===null){localStorage.removeItem(SCREEN_PREFIX+name);cloudSyncSession("screen_"+name,{screens:{[name]:null}});return;}
+    const stamped={...s,savedAt:Date.now()};
+    setLocalStorageResilient(SCREEN_PREFIX+name,JSON.stringify(stamped));
+    cloudSyncSession("screen_"+name,{screens:{[name]:stamped}});
+  }catch{}
+}
 function clearAllSessions(){saveSession(null);SCREEN_KEYS.forEach(n=>saveScreen(n,null));}
+
+// Pull the cloud copies of screen/session state into localStorage if they're
+// newer than (or the only copy of) what this device has — called once right
+// after the main user doc loads, before anything reads loadScreen/loadSession.
+function hydrateSessionsFromCloud(d){
+  if(d.screens){
+    for(const [name,cloudVal] of Object.entries(d.screens)){
+      if(!SCREEN_KEYS.includes(name)||!cloudVal) continue;
+      let localVal=null;
+      try{const r=localStorage.getItem(SCREEN_PREFIX+name);if(r) localVal=JSON.parse(r);}catch{}
+      if(!localVal||(cloudVal.savedAt||0)>(localVal.savedAt||0)){
+        try{localStorage.setItem(SCREEN_PREFIX+name,JSON.stringify(cloudVal));}catch{}
+      }
+    }
+  }
+  if(d.activeSession){
+    let localVal=null;
+    try{const r=localStorage.getItem(SESSION_KEY);if(r) localVal=JSON.parse(r);}catch{}
+    if(!localVal||(d.activeSession.savedAt||0)>(localVal.savedAt||0)){
+      try{localStorage.setItem(SESSION_KEY,JSON.stringify(d.activeSession));}catch{}
+    }
+  }
+}
 const DECKIDX_KEY="arabic_fc_deckidx";
 function loadDeckIdx(){try{return JSON.parse(localStorage.getItem(DECKIDX_KEY)||"{}");}catch{return {};}}
 function saveDeckIdx(o){try{localStorage.setItem(DECKIDX_KEY,JSON.stringify(o));}catch{}}
@@ -7078,6 +7131,7 @@ export default function App() {
               if(d.profile) setProfile(d.profile);
               if(d.usage?.byTag) setUsage(d.usage);
               if(d.studyLog) setStudyLog(sl=>({...initStudyLog(),...d.studyLog}));
+              hydrateSessionsFromCloud(d);
             } catch(e){ console.error("Data parse error:",e); }
           }
           setDataLoaded(true);
@@ -7097,9 +7151,11 @@ export default function App() {
       if(!mounted) return;
       if(u){
         setUser(u);
+        setSessionSyncUser(u.uid);
         loadUserDoc(u);
       } else {
         setUser(null);
+        setSessionSyncUser(null);
         setDataLoaded(false);
       }
     });
