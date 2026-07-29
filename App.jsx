@@ -175,6 +175,27 @@ function pendingTestForm(card) {
   return inflectionalWeak.find(f => availForms.some(([k]) => k === f)) || null;
 }
 
+// Master Review's localStorage session snapshot used to store full card
+// objects (forms, weakForms, SRS numbers, ...) x2 (sessionCards AND
+// savedSession.cards) — for a 150-card Rotation session that's a sizeable
+// chunk of localStorage, and combined with the TTS cache it could blow the
+// browser's quota and silently fail to save (writes are wrapped in try/catch
+// with no surfaced error). Persist just {id,_deckId} pairs instead and
+// rehydrate the real card data from cardStates (already in memory) on load —
+// smaller payload, and resumed cards reflect current status/weakForms rather
+// than a stale snapshot.
+function deflateSessionCards(cards) {
+  return (cards || []).map(c => ({ id: c.id, _deckId: c._deckId }));
+}
+function hydrateSessionCards(light, cardStates) {
+  return (light || [])
+    .map(({ id, _deckId }) => {
+      const full = (cardStates[_deckId] || []).find(c => c.id === id);
+      return full ? { ...full, _deckId } : null;
+    })
+    .filter(Boolean);
+}
+
 /**
  * Count total unique word instances across all cards.
  * - Does NOT count arabicBase separately (it's the same as singular/past)
@@ -5434,8 +5455,14 @@ function MasterReviewScreen({decks,cardStates,onBack,onSwipeCard,onUndoSwipe,onD
   const [mode,setMode]=useState(saved.mode||"smart");
   const [limit,setLimit]=useState(saved.limit||50);
   const [masterModulePool,setMasterModulePool]=useState(saved.masterModulePool||"all");
-  const [sessionCards,setSessionCards]=useState(saved.sessionCards||[]);
-  const [idx,setIdx]=useState(typeof saved.idx==="number"?saved.idx:0);
+  const [sessionCards,setSessionCards]=useState(()=>hydrateSessionCards(saved.sessionCards,cardStates));
+  // Clamp in case a card in the saved session was deleted while paused —
+  // hydration drops it, which can shorten the array out from under a saved index.
+  const [idx,setIdx]=useState(()=>{
+    const len=hydrateSessionCards(saved.sessionCards,cardStates).length;
+    const savedIdx=typeof saved.idx==="number"?saved.idx:0;
+    return len?Math.min(savedIdx,len-1):0;
+  });
   const [results,setResults]=useState(saved.results||{known:0,weak:0});
   const [flipped,setFlipped]=useState(false);
   const [gen,setGen]=useState(null);
@@ -5447,7 +5474,9 @@ function MasterReviewScreen({decks,cardStates,onBack,onSwipeCard,onUndoSwipe,onD
   const [selForm,setSelForm]=useState(null);
   const startRef=useRef(null);
   // Persist session for resume
-  const [savedSession,setSavedSession]=useState(saved.savedSession||null); // {cards,idx,results,mode}
+  const [savedSession,setSavedSession]=useState(()=>saved.savedSession
+    ?{...saved.savedSession,cards:hydrateSessionCards(saved.savedSession.cards,cardStates)}
+    :null); // {cards,idx,results,mode}
   // Undo history: snapshots of {prevCard, prevIdx, prevResults, deckId}
   const swipeHist=useRef([]);
   // Per-deck rated-card counts THIS sitting — Master Review pools many decks
@@ -5457,7 +5486,12 @@ function MasterReviewScreen({decks,cardStates,onBack,onSwipeCard,onUndoSwipe,onD
   // Persist screen state only while a session is active or pausable; otherwise leave storage cleared
   useEffect(()=>{
     if(started||savedSession){
-      saveScreen(SCREEN_NAME,{started,mode,limit,masterModulePool,sessionCards,idx,results,savedSession});
+      saveScreen(SCREEN_NAME,{
+        started,mode,limit,masterModulePool,
+        sessionCards:deflateSessionCards(sessionCards),
+        idx,results,
+        savedSession:savedSession?{...savedSession,cards:deflateSessionCards(savedSession.cards)}:null,
+      });
     }
   },[started,mode,limit,masterModulePool,sessionCards,idx,results,savedSession]);
 
@@ -6272,15 +6306,29 @@ function initUsage() {
 // ─────────────────────────────────────────────────────────────
 // ACTIVE SESSION PERSISTENCE — keep work-in-progress across reload/navigation
 // ─────────────────────────────────────────────────────────────
+// Session/screen saves must not silently fail if localStorage is near quota
+// (the TTS cache alone can grow to several MB). On QuotaExceededError, drop
+// the TTS cache entirely — it's disposable, just re-fetched/re-synthesized —
+// and retry once before giving up.
+function setLocalStorageResilient(key,value){
+  try { localStorage.setItem(key,value); return true; }
+  catch(e) {
+    try {
+      Object.keys(localStorage).filter(k=>k.startsWith(TTS_CACHE_PREFIX)).forEach(k=>localStorage.removeItem(k));
+      localStorage.setItem(key,value);
+      return true;
+    } catch { return false; }
+  }
+}
 const SESSION_KEY="arabic_fc_active_session";
 const SCREEN_PREFIX="arabic_fc_screen_";
 const SESSION_TTL_MS=30*24*60*60*1000;
 const SESSION_SCREENS=new Set(["study","reading","listening","conversation","masterReading","masterListening","masterSpeaking","masterReview"]);
 const SCREEN_KEYS=["study","reading","listening","conversation","masterReading","masterListening","masterSpeaking","masterReview"];
 function loadSession(){try{const r=localStorage.getItem(SESSION_KEY);if(!r) return null;const s=JSON.parse(r);if(Date.now()-(s.savedAt||0)>SESSION_TTL_MS){localStorage.removeItem(SESSION_KEY);return null;}return s;}catch{return null;}}
-function saveSession(s){try{if(s===null) localStorage.removeItem(SESSION_KEY);else localStorage.setItem(SESSION_KEY,JSON.stringify({...s,savedAt:Date.now()}));}catch{}}
+function saveSession(s){try{if(s===null) localStorage.removeItem(SESSION_KEY);else setLocalStorageResilient(SESSION_KEY,JSON.stringify({...s,savedAt:Date.now()}));}catch{}}
 function loadScreen(name){try{const r=localStorage.getItem(SCREEN_PREFIX+name);if(!r) return null;const s=JSON.parse(r);if(Date.now()-(s.savedAt||0)>SESSION_TTL_MS){localStorage.removeItem(SCREEN_PREFIX+name);return null;}return s;}catch{return null;}}
-function saveScreen(name,s){try{if(s===null) localStorage.removeItem(SCREEN_PREFIX+name);else localStorage.setItem(SCREEN_PREFIX+name,JSON.stringify({...s,savedAt:Date.now()}));}catch{}}
+function saveScreen(name,s){try{if(s===null) localStorage.removeItem(SCREEN_PREFIX+name);else setLocalStorageResilient(SCREEN_PREFIX+name,JSON.stringify({...s,savedAt:Date.now()}));}catch{}}
 function clearAllSessions(){saveSession(null);SCREEN_KEYS.forEach(n=>saveScreen(n,null));}
 const DECKIDX_KEY="arabic_fc_deckidx";
 function loadDeckIdx(){try{return JSON.parse(localStorage.getItem(DECKIDX_KEY)||"{}");}catch{return {};}}
