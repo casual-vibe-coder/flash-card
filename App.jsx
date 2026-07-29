@@ -3081,7 +3081,7 @@ CRITICAL: Every Arabic word MUST have full tashkeel (فَتْحَة ضَمَّة
 // ─────────────────────────────────────────────────────────────
 // STUDY SCREEN
 // ─────────────────────────────────────────────────────────────
-function StudyScreen({cards,currentIndex,onSwipe,onBack,canUndo,onExit,trackUsage,decks,cardStates,onAddToFlashcard,activeFormOverride}) {
+function StudyScreen({cards,currentIndex,onSwipe,onBack,canUndo,onExit,trackUsage,decks,cardStates,onAddToFlashcard,activeFormOverride,onToggleWeakForm}) {
   const [flipped,setFlipped]=useState(false);
   const [selForm,setSelForm]=useState(null);
   const [gen,setGen]=useState(null);
@@ -3170,8 +3170,8 @@ Return ONLY valid JSON: {"sentence":"...","translation":"...","imagePrompt":"...
     const handler=(e)=>{
       if(e.target.tagName==="INPUT"||e.target.tagName==="TEXTAREA") return;
       if(e.key===" "||e.key==="Enter"){e.preventDefault();if(!flipped) setFlipped(true);}
-      if(flipped&&e.key==="ArrowLeft"){e.preventDefault();onSwipe("left",card.id,selForm);}
-      if(flipped&&e.key==="ArrowRight"){e.preventDefault();onSwipe("right",card.id,selForm);}
+      if(flipped&&e.key==="ArrowLeft"){e.preventDefault();onSwipe("left",card.id,testForm||selForm);}
+      if(flipped&&e.key==="ArrowRight"){e.preventDefault();onSwipe("right",card.id,testForm||selForm);}
       if(e.key==="ArrowUp"&&canUndo){e.preventDefault();onBack();}
     };
     window.addEventListener("keydown",handler);
@@ -3286,12 +3286,18 @@ Return ONLY valid JSON: {"sentence":"...","translation":"...","imagePrompt":"...
                   const order=["past","present","imperative","masdar","activePart","passivePart","singular","plural","plural2","masculine","feminine","synonym","synonymPlural","antonym","antonymPlural"];
                   return (order.indexOf(a[0])===-1?99:order.indexOf(a[0]))-(order.indexOf(b[0])===-1?99:order.indexOf(b[0]));
                 })
-                .map(([key,val])=>(
-                <button key={key} className={`chip ${selForm===key?"chip-on":""}`} onClick={()=>{setSelForm(key);setGen(null);}} style={{padding:"8px 14px"}}>
-                  {(card.weakForms||[]).includes(key)&&<span style={{color:selForm===key?"rgba(255,200,200,.9)":"var(--weak)",fontSize:11}}>●</span>}
-                  {FORM_LABELS[key]}<span className="ar" style={{fontSize:16,color:selForm===key?"rgba(255,255,255,.75)":"var(--text2)",fontWeight:500}}>· {val}</span>
-                </button>
-              ))}
+                .map(([key,val])=>{
+                  const isWeak=(card.weakForms||[]).includes(key);
+                  const canFlag=INFLECTIONAL_FORMS.has(key);
+                  return (
+                  <button key={key} className={`chip ${selForm===key?"chip-on":""}`} onClick={()=>{setSelForm(key);setGen(null);}} style={{padding:"8px 14px"}}>
+                    {canFlag&&<span onClick={(e)=>{e.stopPropagation();onToggleWeakForm?.(card.id,key);}}
+                      title={isWeak?"Marked weak — tap to clear":"Tap to flag this form weak"}
+                      style={{color:isWeak?(selForm===key?"rgba(255,200,200,.9)":"var(--weak)"):(selForm===key?"rgba(255,255,255,.4)":"var(--border)"),fontSize:13,marginRight:1,cursor:"pointer"}}>{isWeak?"●":"○"}</span>}
+                    {FORM_LABELS[key]}<span className="ar" style={{fontSize:16,color:selForm===key?"rgba(255,255,255,.75)":"var(--text2)",fontWeight:500}}>· {val}</span>
+                  </button>
+                  );
+                })}
             </div>
             {selForm&&(
               <div style={{textAlign:"center",background:"var(--accent-bg)",borderRadius:"var(--rxs)",padding:"9px 13px",marginBottom:12}}>
@@ -3372,8 +3378,8 @@ Return ONLY valid JSON: {"sentence":"...","translation":"...","imagePrompt":"...
         )}
         {flipped&&(
           <div style={{display:"flex",gap:10}}>
-            <button className="btn" onClick={()=>onSwipe("left",card.id,selForm)} style={{flex:1,padding:"14px 8px",borderRadius:"var(--r)",background:"var(--weak-bg)",color:"var(--weak)",border:"1.5px solid var(--weak-border)",fontWeight:600,fontSize:13.5}}>← Needs Practice</button>
-            <button className="btn" onClick={()=>onSwipe("right",card.id,selForm)} style={{flex:1,padding:"14px 8px",borderRadius:"var(--r)",background:"var(--know-bg)",color:"var(--know)",border:"1.5px solid var(--know-border)",fontWeight:600,fontSize:13.5}}>Know It →</button>
+            <button className="btn" onClick={()=>onSwipe("left",card.id,testForm||selForm)} style={{flex:1,padding:"14px 8px",borderRadius:"var(--r)",background:"var(--weak-bg)",color:"var(--weak)",border:"1.5px solid var(--weak-border)",fontWeight:600,fontSize:13.5}}>← Needs Practice</button>
+            <button className="btn" onClick={()=>onSwipe("right",card.id,testForm||selForm)} style={{flex:1,padding:"14px 8px",borderRadius:"var(--r)",background:"var(--know-bg)",color:"var(--know)",border:"1.5px solid var(--know-border)",fontWeight:600,fontSize:13.5}}>Know It →</button>
           </div>
         )}
         {!flipped&&<div style={{textAlign:"center",color:"var(--text3)",fontSize:12.5,marginTop:"auto"}}>Tap the card to reveal Arabic · <span className="kbd">Space</span></div>}
@@ -5421,7 +5427,7 @@ CRITICAL: Every Arabic phrase must have full tashkeel.`,
 // ─────────────────────────────────────────────────────────────
 // MASTER REVIEW — Anki-style across all decks
 // ─────────────────────────────────────────────────────────────
-function MasterReviewScreen({decks,cardStates,onBack,onSwipeCard,onUndoSwipe,onDeckTouched,trackUsage,onAddToFlashcard,studyLog,onLogStudy,onMasterReading,onMasterListening,onMasterSpeaking}) {
+function MasterReviewScreen({decks,cardStates,onBack,onSwipeCard,onUndoSwipe,onDeckTouched,onToggleWeakForm,trackUsage,onAddToFlashcard,studyLog,onLogStudy,onMasterReading,onMasterListening,onMasterSpeaking}) {
   const SCREEN_NAME="masterReview";
   const saved=useRef(loadScreen(SCREEN_NAME)||{}).current;
   const [started,setStarted]=useState(saved.started||false);
@@ -5520,7 +5526,10 @@ function MasterReviewScreen({decks,cardStates,onBack,onSwipeCard,onUndoSwipe,onD
     }
     const newResults={...results,[ns]:results[ns]+1};
     setResults(newResults);
-    onSwipeCard(card._deckId,card.id,ns,selForm);
+    // Grade whatever form the card actually ASKED for (testForm), not
+    // whichever reference chip the user happened to be peeking at — those
+    // are independent (see "Select a form" section below the flip card).
+    onSwipeCard(card._deckId,card.id,ns,pendingTestForm(card)||selForm);
     touchCounts.current[card._deckId]=(touchCounts.current[card._deckId]||0)+1;
     if(touchCounts.current[card._deckId]===DECK_TOUCH_THRESHOLD&&onDeckTouched) onDeckTouched(card._deckId);
     if(idx<sessionCards.length-1){
@@ -5709,12 +5718,18 @@ Return ONLY valid JSON: {"sentence":"...","translation":"...","imagePrompt":"...
                     const order=["past","present","imperative","masdar","activePart","passivePart","singular","plural","plural2","masculine","feminine","synonym","synonymPlural","antonym","antonymPlural"];
                     return (order.indexOf(a[0])===-1?99:order.indexOf(a[0]))-(order.indexOf(b[0])===-1?99:order.indexOf(b[0]));
                   })
-                  .map(([key,val])=>(
-                  <button key={key} className={`chip ${selForm===key?"chip-on":""}`} onClick={()=>{setSelForm(key);setGen(null);}} style={{padding:"8px 14px"}}>
-                    {(card.weakForms||[]).includes(key)&&<span style={{color:selForm===key?"rgba(255,200,200,.9)":"var(--weak)",fontSize:11}}>●</span>}
-                    {FORM_LABELS[key]||key}<span className="ar" style={{fontSize:16,color:selForm===key?"rgba(255,255,255,.75)":"var(--text2)",fontWeight:500}}>· {val}</span>
-                  </button>
-                ))}
+                  .map(([key,val])=>{
+                    const isWeak=(card.weakForms||[]).includes(key);
+                    const canFlag=INFLECTIONAL_FORMS.has(key);
+                    return (
+                    <button key={key} className={`chip ${selForm===key?"chip-on":""}`} onClick={()=>{setSelForm(key);setGen(null);}} style={{padding:"8px 14px"}}>
+                      {canFlag&&<span onClick={(e)=>{e.stopPropagation();onToggleWeakForm?.(card._deckId,card.id,key);}}
+                        title={isWeak?"Marked weak — tap to clear":"Tap to flag this form weak"}
+                        style={{color:isWeak?(selForm===key?"rgba(255,200,200,.9)":"var(--weak)"):(selForm===key?"rgba(255,255,255,.4)":"var(--border)"),fontSize:13,marginRight:1,cursor:"pointer"}}>{isWeak?"●":"○"}</span>}
+                      {FORM_LABELS[key]||key}<span className="ar" style={{fontSize:16,color:selForm===key?"rgba(255,255,255,.75)":"var(--text2)",fontWeight:500}}>· {val}</span>
+                    </button>
+                    );
+                  })}
               </div>
               {selForm&&card.forms[selForm]&&(
                 <div style={{textAlign:"center",background:"var(--accent-bg)",borderRadius:"var(--rxs)",padding:"9px 13px",marginBottom:12}}>
@@ -7231,6 +7246,20 @@ export default function App() {
   // Manual override from the deck menu — corrects decks studied before this
   // feature existed, or outside the app. ts=null clears back to "never studied".
   const setDeckLastStudied=(deckId,ts)=>setDecks(p=>p.map(d=>d.id===deckId?{...d,lastStudiedAt:ts}:d));
+  // Direct per-form weak flag, independent of the swipe/SRS flow — lets you
+  // flag a SECOND form weak (e.g. Plural 2) while a different form (e.g.
+  // Passive Part) is already the active retest, without that swipe silently
+  // overwriting it. Only touches weakForms — no status/SRS side effects,
+  // since this isn't a timed recall attempt, just a note for next time.
+  const toggleWeakForm=(deckId,cardId,formKey)=>{
+    if(!INFLECTIONAL_FORMS.has(formKey)) return;
+    setCardStates(p=>({...p,[deckId]:(p[deckId]||[]).map(c=>{
+      if(c.id!==cardId) return c;
+      const has=(c.weakForms||[]).includes(formKey);
+      const weakForms=has?c.weakForms.filter(f=>f!==formKey):[...(c.weakForms||[]),formKey];
+      return {...c,weakForms};
+    })}));
+  };
   const startStudy=(mode,restart=false)=>{
     const dc=cardStates[activeDeck.id]||[];
     const now=Date.now();
@@ -7375,7 +7404,7 @@ export default function App() {
     addCards:activeDeck&&<AddCardsScreen deck={activeDeck} onBack={()=>go("deck")} onSave={saveCards} trackUsage={trackUsage}/>,
     deck:activeDeck&&<DeckScreen deck={activeDeck} cards={cardStates[activeDeck.id]||[]} onStartStudy={startStudy} onBack={()=>go("home")} onAddCards={()=>{if(activeDeck.deckType==="grammar"){setGrammarTarget(activeDeck);go("grammarImport");}else go("addCards");}} onEditCard={c=>{if(c.wordType==="grammar"){showToast("Grammar cards can't be edited yet — remove it and re-import that section.","info");return;}setActiveCard(c);go("editCard");}} onDeleteCard={deleteCard} onRenameDeck={renameDeck} onDeleteDeck={deleteDeck} onSetDeckUnit={setDeckUnit} onSetDeckLastStudied={setDeckLastStudied} savedIdx={{all:savedIdx.current[activeDeck.id+"_all"]||0,new:savedIdx.current[activeDeck.id+"_new"]||0,weak:savedIdx.current[activeDeck.id+"_weak"]||0,known:savedIdx.current[activeDeck.id+"_known"]||0,due:savedIdx.current[activeDeck.id+"_due"]||0}}/>,
     editCard:activeCard&&activeDeck&&<EditCardScreen card={activeCard} onBack={()=>go("deck")} onSave={saveEditedCard} trackUsage={trackUsage}/>,
-    study:activeDeck&&sessionCards.length>0&&<StudyScreen cards={sessionCards} currentIndex={currentIdx} onSwipe={handleSwipe} onBack={undoStudy} canUndo={studyHistory.current.length>0} onExit={()=>go("deck")} trackUsage={trackUsage} decks={decks} cardStates={cardStates} onAddToFlashcard={addToFlashcard}/>,
+    study:activeDeck&&sessionCards.length>0&&<StudyScreen cards={sessionCards} currentIndex={currentIdx} onSwipe={handleSwipe} onBack={undoStudy} canUndo={studyHistory.current.length>0} onExit={()=>go("deck")} trackUsage={trackUsage} decks={decks} cardStates={cardStates} onAddToFlashcard={addToFlashcard} onToggleWeakForm={(cardId,formKey)=>toggleWeakForm(activeDeck.id,cardId,formKey)}/>,
     complete:<CompleteScreen known={sessionRes.current.known} weak={sessionRes.current.weak} onBack={()=>go("deck")}/>,
     reading:<ReadingScreen {...commonProps} onBack={()=>go("home")} onFinish={()=>{saveScreen("reading",null);saveSession(null);go("home");setSessionRating({module:"reading"});}} onAddToFlashcard={addToFlashcard} onLogStudy={logStudy}/>,
     listening:<ListeningScreen {...commonProps} onBack={()=>go("home")} onFinish={()=>{saveScreen("listening",null);saveSession(null);go("home");setSessionRating({module:"listening"});}} onAddToFlashcard={addToFlashcard} onLogStudy={logStudy}/>,
@@ -7384,7 +7413,7 @@ export default function App() {
     masterSpeaking:<ConversationScreen {...commonProps} master={true} masterPool={masterPool} onBack={()=>go("masterReview")} onFinish={()=>{saveScreen("masterSpeaking",null);saveSession(null);go("home");setSessionRating({module:"speaking",master:true});}} onLogStudy={logStudy} onAddToFlashcard={addToFlashcard}/>,
     conversation:<ConversationScreen {...commonProps} onBack={()=>go("home")} onFinish={()=>{saveScreen("conversation",null);saveSession(null);go("home");setSessionRating({module:"speaking"});}} onLogStudy={logStudy} onAddToFlashcard={addToFlashcard}/>,
     progress:<ProgressScreen cardStates={cardStates} studyLog={studyLog} onBack={()=>go("home")} onLogManual={(e)=>logStudy(e)}/>,
-    masterReview:<MasterReviewScreen decks={decks} cardStates={cardStates} onBack={()=>go("home")} onSwipeCard={handleMasterSwipe} onUndoSwipe={restoreCard} onDeckTouched={touchDeck} trackUsage={trackUsage} onAddToFlashcard={addToFlashcard} studyLog={studyLog} onLogStudy={logStudy}
+    masterReview:<MasterReviewScreen decks={decks} cardStates={cardStates} onBack={()=>go("home")} onSwipeCard={handleMasterSwipe} onUndoSwipe={restoreCard} onDeckTouched={touchDeck} onToggleWeakForm={toggleWeakForm} trackUsage={trackUsage} onAddToFlashcard={addToFlashcard} studyLog={studyLog} onLogStudy={logStudy}
       onMasterReading={(pool)=>{setMasterPool(pool);go("masterReading");}}
       onMasterListening={(pool)=>{setMasterPool(pool);go("masterListening");}}
       onMasterSpeaking={(pool)=>{setMasterPool(pool);go("masterSpeaking");}}/>,
