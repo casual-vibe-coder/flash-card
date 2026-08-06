@@ -85,6 +85,7 @@ and `STACK.md` (the stack). Everything is additive on the existing app.
 - ☐ Master Review, Reading, Listening, Conversation, Progress/Analytics all still work.
 - ☐ Global search, dark mode, import/export deck.
 - ☐ Sign out / sign in; data loads from Firestore.
+- ☐ **Reload always lands on Home** (2026-08-06 change) — start a Study session, a Listening/Reading passage, or Master Review, then hard-refresh the browser: you should land on Home, NOT get auto-navigated back into that screen. (Per-screen preference memory — e.g. Listening remembering your last deck selection when you manually open it again — should still work; only the auto-jump-back-in behavior is gone.)
 
 ## 12. Edge cases
 - ☐ Not signed in → login screen (no crashes).

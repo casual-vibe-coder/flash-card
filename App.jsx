@@ -7497,54 +7497,25 @@ export default function App() {
   },[decks,cardStates,settings,usage,studyLog,profile,user,dataLoaded]);
 
   // Restore active session from localStorage once data is loaded
+  // Reload/refresh always lands on Home now (founder decision 2026-08-06) —
+  // deliberately NOT auto-navigating into whatever screen was active before,
+  // even for "study"/"masterReview" which do track real progress. This used
+  // to jump straight back into study/reading/listening/conversation (+master
+  // variants) on load, which was surprising more often than it was welcome.
+  // `sessionRestored` still has to end up `true` — the initial-load gate at
+  // the bottom of this component blocks all rendering until it does — it's
+  // just no longer doing any actual restoration first. Per-screen PREFERENCE
+  // memory (deck selection, settings, generated content — saveScreen/
+  // loadScreen, keyed separately per screen) is untouched and still applies
+  // whenever you manually navigate into one of those screens; only the
+  // "which screen were you on, jump back into it" behavior is gone. Master
+  // Review's own in-screen "Resume" button (hydrateSessionCards/
+  // deflateSessionCards, further down) is a different, screen-local
+  // mechanism and is also untouched.
   useEffect(()=>{
     if(!dataLoaded||sessionRestored) return;
-    const saved=loadSession();
-    if(saved){
-      // If saved session references a deck that no longer exists, drop the whole session
-      const deckOk=!saved.activeDeckId||decks.some(x=>x.id===saved.activeDeckId);
-      if(!deckOk){
-        saveSession(null);
-      } else {
-        if(saved.activeDeckId){
-          const d=decks.find(x=>x.id===saved.activeDeckId);
-          if(d) setActiveDeck(d);
-        }
-        if(saved.masterPool) setMasterPool(saved.masterPool);
-        if(Array.isArray(saved.sessionCards)&&saved.sessionCards.length){
-          setSessionCards(saved.sessionCards);
-          if(typeof saved.currentIdx==="number") setCurrentIdx(saved.currentIdx);
-        }
-        if(saved.sessionRes) sessionRes.current={...saved.sessionRes};
-        // Jump straight back into the screen the user was on — that's the
-        // whole point of persisting this. "study" additionally needs its
-        // card queue to have actually been restored above; every other
-        // session screen (masterReview, reading, listening, conversation,
-        // and their master variants) manages its own finer-grained resume
-        // state via saveScreen/loadScreen and will pick up from there.
-        if(saved.screen&&SESSION_SCREENS.has(saved.screen)){
-          if(saved.screen!=="study"||(Array.isArray(saved.sessionCards)&&saved.sessionCards.length)){
-            setScreen(saved.screen);
-          }
-        }
-      }
-    }
     setSessionRestored(true);
-  },[dataLoaded,decks,sessionRestored]);
-
-  // Auto-save active session whenever session-screen state changes
-  useEffect(()=>{
-    if(!dataLoaded||!sessionRestored) return;
-    if(!SESSION_SCREENS.has(screen)) return;
-    saveSession({
-      screen,
-      activeDeckId:activeDeck?.id||null,
-      masterPool,
-      sessionCards,
-      currentIdx,
-      sessionRes:{...sessionRes.current},
-    });
-  },[screen,activeDeck,masterPool,sessionCards,currentIdx,dataLoaded,sessionRestored]);
+  },[dataLoaded,sessionRestored]);
 
   const handleSignIn=async()=>{
     setAuthLoading(true);setAuthError("");
