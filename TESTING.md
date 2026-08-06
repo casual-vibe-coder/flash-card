@@ -91,6 +91,21 @@ and `STACK.md` (the stack). Everything is additive on the existing app.
 - ☐ No OpenRouter key → generation shows a clear error, app doesn't break.
 - ☐ Offline → bundled presets still show; island falls back to localStorage store.
 
+## 13. Vocab Import
+- ☐ Home → "Import vocabulary" opens the screen; upload a photo of a vocab-list page.
+- ☐ Nouns extracted with ONLY singular + plural forms (no harf/synonym/antonym present in preview).
+- ☐ Verbs extracted with past/present/future/imperative/masdar/activePart/passivePart + harf (where applicable).
+- ☐ `arabicBase` for verbs is 3rd-person masc. singular PAST, even when the source photo only shows present/imperative.
+- ☐ `arabicBase` for nouns is singular indefinite, even when the source photo shows a plural or construct form.
+- ☐ A word appearing both in a vocab list AND in an example sentence on the same page collapses to ONE card, not two.
+- ☐ Common particles/prepositions incidental to example sentences are NOT extracted as their own cards.
+- ☐ Multi-page PDF / multiple screenshots in one batch all get processed; progress text updates per batch.
+- ☐ Preview stage: remove-before-save works; deck name editable when creating a new deck.
+- ☐ Save creates a normal (non-grammar) deck — cards study/flip/SRS exactly like manually-added cards.
+- ☐ Settings → Model per feature → "Vocab import" dropdown appears and actually changes which model is used (check Usage tab).
+- ☐ Cancel mid-import returns to input stage without saving partial results.
+- ☐ Open an existing (non-grammar) deck → small upload-icon button next to "Add Cards" opens Vocab Import targeting that deck; saved cards append to it (not a new deck). Button is absent on grammar decks (they already have their own import route via "Add Cards").
+
 ---
 ### Known/expected at this stage (not bugs)
 - Entitlement is a STUB (Phase 6) — "Personalized" isn't paywalled yet; nothing is actually gated.

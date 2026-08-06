@@ -334,7 +334,7 @@ const FORM_LABELS = {
   synonym:"Synonym", synonymPlural:"Synonym Plural",
   antonym:"Antonym", antonymPlural:"Antonym Plural",
   harf:"Common Preposition",
-  past:"Past", present:"Present", imperative:"Command",
+  past:"Past", present:"Present", future:"Future", imperative:"Command",
   masdar:"Masdar", activePart:"Active Part.", passivePart:"Passive Part.",
   masculine:"Masculine", feminine:"Feminine",
 };
@@ -343,13 +343,13 @@ const FORM_ARABIC = {
   synonym:"مرادف", synonymPlural:"جمع المرادف",
   antonym:"ضد", antonymPlural:"جمع الضد",
   harf:"حرف الجر",
-  past:"ماضي", present:"مضارع", imperative:"أمر",
+  past:"ماضي", present:"مضارع", future:"مستقبل", imperative:"أمر",
   masdar:"مصدر", activePart:"فاعل", passivePart:"مفعول",
   masculine:"مذكر", feminine:"مؤنث",
 };
 const FORMS_BY_TYPE = {
   noun:      ["singular","plural","plural2","synonym","synonymPlural","antonym","antonymPlural","harf"],
-  verb:      ["past","present","imperative","masdar","activePart","passivePart","harf"],
+  verb:      ["past","present","future","imperative","masdar","activePart","passivePart","harf"],
   adjective: ["masculine","feminine","plural","antonym","antonymPlural","harf"],
   other:     ["singular","plural","plural2","synonym","antonym","harf"],
 };
@@ -359,7 +359,7 @@ const FORMS_BY_TYPE = {
 // wrong shouldn't mark THIS card weak or get remembered as this card's gap.
 const INFLECTIONAL_FORMS = new Set([
   "singular","plural","plural2","masculine","feminine",
-  "past","present","imperative","masdar","activePart","passivePart",
+  "past","present","future","imperative","masdar","activePart","passivePart",
 ]);
 // A deck counts as "studied" for the rotation queue once this many cards
 // from it have been rated in one sitting.
@@ -426,6 +426,7 @@ const MODEL_FEATURES = [
   {tag:"island",    label:"Language Island",        desc:"Immersion Q&A generation (64 units)"},
   {tag:"dictation", label:"Dictation",              desc:"Dictation sentence generation"},
   {tag:"grammar",   label:"Grammar import",         desc:"Extract grammar cards from notes/PDFs — pick a vision-capable model (e.g. gpt-4o-mini) if you import screenshots"},
+  {tag:"vocab",     label:"Vocab import",           desc:"Extract noun/verb flashcards from screenshots/PDFs — pick a vision-capable model (e.g. gpt-4o-mini) if you import photos"},
   {tag:"other",     label:"Topics & conversation",  desc:"Topic generation, chat replies, misc"},
 ];
 
@@ -434,6 +435,7 @@ const USAGE_LABELS = {
   reading:"Reading Passage", listening:"Listening Content",
   wordLookup:"Word Lookup", regen:"Form Regeneration",
   island:"Language Island", dictation:"Dictation", grammar:"Grammar Import",
+  vocab:"Vocab Import",
   imageNB1:"Image · Nano Banana 1", imageNB2:"Image · Nano Banana 2",
   ttsGoogle:"Voice · Google TTS", sttWhisper:"Voice · OpenAI Whisper",
 };
@@ -1578,7 +1580,7 @@ function renderDeckCard(deck,cardStates,onOpenDeck,isGrammar=false){
   );
 }
 
-function HomeScreen({decks,cardStates,onOpenDeck,onSettings,onCreateDeck,onReading,onListening,onConversation,onDictation,onCapsules,onSearch,onProgress,onMasterReview,onGuide,onPresets,onGrammarImport,darkMode,onToggleDark,studyLog}) {
+function HomeScreen({decks,cardStates,onOpenDeck,onSettings,onCreateDeck,onReading,onListening,onConversation,onDictation,onCapsules,onSearch,onProgress,onMasterReview,onGuide,onPresets,onGrammarImport,onVocabImport,darkMode,onToggleDark,studyLog}) {
   const [deckSort,setDeckSort]=useState(()=>localStorage.getItem("arabic_fc_deck_sort")||"newest");
   useEffect(()=>{localStorage.setItem("arabic_fc_deck_sort",deckSort);},[deckSort]);
   const sortDecks=(arr)=>{
@@ -1742,7 +1744,10 @@ function HomeScreen({decks,cardStates,onOpenDeck,onSettings,onCreateDeck,onReadi
         <button className="btn" onClick={onPresets} style={{width:"100%",marginBottom:12,padding:"12px",borderRadius:"var(--r)",fontSize:13.5,background:"var(--accent-bg)",border:"1.5px solid var(--accent-border)",color:"var(--accent)",fontWeight:600,gap:7}}>
           <Download size={14}/> Browse preset decks
         </button>
-        {vocabDecks.length===0&&<div style={{textAlign:"center",color:"var(--text3)",fontSize:14,padding:"36px 0"}}><Layers size={28} style={{opacity:.3,marginBottom:8}}/><br/>No decks yet — create one or download a preset above.</div>}
+        <button className="btn" onClick={onVocabImport} style={{width:"100%",marginBottom:12,padding:"12px",borderRadius:"var(--r)",fontSize:13.5,background:"var(--know-bg)",border:"1.5px solid var(--know-border)",color:"var(--know)",fontWeight:600,gap:7}}>
+          <Upload size={14}/> Import vocabulary (screenshots / PDF)
+        </button>
+        {vocabDecks.length===0&&<div style={{textAlign:"center",color:"var(--text3)",fontSize:14,padding:"36px 0"}}><Layers size={28} style={{opacity:.3,marginBottom:8}}/><br/>No decks yet — create one, download a preset, or import vocabulary above.</div>}
         <div style={{display:"flex",flexDirection:"column",gap:9}}>
           {vocabDecks.map(deck=>renderDeckCard(deck,cardStates,onOpenDeck))}
         </div>
@@ -1840,7 +1845,7 @@ function CardCleanupTool({decks,cardStates,setCardStates,trackUsage}) {
 Rules:
 - BE CONSERVATIVE. Default to "keep" unless there is a clear, specific issue. Do not "fix" forms that are merely stylistic preferences.
 - "replace" is allowed for ANY form on ANY word type — but only when there's a real correctness issue (typo, wrong conjugation, non-standard inflection, missing tashkeel, etc.).
-- "drop" is only for OPTIONAL forms (plural2, synonym, synonymPlural, antonym, antonymPlural) when they are rare/archaic/low-value. NEVER drop core forms (singular, plural, masculine, feminine, past, present, imperative, masdar, activePart, passivePart, harf) — for those, "keep" or "replace" only.
+- "drop" is only for OPTIONAL forms (plural2, synonym, synonymPlural, antonym, antonymPlural) when they are rare/archaic/low-value. NEVER drop core forms (singular, plural, masculine, feminine, past, present, future, imperative, masdar, activePart, passivePart, harf) — for those, "keep" or "replace" only.
 - Replacement values MUST have full tashkeel.
 
 Cards:
@@ -2748,7 +2753,7 @@ CRITICAL: Every Arabic word MUST have full tashkeel (فَتْحَة ضَمَّة
 // ─────────────────────────────────────────────────────────────
 // DECK SCREEN — with edit/delete deck
 // ─────────────────────────────────────────────────────────────
-function DeckScreen({deck,cards,onStartStudy,onBack,onAddCards,onEditCard,onDeleteCard,onRenameDeck,onDeleteDeck,onSetDeckUnit,onSetDeckLastStudied,savedIdx}) {
+function DeckScreen({deck,cards,onStartStudy,onBack,onAddCards,onImportMore,onEditCard,onDeleteCard,onRenameDeck,onDeleteDeck,onSetDeckUnit,onSetDeckLastStudied,savedIdx}) {
   const [deckMenu,setDeckMenu]=useState(false);
   const [renaming,setRenaming]=useState(false);
   const [linkingUnit,setLinkingUnit]=useState(false);
@@ -2783,6 +2788,9 @@ function DeckScreen({deck,cards,onStartStudy,onBack,onAddCards,onEditCard,onDele
         right={
           <div style={{display:"flex",gap:8,alignItems:"center"}}>
             <button className="btn btn-primary btn-sm" onClick={onAddCards}><Plus size={13}/>Add Cards</button>
+            {deck.deckType!=="grammar"&&onImportMore&&(
+              <button className="btn btn-ghost" onClick={onImportMore} style={{width:34,height:34}} title="Import more via screenshot/PDF"><Upload size={14}/></button>
+            )}
             <button className="btn btn-ghost" onClick={()=>setDeckMenu(true)} style={{width:34,height:34}}><MoreVertical size={15}/></button>
           </div>
         }/>
@@ -3304,7 +3312,7 @@ Return ONLY valid JSON: {"sentence":"...","translation":"...","imagePrompt":"...
               {availForms
                 .filter(([k])=>k!=="harf")
                 .sort((a,b)=>{
-                  const order=["past","present","imperative","masdar","activePart","passivePart","singular","plural","plural2","masculine","feminine","synonym","synonymPlural","antonym","antonymPlural"];
+                  const order=["past","present","future","imperative","masdar","activePart","passivePart","singular","plural","plural2","masculine","feminine","synonym","synonymPlural","antonym","antonymPlural"];
                   return (order.indexOf(a[0])===-1?99:order.indexOf(a[0]))-(order.indexOf(b[0])===-1?99:order.indexOf(b[0]));
                 })
                 .map(([key,val])=>{
@@ -5749,7 +5757,7 @@ Return ONLY valid JSON: {"sentence":"...","translation":"...","imagePrompt":"...
                 {availForms
                   .filter(([k])=>k!=="harf")
                   .sort((a,b)=>{
-                    const order=["past","present","imperative","masdar","activePart","passivePart","singular","plural","plural2","masculine","feminine","synonym","synonymPlural","antonym","antonymPlural"];
+                    const order=["past","present","future","imperative","masdar","activePart","passivePart","singular","plural","plural2","masculine","feminine","synonym","synonymPlural","antonym","antonymPlural"];
                     return (order.indexOf(a[0])===-1?99:order.indexOf(a[0]))-(order.indexOf(b[0])===-1?99:order.indexOf(b[0]));
                   })
                   .map(([key,val])=>{
@@ -6660,6 +6668,60 @@ Rules:
 - Modern Standard Arabic, Bayna-Yadayk register.
 Return ONLY valid JSON: [{"title":"...","arabicTerm":"...","explanation":"...","examples":[{"ar":"...","en":"..."}]}]`;
 
+// ─────────────────────────────────────────────────────────────
+// VOCAB IMPORT — dump a PDF / screenshots of vocabulary (word lists, vocab
+// tables, glossaries) and get back noun/verb/adjective flashcards, each
+// normalized to its base/dictionary form. Reuses the exact same page-
+// extraction + batching pipeline as Grammar Import below (extractPdfPages /
+// fileToDownscaledJpeg), just with a different prompt, dedupe key, and card
+// shape. Saved as an ordinary (non-grammar) deck.
+// ─────────────────────────────────────────────────────────────
+// The field set this IMPORT flow requests/keeps per word type — deliberately
+// narrower than FORMS_BY_TYPE (which also serves the manual "Add Cards"
+// screen and its fuller field set). Extraction stays conservative: only
+// capture what's directly evidenced on the page, never invent synonym/
+// antonym relations that aren't there.
+const VOCAB_IMPORT_FIELDS = {
+  noun:      ["singular","plural"],
+  adjective: ["masculine","feminine","plural"],
+  verb:      ["past","present","future","imperative","masdar","activePart","passivePart","harf"],
+};
+const VOCAB_PROMPT=`You are extracting Arabic VOCABULARY flashcards from a learner's textbook page or screenshot (curriculum register: Al-ʿArabiyyah Bayna Yadayk / Arabic Between Your Hands). The input may be a headword list, a vocab table, a glossary, or prose/example sentences — in English, Arabic, or both. Some input may be photographed/scanned pages.
+
+Extract only words that are clearly being TAUGHT: headword lists, bolded/defined terms, vocab-table entries, and genuinely new content words that appear in example sentences on the same topic. SKIP common function words and particles (prepositions, pronouns, demonstratives, relative pronouns) unless the page is specifically teaching one of them as a vocabulary item. Use judgment — the goal is the deliberate teaching vocabulary of the page, not every Arabic word that appears on it.
+
+For each word, classify it as "noun", "verb", or "adjective". Normalize it to its BASE / DICTIONARY form before returning it — never return the inflected form you saw in the source:
+- Nouns/adjectives → the SINGULAR indefinite form (adjectives: the masculine singular).
+- Verbs → the 3rd-person masculine singular PAST tense (الفعل الماضي، وزن فَعَلَ), even if the source only shows the present, imperative, or another inflection.
+
+For each word return:
+- "wordType": "noun" | "verb" | "adjective"
+- "english": short English gloss
+- "arabicBase": the base/dictionary form, fully voweled (see normalization above)
+- "forms": an object — see field rules below
+
+FIELD RULES (do not deviate):
+- If wordType is "noun": "forms" must contain ONLY "singular" and "plural" — the one most common plural, grounded in the source or standard usage. Do NOT include harf, synonym, antonym, or any other field.
+- If wordType is "adjective": "forms" must contain ONLY "masculine", "feminine", and "plural".
+- If wordType is "verb": "forms" must contain ONLY "past", "present", "future", "imperative", "masdar", "activePart", "passivePart", "harf":
+  - "past": 3rd-person masc. singular past (same as arabicBase)
+  - "present": 3rd-person masc. singular present (يَفْعَلُ pattern)
+  - "future": present tense with the future marker سَ or سَوْفَ (e.g. سَيَفْعَلُ)
+  - "imperative": command form (اِفْعَلْ pattern)
+  - "masdar": the verbal noun
+  - "activePart": active participle (فَاعِل pattern)
+  - "passivePart": passive participle (مَفْعُول pattern) — "" if the verb is intransitive/rare in the passive
+  - "harf": the ONE preposition/particle commonly paired with this verb if there is a well-known one (e.g. بَحَثَ عَنْ, ذَهَبَ إِلَى) — "" if the verb takes no fixed preposition. Do NOT invent one.
+
+CRITICAL — do not invent ungrounded data: only fill in a field if you can confidently ground it in standard Arabic usage. Use "" rather than guessing. Never add synonym/antonym/plural2/synonymPlural/antonymPlural fields for ANY word type, even if you happen to know one — they are out of scope for this extraction.
+
+Every Arabic string MUST carry full tashkeel (فَتْحَة ضَمَّة كَسْرَة سُكُون شَدَّة تَنْوِين) — no bare letters.
+
+Rules:
+- ONE card per distinct base word — if the same word (in any inflection) appears more than once on the page (e.g. once in a vocab list, again in an example sentence), return it ONLY ONCE.
+- Modern Standard Arabic, Bayna-Yadayk register.
+Return ONLY valid JSON: [{"wordType":"noun|verb|adjective","english":"...","arabicBase":"...","forms":{...}}]`;
+
 // PDF → per-page {type:"text"|"image"} items. Text-poor pages (scans /
 // screenshots) are rasterized for the vision model.
 async function extractPdfPages(file,onProgress){
@@ -6902,6 +6964,210 @@ function GrammarImportScreen({onBack,trackUsage,onSave,targetDeck}){
   );
 }
 
+function VocabImportScreen({onBack,trackUsage,onSave,targetDeck}){
+  const [stage,setStage]=useState("input"); // input | working | preview
+  const [pasted,setPasted]=useState("");
+  const [files,setFiles]=useState([]);
+  const [progress,setProgress]=useState("");
+  const [cards,setCards]=useState([]);
+  const [warnings,setWarnings]=useState([]);
+  const [deckTitle,setDeckTitle]=useState(targetDeck?targetDeck.title:"Vocabulary — Bayna Yadayk");
+  const [expanded,setExpanded]=useState(-1);
+  const fileRef=useRef(null);
+  const cancelRef=useRef(false);
+
+  useEffect(()=>()=>{cancelRef.current=true;},[]);
+
+  const normalizeCard=(c)=>{
+    const wordType=["noun","verb","adjective"].includes(c?.wordType)?c.wordType:"noun";
+    const allowed=new Set(VOCAB_IMPORT_FIELDS[wordType]);
+    const forms=Object.fromEntries(Object.entries(c?.forms||{}).filter(([k,v])=>v&&allowed.has(k)));
+    return {
+      wordType,
+      english:String(c?.english||"").trim(),
+      arabicBase:String(c?.arabicBase||"").trim(),
+      forms,
+    };
+  };
+
+  const run=async()=>{
+    if(!pasted.trim()&&files.length===0){showToast("Add a PDF, images, or paste some vocabulary first.","error");return;}
+    setStage("working");setWarnings([]);cancelRef.current=false;
+    try{
+      // 1) Collect pages from every source
+      let pages=[];
+      if(pasted.trim()) pages.push({type:"text",text:pasted.trim()});
+      for(const f of files){
+        if(cancelRef.current) return;
+        if(f.type==="application/pdf"||/\.pdf$/i.test(f.name)){
+          pages.push(...await extractPdfPages(f,setProgress));
+        } else if(f.type.startsWith("image/")){
+          setProgress(`Preparing image "${f.name}"…`);
+          pages.push({type:"image",dataUrl:await fileToDownscaledJpeg(f)});
+        } else {
+          setProgress(`Reading "${f.name}"…`);
+          pages.push({type:"text",text:await f.text()}); // .txt / .md / pasted docs
+        }
+      }
+      // 2) Batch: text chunks ~6k chars; images 3 per request
+      const batches=[];
+      let buf="";
+      for(const p of pages.filter(p=>p.type==="text")){
+        if(buf&&buf.length+p.text.length>6000){batches.push({type:"text",text:buf});buf="";}
+        buf+=(buf?"\n\n---PAGE---\n\n":"")+p.text;
+        while(buf.length>6000){batches.push({type:"text",text:buf.slice(0,6000)});buf=buf.slice(6000);}
+      }
+      if(buf.trim()) batches.push({type:"text",text:buf});
+      const imgs=pages.filter(p=>p.type==="image");
+      for(let i=0;i<imgs.length;i+=3) batches.push({type:"images",images:imgs.slice(i,i+3).map(p=>p.dataUrl)});
+      if(batches.length===0) throw new Error("Nothing readable found in the input.");
+
+      // 3) Generate per batch, accumulate + dedupe by base word
+      const seen=new Map(); const warns=[];
+      for(let i=0;i<batches.length;i++){
+        if(cancelRef.current) return;
+        const b=batches[i];
+        setProgress(`Analyzing ${b.type==="images"?"screenshot":"notes"} batch ${i+1}/${batches.length} — ${seen.size} words so far…`);
+        try{
+          const raw=b.type==="text"
+            ?await callClaudeWithTashkeel(`${VOCAB_PROMPT}\n\nTHE LEARNER'S PAGE:\n\n${b.text}`,3000,"vocab",trackUsage)
+            :await callClaudeVision([{type:"text",text:VOCAB_PROMPT+"\n\nThe learner's page is in the attached image(s)."},...b.images.map(u=>({type:"image_url",image_url:{url:u}}))],3000,"vocab",trackUsage);
+          const arr=extractJSON(raw);
+          if(!Array.isArray(arr)) throw new Error("Response was not a list");
+          for(const rawC of arr){
+            const c=normalizeCard(rawC);
+            if(!c.english||!c.arabicBase) continue;
+            const key=c.wordType+"|"+stripTashkeel(c.arabicBase).replace(/\s+/g,"");
+            const prev=seen.get(key);
+            // keep the richer duplicate (more non-empty forms filled in)
+            const score=Object.values(c.forms).filter(Boolean).length;
+            const prevScore=prev?Object.values(prev.forms).filter(Boolean).length:-1;
+            if(!prev||score>prevScore) seen.set(key,c);
+          }
+        }catch(err){
+          warns.push(`Batch ${i+1}/${batches.length} failed: ${err?.message||"unknown error"}`);
+        }
+      }
+      if(cancelRef.current) return;
+      const found=[...seen.values()];
+      if(found.length===0) throw new Error(warns[0]||"No vocabulary could be extracted — try clearer pages or paste the text directly.");
+      setCards(found);setWarnings(warns);setStage("preview");
+    }catch(err){
+      if(cancelRef.current) return;
+      showToast(err?.message||"Import failed","error");
+      setStage("input");
+    }
+  };
+
+  const save=()=>{
+    const ts=Date.now();
+    const built=cards.map((c,i)=>({
+      id:`c${ts}-${i}`, wordType:c.wordType, english:c.english, arabicBase:c.arabicBase,
+      forms:c.forms, status:"new",
+    }));
+    onSave(deckTitle.trim()||"Vocabulary",built,targetDeck||null);
+  };
+
+  return (
+    <div className="screen">
+      <div style={{padding:"18px 18px 0",display:"flex",alignItems:"center",gap:10}}>
+        <button className="btn btn-ghost" onClick={onBack} style={{width:34,height:34}}><ArrowLeft size={15}/></button>
+        <div>
+          <div style={{fontWeight:700,fontSize:17}}>Vocabulary Import <span className="ar" style={{fontSize:15,color:"var(--know)"}}>مُفْرَدَات</span></div>
+          <div style={{fontSize:12,color:"var(--text3)"}}>{targetDeck?`Adding to "${targetDeck.title}"`:"Screenshots / PDF → noun & verb flashcards"}</div>
+        </div>
+      </div>
+      <div style={{padding:"16px 18px 24px",display:"flex",flexDirection:"column",gap:14}}>
+        {stage==="input"&&(<>
+          <div style={{fontSize:13.5,color:"var(--text2)",lineHeight:1.6}}>
+            Dump in the vocabulary you're studying — a PDF (typed or screenshots), photos of vocab-list pages, or pasted text. I'll extract each word into a flashcard, classify it as a <b>noun</b> or <b>verb</b>, normalize it to its base form, and fill in the right fields (nouns get singular + plural; verbs get past/present/future/masdar/participles + a common preposition).
+          </div>
+          <button className="btn" onClick={()=>fileRef.current?.click()}
+            style={{width:"100%",padding:"26px 16px",borderRadius:"var(--r)",background:"var(--surface)",border:"2px dashed var(--border)",color:"var(--text2)",flexDirection:"column",gap:8,fontSize:13.5,fontWeight:600}}>
+            <Upload size={22} color="var(--know)"/>
+            {files.length===0?"Choose PDF / images":"Add more files"}
+            <span style={{fontSize:11.5,color:"var(--text3)",fontWeight:400}}>PDF · PNG · JPG · TXT — screenshots welcome</span>
+          </button>
+          <input ref={fileRef} type="file" accept=".pdf,.txt,.md,image/*" multiple style={{display:"none"}}
+            onChange={(e)=>{setFiles(p=>[...p,...Array.from(e.target.files||[])]);e.target.value="";}}/>
+          {files.length>0&&(
+            <div style={{display:"flex",flexDirection:"column",gap:6}}>
+              {files.map((f,i)=>(
+                <div key={i} style={{display:"flex",alignItems:"center",gap:9,background:"var(--surface)",border:"1px solid var(--border)",borderRadius:"var(--rs)",padding:"9px 12px",fontSize:13}}>
+                  <FileText size={14} color="var(--text3)"/>
+                  <span style={{flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{f.name}</span>
+                  <span style={{fontSize:11,color:"var(--text3)"}}>{(f.size/1024/1024).toFixed(1)} MB</span>
+                  <button className="btn btn-ghost" onClick={()=>setFiles(p=>p.filter((_,j)=>j!==i))} style={{width:26,height:26}}><X size={12}/></button>
+                </div>
+              ))}
+            </div>
+          )}
+          <div>
+            <div className="sec">Or paste your notes</div>
+            <textarea value={pasted} onChange={e=>setPasted(e.target.value)} rows={6} placeholder="Paste a word list, vocab table, or glossary…"
+              style={{width:"100%",background:"var(--surface)",border:"1.5px solid var(--border)",borderRadius:"var(--rs)",padding:"12px 13px",fontSize:13.5,color:"var(--text)",resize:"vertical",fontFamily:"inherit"}}/>
+          </div>
+          <button className="btn btn-primary" onClick={run} style={{width:"100%",padding:"14px",borderRadius:"var(--r)",fontSize:14.5}}>
+            <Sparkles size={15}/> Analyze &amp; build flashcards
+          </button>
+        </>)}
+        {stage==="working"&&(
+          <div style={{textAlign:"center",padding:"46px 12px",display:"flex",flexDirection:"column",alignItems:"center",gap:14}}>
+            <RefreshCw size={26} className="spin" color="var(--know)"/>
+            <div style={{fontSize:14,fontWeight:600}}>Building your vocabulary deck…</div>
+            <div style={{fontSize:12.5,color:"var(--text3)",minHeight:18}}>{progress}</div>
+            <button className="btn" onClick={()=>{cancelRef.current=true;setStage("input");}} style={{fontSize:12.5,color:"var(--text3)",background:"var(--surface2)",padding:"8px 18px",borderRadius:"var(--rs)"}}>Cancel</button>
+          </div>
+        )}
+        {stage==="preview"&&(<>
+          <div style={{background:"var(--know-bg)",border:"1px solid var(--know-border)",borderRadius:"var(--rs)",padding:"11px 14px",fontSize:13.5,color:"var(--know)",fontWeight:600}}>
+            <Check size={14} style={{verticalAlign:-2}}/> Found {cards.length} word{cards.length!==1?"s":""} — review, prune, then save.
+          </div>
+          {warnings.map((w,i)=>(
+            <div key={i} style={{background:"var(--weak-bg)",border:"1px solid var(--weak-border)",borderRadius:"var(--rs)",padding:"9px 13px",fontSize:12,color:"var(--weak)"}}>⚠️ {w}</div>
+          ))}
+          {!targetDeck&&(
+            <div>
+              <div className="sec">Deck name</div>
+              <input value={deckTitle} onChange={e=>setDeckTitle(e.target.value)}
+                style={{width:"100%",background:"var(--surface)",border:"1.5px solid var(--border)",borderRadius:"var(--rs)",padding:"11px 13px",fontSize:14,color:"var(--text)",fontWeight:600}}/>
+            </div>
+          )}
+          <div style={{display:"flex",flexDirection:"column",gap:8}}>
+            {cards.map((c,i)=>(
+              <div key={i} style={{background:"var(--surface)",border:"1px solid var(--border)",borderRadius:"var(--rs)",padding:"12px 14px"}}>
+                <div style={{display:"flex",alignItems:"center",gap:8}}>
+                  <button onClick={()=>setExpanded(expanded===i?-1:i)} style={{flex:1,display:"flex",alignItems:"center",gap:8,background:"none",border:"none",cursor:"pointer",textAlign:"left",padding:0,color:"var(--text)"}}>
+                    {expanded===i?<ChevronUp size={14} color="var(--text3)"/>:<ChevronDown size={14} color="var(--text3)"/>}
+                    <span style={{fontWeight:600,fontSize:13.5,flex:1}}>{c.english}</span>
+                    <span className="chip" style={{fontSize:10.5,padding:"2px 8px"}}>{c.wordType}</span>
+                    {c.arabicBase&&<span className="ar" style={{fontSize:15,color:"var(--know)"}}>{c.arabicBase}</span>}
+                  </button>
+                  <button className="btn btn-ghost" title="Remove" onClick={()=>{setCards(p=>p.filter((_,j)=>j!==i));setExpanded(-1);}} style={{width:28,height:28,color:"var(--weak)"}}><Trash2 size={13}/></button>
+                </div>
+                {expanded===i&&(
+                  <div style={{marginTop:10,display:"flex",flexWrap:"wrap",gap:8}}>
+                    {Object.entries(c.forms).map(([k,v])=>(
+                      <div key={k} style={{background:"var(--accent-bg)",borderRadius:"var(--rxs)",padding:"7px 11px"}}>
+                        <div style={{fontSize:10.5,color:"var(--text3)",textTransform:"uppercase",letterSpacing:.3}}>{FORM_LABELS[k]||k}</div>
+                        <div className="ar" style={{fontSize:16}}>{v}</div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+          <button className="btn btn-primary" onClick={save} disabled={cards.length===0} style={{width:"100%",padding:"14px",borderRadius:"var(--r)",fontSize:14.5}}>
+            <Save size={15}/> {targetDeck?`Add ${cards.length} cards to "${targetDeck.title}"`:`Save deck · ${cards.length} cards`}
+          </button>
+          <button className="btn" onClick={()=>setStage("input")} style={{width:"100%",fontSize:12.5,color:"var(--text3)",background:"transparent"}}>← Back to input</button>
+        </>)}
+      </div>
+    </div>
+  );
+}
+
 // teaser). Kept to what actually exists to avoid implying features that don't.
 const CAPSULES=[
   {id:"island", title:"Language Island", titleAr:"جزيرة اللغة", icon:Globe, color:"#2563EB", status:"live", screen:"island",
@@ -7082,6 +7348,7 @@ export default function App() {
   const [sessionRating,setSessionRating]=useState(null);
   const [masterPool,setMasterPool]=useState("all"); // all, weak, due
   const [grammarTarget,setGrammarTarget]=useState(null); // grammar deck to append to (null = create new)
+  const [vocabTarget,setVocabTarget]=useState(null); // vocab deck to append to via Vocab Import (null = create new)
   const [sessionRestored,setSessionRestored]=useState(false);
   const sessionRes=useRef({known:0,weak:0});
   const studyHistory=useRef([]); // [{prevCard, prevIdx, prevRes}] for undo
@@ -7251,6 +7518,23 @@ export default function App() {
       showToast(`Grammar deck "${title}" created — ${cards.length} concepts`,"success");
     }
     setGrammarTarget(null);
+    setScreen("home");
+  };
+
+  // Save vocab cards from the Vocab Import screen — either into a brand new
+  // deck or appended to an existing one. Cards are normal wordType (noun/
+  // verb/adjective), no deckType tag — same shape as manually-added cards.
+  const saveVocabDeck=(title,cards,target)=>{
+    if(target){
+      setCardStates(p=>({...p,[target.id]:[...(p[target.id]||[]),...cards]}));
+      showToast(`Added ${cards.length} vocab cards to "${target.title}"`,"success");
+    } else {
+      const deck={id:`d${Date.now()}`,title,createdAt:Date.now()}; // no deckType → normal vocab deck
+      setDecks(p=>[deck,...p]);
+      setCardStates(p=>({...p,[deck.id]:cards}));
+      showToast(`Vocab deck "${title}" created — ${cards.length} cards`,"success");
+    }
+    setVocabTarget(null);
     setScreen("home");
   };
 
@@ -7496,8 +7780,9 @@ export default function App() {
   const commonProps={decks,cardStates,trackUsage};
 
   const screens={
-    home:<HomeScreen {...commonProps} onOpenDeck={openDeck} onSettings={()=>go("settings")} onCreateDeck={()=>go("createDeck")} onReading={()=>go("reading")} onListening={()=>go("listening")} onConversation={()=>go("conversation")} onDictation={()=>go("dictation")} onCapsules={()=>go("capsules")} onSearch={()=>setShowSearch(true)} onProgress={()=>go("progress")} onMasterReview={()=>go("masterReview")} onGuide={()=>go("guide")} onPresets={()=>go("preset")} onGrammarImport={()=>{setGrammarTarget(null);go("grammarImport");}} darkMode={darkMode} onToggleDark={()=>setDarkMode(d=>!d)} studyLog={studyLog}/>,
+    home:<HomeScreen {...commonProps} onOpenDeck={openDeck} onSettings={()=>go("settings")} onCreateDeck={()=>go("createDeck")} onReading={()=>go("reading")} onListening={()=>go("listening")} onConversation={()=>go("conversation")} onDictation={()=>go("dictation")} onCapsules={()=>go("capsules")} onSearch={()=>setShowSearch(true)} onProgress={()=>go("progress")} onMasterReview={()=>go("masterReview")} onGuide={()=>go("guide")} onPresets={()=>go("preset")} onGrammarImport={()=>{setGrammarTarget(null);go("grammarImport");}} onVocabImport={()=>{setVocabTarget(null);go("vocabImport");}} darkMode={darkMode} onToggleDark={()=>setDarkMode(d=>!d)} studyLog={studyLog}/>,
     grammarImport:<GrammarImportScreen key={grammarTarget?.id||"new"} onBack={()=>{setGrammarTarget(null);go("home");}} trackUsage={trackUsage} onSave={saveGrammarDeck} targetDeck={grammarTarget}/>,
+    vocabImport:<VocabImportScreen key={vocabTarget?.id||"new"} onBack={()=>{setVocabTarget(null);go("home");}} trackUsage={trackUsage} onSave={saveVocabDeck} targetDeck={vocabTarget}/>,
     capsules:<CapsulesScreen profile={profile} onOpen={(s)=>go(s)} onBack={()=>go("home")}/>,
     preset:<PresetLibraryScreen profile={profile} decks={decks} onBack={()=>go("home")}/>,
     guide:<GuideScreen onBack={()=>go("home")} onReplayOnboarding={()=>{setShowOnboarding(true);go("home");}} onResetTips={()=>{resetTips();showToast("Tips reset — they'll show again as you explore.","success");}}/>,
@@ -7506,7 +7791,7 @@ export default function App() {
     settings:<SettingsScreen settings={settings} setSettings={setSettings} onBack={()=>go("home")} usage={usage} user={user} onSignOut={handleSignOut} onReplayOnboarding={()=>setShowOnboarding(true)} profile={profile} setProfile={setProfile} studyLog={studyLog} onUpdateTargets={(t)=>setStudyLog(sl=>({...sl,targets:t}))} decks={decks} cardStates={cardStates} setCardStates={setCardStates} trackUsage={trackUsage} onResetUsage={resetUsageCounters}/>,
     createDeck:<CreateDeckScreen onBack={()=>go("home")} onCreate={createDeck}/>,
     addCards:activeDeck&&<AddCardsScreen deck={activeDeck} onBack={()=>go("deck")} onSave={saveCards} trackUsage={trackUsage}/>,
-    deck:activeDeck&&<DeckScreen deck={activeDeck} cards={cardStates[activeDeck.id]||[]} onStartStudy={startStudy} onBack={()=>go("home")} onAddCards={()=>{if(activeDeck.deckType==="grammar"){setGrammarTarget(activeDeck);go("grammarImport");}else go("addCards");}} onEditCard={c=>{if(c.wordType==="grammar"){showToast("Grammar cards can't be edited yet — remove it and re-import that section.","info");return;}setActiveCard(c);go("editCard");}} onDeleteCard={deleteCard} onRenameDeck={renameDeck} onDeleteDeck={deleteDeck} onSetDeckUnit={setDeckUnit} onSetDeckLastStudied={setDeckLastStudied} savedIdx={{all:savedIdx.current[activeDeck.id+"_all"]||0,new:savedIdx.current[activeDeck.id+"_new"]||0,weak:savedIdx.current[activeDeck.id+"_weak"]||0,known:savedIdx.current[activeDeck.id+"_known"]||0,due:savedIdx.current[activeDeck.id+"_due"]||0}}/>,
+    deck:activeDeck&&<DeckScreen deck={activeDeck} cards={cardStates[activeDeck.id]||[]} onStartStudy={startStudy} onBack={()=>go("home")} onAddCards={()=>{if(activeDeck.deckType==="grammar"){setGrammarTarget(activeDeck);go("grammarImport");}else go("addCards");}} onImportMore={()=>{setVocabTarget(activeDeck);go("vocabImport");}} onEditCard={c=>{if(c.wordType==="grammar"){showToast("Grammar cards can't be edited yet — remove it and re-import that section.","info");return;}setActiveCard(c);go("editCard");}} onDeleteCard={deleteCard} onRenameDeck={renameDeck} onDeleteDeck={deleteDeck} onSetDeckUnit={setDeckUnit} onSetDeckLastStudied={setDeckLastStudied} savedIdx={{all:savedIdx.current[activeDeck.id+"_all"]||0,new:savedIdx.current[activeDeck.id+"_new"]||0,weak:savedIdx.current[activeDeck.id+"_weak"]||0,known:savedIdx.current[activeDeck.id+"_known"]||0,due:savedIdx.current[activeDeck.id+"_due"]||0}}/>,
     editCard:activeCard&&activeDeck&&<EditCardScreen card={activeCard} onBack={()=>go("deck")} onSave={saveEditedCard} trackUsage={trackUsage}/>,
     study:activeDeck&&sessionCards.length>0&&<StudyScreen cards={sessionCards} currentIndex={currentIdx} onSwipe={handleSwipe} onBack={undoStudy} canUndo={studyHistory.current.length>0} onExit={()=>go("deck")} trackUsage={trackUsage} decks={decks} cardStates={cardStates} onAddToFlashcard={addToFlashcard} onToggleWeakForm={(cardId,formKey)=>toggleWeakForm(activeDeck.id,cardId,formKey)}/>,
     complete:<CompleteScreen known={sessionRes.current.known} weak={sessionRes.current.weak} onBack={()=>go("deck")}/>,
