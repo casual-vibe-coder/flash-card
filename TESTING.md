@@ -105,6 +105,13 @@ and `STACK.md` (the stack). Everything is additive on the existing app.
 - ☐ Settings → Model per feature → "Vocab import" dropdown appears and actually changes which model is used (check Usage tab).
 - ☐ Cancel mid-import returns to input stage without saving partial results.
 - ☐ Open an existing (non-grammar) deck → small upload-icon button next to "Add Cards" opens Vocab Import targeting that deck; saved cards append to it (not a new deck). Button is absent on grammar decks (they already have their own import route via "Add Cards").
+- ☐ **Large-PDF resilience** (added after a real failure on a big vocab PDF): upload a big/dense multi-page PDF.
+  - ☐ Preview stage shows a "Found N words from M pages" coverage line, not just a raw card count.
+  - ☐ If any batch fails, the warning names the actual page range/source (e.g. `"book.pdf" p.12–14 failed: ...`), not an anonymous "Batch 3/9".
+  - ☐ If ONE page in the PDF fails to parse/render, the rest of the PDF still gets processed (doesn't abort the whole import).
+  - ☐ If the PDF has >60 pages, a warning states exactly which page range was skipped.
+  - ☐ Even if EVERY batch fails, you land on the preview stage (0 cards) with the full list of per-page/batch errors — not a single generic toast that discards the detail.
+  - ☐ Compare card count against a manual page-by-page skim on one deliberately-dense page to sanity-check nothing near a batch boundary got silently truncated.
 
 ---
 ### Known/expected at this stage (not bugs)

@@ -6722,8 +6722,14 @@ Rules:
 - Modern Standard Arabic, Bayna-Yadayk register.
 Return ONLY valid JSON: [{"wordType":"noun|verb|adjective","english":"...","arabicBase":"...","forms":{...}}]`;
 
-// PDF → per-page {type:"text"|"image"} items. Text-poor pages (scans /
-// screenshots) are rasterized for the vision model.
+// PDF → per-page {type:"text"|"image",source,page} items. Text-poor pages
+// (scans/screenshots) are rasterized for the vision model. Every page is
+// tagged with its 1-based page number + source filename so batch failures
+// downstream can be reported as "which pages", not just "which batch". Each
+// page is wrapped in its own try/catch — one corrupt/oversized page no
+// longer aborts the whole file and silently discards every page already
+// read before it; failures are collected in `pageErrors` and returned
+// alongside whatever DID succeed, instead of being thrown.
 async function extractPdfPages(file,onProgress){
   const pdfjs=await import("pdfjs-dist");
   const workerUrl=(await import("pdfjs-dist/build/pdf.worker.min.mjs?url")).default;
@@ -6731,23 +6737,28 @@ async function extractPdfPages(file,onProgress){
   const docPdf=await pdfjs.getDocument({data:await file.arrayBuffer()}).promise;
   const maxPages=Math.min(docPdf.numPages,60);
   const pages=[];
+  const pageErrors=[];
   for(let i=1;i<=maxPages;i++){
     onProgress&&onProgress(`Reading "${file.name}" — page ${i}/${maxPages}…`);
-    const page=await docPdf.getPage(i);
-    const tc=await page.getTextContent();
-    const text=tc.items.map(it=>it.str).join(" ").replace(/\s+/g," ").trim();
-    if(text.length>=120){
-      pages.push({type:"text",text});
-    } else {
-      const vp=page.getViewport({scale:1.6});
-      const canvas=document.createElement("canvas");
-      canvas.width=vp.width;canvas.height=vp.height;
-      await page.render({canvasContext:canvas.getContext("2d"),viewport:vp}).promise;
-      pages.push({type:"image",dataUrl:canvas.toDataURL("image/jpeg",0.82)});
+    try{
+      const page=await docPdf.getPage(i);
+      const tc=await page.getTextContent();
+      const text=tc.items.map(it=>it.str).join(" ").replace(/\s+/g," ").trim();
+      if(text.length>=120){
+        pages.push({type:"text",text,source:file.name,page:i});
+      } else {
+        const vp=page.getViewport({scale:1.6});
+        const canvas=document.createElement("canvas");
+        canvas.width=vp.width;canvas.height=vp.height;
+        await page.render({canvasContext:canvas.getContext("2d"),viewport:vp}).promise;
+        pages.push({type:"image",dataUrl:canvas.toDataURL("image/jpeg",0.82),source:file.name,page:i});
+      }
+    }catch(err){
+      pageErrors.push(`"${file.name}" page ${i} couldn't be read: ${err?.message||"unknown error"}`);
     }
   }
-  if(docPdf.numPages>maxPages) showToast(`"${file.name}" has ${docPdf.numPages} pages — first ${maxPages} imported.`,"info");
-  return pages;
+  if(docPdf.numPages>maxPages) pageErrors.push(`"${file.name}" has ${docPdf.numPages} pages — only the first ${maxPages} were imported (pages ${maxPages+1}–${docPdf.numPages} were skipped).`);
+  return {pages,pageErrors};
 }
 
 // Downscale a photographed page so vision requests stay small.
@@ -6791,41 +6802,55 @@ function GrammarImportScreen({onBack,trackUsage,onSave,targetDeck}){
   const run=async()=>{
     if(!pasted.trim()&&files.length===0){showToast("Add a PDF, images, or paste your notes first.","error");return;}
     setStage("working");setWarnings([]);cancelRef.current=false;
+    const warns=[]; // collected from page-extraction AND batch failures, shown even on total failure
     try{
       // 1) Collect pages from every source
       let pages=[];
-      if(pasted.trim()) pages.push({type:"text",text:pasted.trim()});
+      if(pasted.trim()) pages.push({type:"text",text:pasted.trim(),source:"pasted text"});
       for(const f of files){
         if(cancelRef.current) return;
         if(f.type==="application/pdf"||/\.pdf$/i.test(f.name)){
-          pages.push(...await extractPdfPages(f,setProgress));
+          const {pages:pdfPages,pageErrors}=await extractPdfPages(f,setProgress);
+          pages.push(...pdfPages); warns.push(...pageErrors);
         } else if(f.type.startsWith("image/")){
           setProgress(`Preparing image "${f.name}"…`);
-          pages.push({type:"image",dataUrl:await fileToDownscaledJpeg(f)});
+          pages.push({type:"image",dataUrl:await fileToDownscaledJpeg(f),source:f.name});
         } else {
           setProgress(`Reading "${f.name}"…`);
-          pages.push({type:"text",text:await f.text()}); // .txt / .md / pasted docs
+          pages.push({type:"text",text:await f.text(),source:f.name}); // .txt / .md / pasted docs
         }
       }
-      // 2) Batch: text chunks ~6k chars; images 3 per request
+      // 2) Batch: text chunks ~6k chars; images 3 per request. Each batch
+      // carries the {source,page} list of every page folded into it, so a
+      // failure can be reported as real pages, not an anonymous batch index.
       const batches=[];
-      let buf="";
+      let buf="",bufPages=[];
       for(const p of pages.filter(p=>p.type==="text")){
-        if(buf&&buf.length+p.text.length>6000){batches.push({type:"text",text:buf});buf="";}
-        buf+=(buf?"\n\n---PAGE---\n\n":"")+p.text;
-        while(buf.length>6000){batches.push({type:"text",text:buf.slice(0,6000)});buf=buf.slice(6000);}
+        if(buf&&buf.length+p.text.length>6000){batches.push({type:"text",text:buf,pages:bufPages});buf="";bufPages=[];}
+        buf+=(buf?"\n\n---PAGE---\n\n":"")+p.text; bufPages.push({source:p.source,page:p.page});
+        while(buf.length>6000){batches.push({type:"text",text:buf.slice(0,6000),pages:bufPages});buf=buf.slice(6000);bufPages=[];}
       }
-      if(buf.trim()) batches.push({type:"text",text:buf});
+      if(buf.trim()) batches.push({type:"text",text:buf,pages:bufPages});
       const imgs=pages.filter(p=>p.type==="image");
-      for(let i=0;i<imgs.length;i+=3) batches.push({type:"images",images:imgs.slice(i,i+3).map(p=>p.dataUrl)});
-      if(batches.length===0) throw new Error("Nothing readable found in the input.");
+      for(let i=0;i<imgs.length;i+=3){
+        const chunk=imgs.slice(i,i+3);
+        batches.push({type:"images",images:chunk.map(p=>p.dataUrl),pages:chunk.map(p=>({source:p.source,page:p.page}))});
+      }
+      if(batches.length===0&&warns.length===0) throw new Error("Nothing readable found in the input.");
+
+      // Human-readable label for a batch's page range, e.g. `"notes.pdf" p.3–7`
+      const labelFor=(b)=>{
+        const bySrc=new Map();
+        for(const {source,page} of b.pages||[]) { if(!bySrc.has(source)) bySrc.set(source,[]); if(page!=null) bySrc.get(source).push(page); }
+        return [...bySrc.entries()].map(([src,pgs])=>pgs.length?`"${src}" p.${Math.min(...pgs)}${Math.min(...pgs)!==Math.max(...pgs)?`–${Math.max(...pgs)}`:""}`:`"${src}"`).join(", ")||`batch`;
+      };
 
       // 3) Generate per batch, accumulate + dedupe by title
-      const seen=new Map(); const warns=[];
+      const seen=new Map();
       for(let i=0;i<batches.length;i++){
         if(cancelRef.current) return;
         const b=batches[i];
-        setProgress(`Analyzing ${b.type==="images"?"screenshot":"notes"} batch ${i+1}/${batches.length} — ${seen.size} concepts so far…`);
+        setProgress(`Analyzing ${b.type==="images"?"screenshot":"notes"} batch ${i+1}/${batches.length} (${labelFor(b)}) — ${seen.size} concepts so far…`);
         try{
           const raw=b.type==="text"
             ?await callClaude(`${GRAMMAR_PROMPT}\n\nTHE LEARNER'S NOTES:\n\n${b.text}`,3000,"grammar",trackUsage)
@@ -6841,12 +6866,15 @@ function GrammarImportScreen({onBack,trackUsage,onSave,targetDeck}){
             if(!prev||c.explanation.length+c.examples.length*50>prev.explanation.length+prev.examples.length*50) seen.set(key,c);
           }
         }catch(err){
-          warns.push(`Batch ${i+1}/${batches.length} failed: ${err?.message||"unknown error"}`);
+          warns.push(`${labelFor(b)} failed: ${err?.message||"unknown error"}`);
         }
       }
       if(cancelRef.current) return;
       const found=[...seen.values()];
-      if(found.length===0) throw new Error(warns[0]||"No grammar concepts could be extracted — try clearer pages or paste the text directly.");
+      // Land on the preview stage even with zero results, as long as we have
+      // SOMETHING to show — otherwise a fully-failed import just bounces back
+      // to input with a single toast, discarding every other batch's error.
+      if(found.length===0&&warns.length===0) throw new Error("No grammar concepts could be extracted — try clearer pages or paste the text directly.");
       setConcepts(found);setWarnings(warns);setStage("preview");
     }catch(err){
       if(cancelRef.current) return;
@@ -6971,6 +6999,7 @@ function VocabImportScreen({onBack,trackUsage,onSave,targetDeck}){
   const [progress,setProgress]=useState("");
   const [cards,setCards]=useState([]);
   const [warnings,setWarnings]=useState([]);
+  const [pagesRead,setPagesRead]=useState(0); // for the preview-stage coverage line
   const [deckTitle,setDeckTitle]=useState(targetDeck?targetDeck.title:"Vocabulary — Bayna Yadayk");
   const [expanded,setExpanded]=useState(-1);
   const fileRef=useRef(null);
@@ -6993,45 +7022,66 @@ function VocabImportScreen({onBack,trackUsage,onSave,targetDeck}){
   const run=async()=>{
     if(!pasted.trim()&&files.length===0){showToast("Add a PDF, images, or paste some vocabulary first.","error");return;}
     setStage("working");setWarnings([]);cancelRef.current=false;
+    const warns=[]; // collected from page-extraction AND batch failures, shown even on total failure
     try{
       // 1) Collect pages from every source
       let pages=[];
-      if(pasted.trim()) pages.push({type:"text",text:pasted.trim()});
+      if(pasted.trim()) pages.push({type:"text",text:pasted.trim(),source:"pasted text"});
       for(const f of files){
         if(cancelRef.current) return;
         if(f.type==="application/pdf"||/\.pdf$/i.test(f.name)){
-          pages.push(...await extractPdfPages(f,setProgress));
+          const {pages:pdfPages,pageErrors}=await extractPdfPages(f,setProgress);
+          pages.push(...pdfPages); warns.push(...pageErrors);
         } else if(f.type.startsWith("image/")){
           setProgress(`Preparing image "${f.name}"…`);
-          pages.push({type:"image",dataUrl:await fileToDownscaledJpeg(f)});
+          pages.push({type:"image",dataUrl:await fileToDownscaledJpeg(f),source:f.name});
         } else {
           setProgress(`Reading "${f.name}"…`);
-          pages.push({type:"text",text:await f.text()}); // .txt / .md / pasted docs
+          pages.push({type:"text",text:await f.text(),source:f.name}); // .txt / .md / pasted docs
         }
       }
-      // 2) Batch: text chunks ~6k chars; images 3 per request
+      setPagesRead(pages.length);
+
+      // 2) Batch. Vocab pages pack MANY more output fields per item than
+      // grammar concepts (a verb card alone has 8 fields), so batches here
+      // are deliberately smaller (~3k chars / 2 images) and maxTokens larger
+      // (4500) than Grammar Import's — otherwise a dense vocab-list page can
+      // hit the output-token cap, and extractJSON's truncation-repair will
+      // silently drop the tail of that batch with NO warning at all. Each
+      // batch also carries the {source,page} list of every page folded into
+      // it, so a failure can be reported as real pages, not a batch index.
       const batches=[];
-      let buf="";
+      let buf="",bufPages=[];
       for(const p of pages.filter(p=>p.type==="text")){
-        if(buf&&buf.length+p.text.length>6000){batches.push({type:"text",text:buf});buf="";}
-        buf+=(buf?"\n\n---PAGE---\n\n":"")+p.text;
-        while(buf.length>6000){batches.push({type:"text",text:buf.slice(0,6000)});buf=buf.slice(6000);}
+        if(buf&&buf.length+p.text.length>3000){batches.push({type:"text",text:buf,pages:bufPages});buf="";bufPages=[];}
+        buf+=(buf?"\n\n---PAGE---\n\n":"")+p.text; bufPages.push({source:p.source,page:p.page});
+        while(buf.length>3000){batches.push({type:"text",text:buf.slice(0,3000),pages:bufPages});buf=buf.slice(3000);bufPages=[];}
       }
-      if(buf.trim()) batches.push({type:"text",text:buf});
+      if(buf.trim()) batches.push({type:"text",text:buf,pages:bufPages});
       const imgs=pages.filter(p=>p.type==="image");
-      for(let i=0;i<imgs.length;i+=3) batches.push({type:"images",images:imgs.slice(i,i+3).map(p=>p.dataUrl)});
-      if(batches.length===0) throw new Error("Nothing readable found in the input.");
+      for(let i=0;i<imgs.length;i+=2){
+        const chunk=imgs.slice(i,i+2);
+        batches.push({type:"images",images:chunk.map(p=>p.dataUrl),pages:chunk.map(p=>({source:p.source,page:p.page}))});
+      }
+      if(batches.length===0&&warns.length===0) throw new Error("Nothing readable found in the input.");
+
+      // Human-readable label for a batch's page range, e.g. `"notes.pdf" p.3–7`
+      const labelFor=(b)=>{
+        const bySrc=new Map();
+        for(const {source,page} of b.pages||[]) { if(!bySrc.has(source)) bySrc.set(source,[]); if(page!=null) bySrc.get(source).push(page); }
+        return [...bySrc.entries()].map(([src,pgs])=>pgs.length?`"${src}" p.${Math.min(...pgs)}${Math.min(...pgs)!==Math.max(...pgs)?`–${Math.max(...pgs)}`:""}`:`"${src}"`).join(", ")||`batch`;
+      };
 
       // 3) Generate per batch, accumulate + dedupe by base word
-      const seen=new Map(); const warns=[];
+      const seen=new Map();
       for(let i=0;i<batches.length;i++){
         if(cancelRef.current) return;
         const b=batches[i];
-        setProgress(`Analyzing ${b.type==="images"?"screenshot":"notes"} batch ${i+1}/${batches.length} — ${seen.size} words so far…`);
+        setProgress(`Analyzing ${b.type==="images"?"screenshot":"notes"} batch ${i+1}/${batches.length} (${labelFor(b)}) — ${seen.size} words so far…`);
         try{
           const raw=b.type==="text"
-            ?await callClaudeWithTashkeel(`${VOCAB_PROMPT}\n\nTHE LEARNER'S PAGE:\n\n${b.text}`,3000,"vocab",trackUsage)
-            :await callClaudeVision([{type:"text",text:VOCAB_PROMPT+"\n\nThe learner's page is in the attached image(s)."},...b.images.map(u=>({type:"image_url",image_url:{url:u}}))],3000,"vocab",trackUsage);
+            ?await callClaudeWithTashkeel(`${VOCAB_PROMPT}\n\nTHE LEARNER'S PAGE:\n\n${b.text}`,4500,"vocab",trackUsage)
+            :await callClaudeVision([{type:"text",text:VOCAB_PROMPT+"\n\nThe learner's page is in the attached image(s)."},...b.images.map(u=>({type:"image_url",image_url:{url:u}}))],4500,"vocab",trackUsage);
           const arr=extractJSON(raw);
           if(!Array.isArray(arr)) throw new Error("Response was not a list");
           for(const rawC of arr){
@@ -7045,12 +7095,15 @@ function VocabImportScreen({onBack,trackUsage,onSave,targetDeck}){
             if(!prev||score>prevScore) seen.set(key,c);
           }
         }catch(err){
-          warns.push(`Batch ${i+1}/${batches.length} failed: ${err?.message||"unknown error"}`);
+          warns.push(`${labelFor(b)} failed: ${err?.message||"unknown error"}`);
         }
       }
       if(cancelRef.current) return;
       const found=[...seen.values()];
-      if(found.length===0) throw new Error(warns[0]||"No vocabulary could be extracted — try clearer pages or paste the text directly.");
+      // Land on the preview stage even with zero results, as long as we have
+      // SOMETHING to show — otherwise a fully-failed import just bounces back
+      // to input with a single toast, discarding every other batch's error.
+      if(found.length===0&&warns.length===0) throw new Error("No vocabulary could be extracted — try clearer pages or paste the text directly.");
       setCards(found);setWarnings(warns);setStage("preview");
     }catch(err){
       if(cancelRef.current) return;
@@ -7121,8 +7174,13 @@ function VocabImportScreen({onBack,trackUsage,onSave,targetDeck}){
         )}
         {stage==="preview"&&(<>
           <div style={{background:"var(--know-bg)",border:"1px solid var(--know-border)",borderRadius:"var(--rs)",padding:"11px 14px",fontSize:13.5,color:"var(--know)",fontWeight:600}}>
-            <Check size={14} style={{verticalAlign:-2}}/> Found {cards.length} word{cards.length!==1?"s":""} — review, prune, then save.
+            <Check size={14} style={{verticalAlign:-2}}/> Found {cards.length} word{cards.length!==1?"s":""} from {pagesRead} page{pagesRead!==1?"s":""} — review, prune, then save.
           </div>
+          {warnings.length>0&&(
+            <div style={{background:"var(--weak-bg)",border:"1px solid var(--weak-border)",borderRadius:"var(--rs)",padding:"11px 14px",fontSize:12.5,color:"var(--weak)",fontWeight:600}}>
+              ⚠️ {warnings.length} issue{warnings.length!==1?"s":""} while reading — some pages may be missing or incomplete below:
+            </div>
+          )}
           {warnings.map((w,i)=>(
             <div key={i} style={{background:"var(--weak-bg)",border:"1px solid var(--weak-border)",borderRadius:"var(--rs)",padding:"9px 13px",fontSize:12,color:"var(--weak)"}}>⚠️ {w}</div>
           ))}
