@@ -6761,6 +6761,35 @@ async function extractPdfPages(file,onProgress){
   return {pages,pageErrors};
 }
 
+// Human-readable label for a batch's page range, e.g. `"notes.pdf" p.3–7`.
+// Shared by Grammar/Vocab import so a retry button can re-label a batch
+// outside the run() closure that originally built it.
+function labelForBatch(b){
+  const bySrc=new Map();
+  for(const {source,page} of b.pages||[]) { if(!bySrc.has(source)) bySrc.set(source,[]); if(page!=null) bySrc.get(source).push(page); }
+  return [...bySrc.entries()].map(([src,pgs])=>pgs.length?`"${src}" p.${Math.min(...pgs)}${Math.min(...pgs)!==Math.max(...pgs)?`–${Math.max(...pgs)}`:""}`:`"${src}"`).join(", ")||`batch`;
+}
+
+// Send one batch to Claude and return its parsed concept/card array. Shared
+// by the initial run() loop and the per-warning retry so both paths fail
+// and succeed identically.
+async function generateConceptsForBatch(b,trackUsage){
+  const raw=b.type==="text"
+    ?await callClaude(`${GRAMMAR_PROMPT}\n\nTHE LEARNER'S NOTES:\n\n${b.text}`,3000,"grammar",trackUsage)
+    :await callClaudeVision([{type:"text",text:GRAMMAR_PROMPT+"\n\nThe learner's notes are in the attached page image(s)."},...b.images.map(u=>({type:"image_url",image_url:{url:u}}))],3000,"grammar",trackUsage);
+  const arr=extractJSON(raw);
+  if(!Array.isArray(arr)) throw new Error("Response was not a list");
+  return arr;
+}
+async function generateVocabForBatch(b,trackUsage){
+  const raw=b.type==="text"
+    ?await callClaudeWithTashkeel(`${VOCAB_PROMPT}\n\nTHE LEARNER'S PAGE:\n\n${b.text}`,4500,"vocab",trackUsage)
+    :await callClaudeVision([{type:"text",text:VOCAB_PROMPT+"\n\nThe learner's page is in the attached image(s)."},...b.images.map(u=>({type:"image_url",image_url:{url:u}}))],4500,"vocab",trackUsage);
+  const arr=extractJSON(raw);
+  if(!Array.isArray(arr)) throw new Error("Response was not a list");
+  return arr;
+}
+
 // Downscale a photographed page so vision requests stay small.
 function fileToDownscaledJpeg(file,maxDim=1400){
   return new Promise((resolve,reject)=>{
@@ -6811,7 +6840,7 @@ function GrammarImportScreen({onBack,trackUsage,onSave,targetDeck}){
         if(cancelRef.current) return;
         if(f.type==="application/pdf"||/\.pdf$/i.test(f.name)){
           const {pages:pdfPages,pageErrors}=await extractPdfPages(f,setProgress);
-          pages.push(...pdfPages); warns.push(...pageErrors);
+          pages.push(...pdfPages); warns.push(...pageErrors.map(message=>({id:Math.random().toString(36).slice(2),message,batch:null})));
         } else if(f.type.startsWith("image/")){
           setProgress(`Preparing image "${f.name}"…`);
           pages.push({type:"image",dataUrl:await fileToDownscaledJpeg(f),source:f.name});
@@ -6838,25 +6867,14 @@ function GrammarImportScreen({onBack,trackUsage,onSave,targetDeck}){
       }
       if(batches.length===0&&warns.length===0) throw new Error("Nothing readable found in the input.");
 
-      // Human-readable label for a batch's page range, e.g. `"notes.pdf" p.3–7`
-      const labelFor=(b)=>{
-        const bySrc=new Map();
-        for(const {source,page} of b.pages||[]) { if(!bySrc.has(source)) bySrc.set(source,[]); if(page!=null) bySrc.get(source).push(page); }
-        return [...bySrc.entries()].map(([src,pgs])=>pgs.length?`"${src}" p.${Math.min(...pgs)}${Math.min(...pgs)!==Math.max(...pgs)?`–${Math.max(...pgs)}`:""}`:`"${src}"`).join(", ")||`batch`;
-      };
-
       // 3) Generate per batch, accumulate + dedupe by title
       const seen=new Map();
       for(let i=0;i<batches.length;i++){
         if(cancelRef.current) return;
         const b=batches[i];
-        setProgress(`Analyzing ${b.type==="images"?"screenshot":"notes"} batch ${i+1}/${batches.length} (${labelFor(b)}) — ${seen.size} concepts so far…`);
+        setProgress(`Analyzing ${b.type==="images"?"screenshot":"notes"} batch ${i+1}/${batches.length} (${labelForBatch(b)}) — ${seen.size} concepts so far…`);
         try{
-          const raw=b.type==="text"
-            ?await callClaude(`${GRAMMAR_PROMPT}\n\nTHE LEARNER'S NOTES:\n\n${b.text}`,3000,"grammar",trackUsage)
-            :await callClaudeVision([{type:"text",text:GRAMMAR_PROMPT+"\n\nThe learner's notes are in the attached page image(s)."},...b.images.map(u=>({type:"image_url",image_url:{url:u}}))],3000,"grammar",trackUsage);
-          const arr=extractJSON(raw);
-          if(!Array.isArray(arr)) throw new Error("Response was not a list");
+          const arr=await generateConceptsForBatch(b,trackUsage);
           for(const rawC of arr){
             const c=normalizeConcept(rawC);
             if(!c.title||!c.explanation) continue;
@@ -6866,7 +6884,7 @@ function GrammarImportScreen({onBack,trackUsage,onSave,targetDeck}){
             if(!prev||c.explanation.length+c.examples.length*50>prev.explanation.length+prev.examples.length*50) seen.set(key,c);
           }
         }catch(err){
-          warns.push(`${labelFor(b)} failed: ${err?.message||"unknown error"}`);
+          warns.push({id:Math.random().toString(36).slice(2),message:`${labelForBatch(b)} failed: ${err?.message||"unknown error"}`,batch:b});
         }
       }
       if(cancelRef.current) return;
@@ -6882,6 +6900,31 @@ function GrammarImportScreen({onBack,trackUsage,onSave,targetDeck}){
       setStage("input");
     }
   };
+
+  // Re-send a single failed batch (kept on its warning) without re-reading
+  // any files. On success its concepts merge in and the warning clears; on
+  // a repeat failure the warning stays, retryable again.
+  const retry=async(w)=>{
+    if(!w.batch||w.retrying) return;
+    setWarnings(p=>p.map(x=>x.id===w.id?{...x,retrying:true}:x));
+    try{
+      const arr=await generateConceptsForBatch(w.batch,trackUsage);
+      const fresh=arr.map(normalizeConcept).filter(c=>c.title&&c.explanation);
+      setConcepts(prev=>{
+        const seen=new Map(prev.map(c=>[c.title.toLowerCase().replace(/[^a-z؀-ۿ]+/g,""),c]));
+        for(const c of fresh){
+          const key=c.title.toLowerCase().replace(/[^a-z؀-ۿ]+/g,"");
+          const prevC=seen.get(key);
+          if(!prevC||c.explanation.length+c.examples.length*50>prevC.explanation.length+prevC.examples.length*50) seen.set(key,c);
+        }
+        return [...seen.values()];
+      });
+      setWarnings(p=>p.filter(x=>x.id!==w.id));
+    }catch(err){
+      setWarnings(p=>p.map(x=>x.id===w.id?{...x,retrying:false,message:`${labelForBatch(w.batch)} failed: ${err?.message||"unknown error"}`}:x));
+    }
+  };
+  const retryAll=()=>warnings.filter(w=>w.batch&&!w.retrying).forEach(retry);
 
   const save=()=>{
     const ts=Date.now();
@@ -6947,8 +6990,20 @@ function GrammarImportScreen({onBack,trackUsage,onSave,targetDeck}){
           <div style={{background:"var(--know-bg)",border:"1px solid var(--know-border)",borderRadius:"var(--rs)",padding:"11px 14px",fontSize:13.5,color:"var(--know)",fontWeight:600}}>
             <Check size={14} style={{verticalAlign:-2}}/> Found {concepts.length} grammar concept{concepts.length!==1?"s":""} — review, prune, then save.
           </div>
-          {warnings.map((w,i)=>(
-            <div key={i} style={{background:"var(--weak-bg)",border:"1px solid var(--weak-border)",borderRadius:"var(--rs)",padding:"9px 13px",fontSize:12,color:"var(--weak)"}}>⚠️ {w}</div>
+          {warnings.length>1&&warnings.some(w=>w.batch)&&(
+            <button className="btn" onClick={retryAll} style={{alignSelf:"flex-start",fontSize:12,color:"var(--weak)",background:"var(--weak-bg)",border:"1px solid var(--weak-border)",padding:"7px 13px",borderRadius:"var(--rs)"}}>
+              <RefreshCw size={12}/> Retry all failed
+            </button>
+          )}
+          {warnings.map((w)=>(
+            <div key={w.id} style={{background:"var(--weak-bg)",border:"1px solid var(--weak-border)",borderRadius:"var(--rs)",padding:"9px 13px",fontSize:12,color:"var(--weak)",display:"flex",alignItems:"center",gap:10}}>
+              <span style={{flex:1}}>⚠️ {w.message}</span>
+              {w.batch&&(
+                <button className="btn btn-ghost" disabled={w.retrying} onClick={()=>retry(w)} style={{fontSize:11.5,color:"var(--weak)",padding:"4px 10px",flexShrink:0}}>
+                  <RefreshCw size={11} className={w.retrying?"spin":""}/> {w.retrying?"Retrying…":"Retry"}
+                </button>
+              )}
+            </div>
           ))}
           {!targetDeck&&(
             <div>
@@ -7031,7 +7086,7 @@ function VocabImportScreen({onBack,trackUsage,onSave,targetDeck}){
         if(cancelRef.current) return;
         if(f.type==="application/pdf"||/\.pdf$/i.test(f.name)){
           const {pages:pdfPages,pageErrors}=await extractPdfPages(f,setProgress);
-          pages.push(...pdfPages); warns.push(...pageErrors);
+          pages.push(...pdfPages); warns.push(...pageErrors.map(message=>({id:Math.random().toString(36).slice(2),message,batch:null})));
         } else if(f.type.startsWith("image/")){
           setProgress(`Preparing image "${f.name}"…`);
           pages.push({type:"image",dataUrl:await fileToDownscaledJpeg(f),source:f.name});
@@ -7065,25 +7120,14 @@ function VocabImportScreen({onBack,trackUsage,onSave,targetDeck}){
       }
       if(batches.length===0&&warns.length===0) throw new Error("Nothing readable found in the input.");
 
-      // Human-readable label for a batch's page range, e.g. `"notes.pdf" p.3–7`
-      const labelFor=(b)=>{
-        const bySrc=new Map();
-        for(const {source,page} of b.pages||[]) { if(!bySrc.has(source)) bySrc.set(source,[]); if(page!=null) bySrc.get(source).push(page); }
-        return [...bySrc.entries()].map(([src,pgs])=>pgs.length?`"${src}" p.${Math.min(...pgs)}${Math.min(...pgs)!==Math.max(...pgs)?`–${Math.max(...pgs)}`:""}`:`"${src}"`).join(", ")||`batch`;
-      };
-
       // 3) Generate per batch, accumulate + dedupe by base word
       const seen=new Map();
       for(let i=0;i<batches.length;i++){
         if(cancelRef.current) return;
         const b=batches[i];
-        setProgress(`Analyzing ${b.type==="images"?"screenshot":"notes"} batch ${i+1}/${batches.length} (${labelFor(b)}) — ${seen.size} words so far…`);
+        setProgress(`Analyzing ${b.type==="images"?"screenshot":"notes"} batch ${i+1}/${batches.length} (${labelForBatch(b)}) — ${seen.size} words so far…`);
         try{
-          const raw=b.type==="text"
-            ?await callClaudeWithTashkeel(`${VOCAB_PROMPT}\n\nTHE LEARNER'S PAGE:\n\n${b.text}`,4500,"vocab",trackUsage)
-            :await callClaudeVision([{type:"text",text:VOCAB_PROMPT+"\n\nThe learner's page is in the attached image(s)."},...b.images.map(u=>({type:"image_url",image_url:{url:u}}))],4500,"vocab",trackUsage);
-          const arr=extractJSON(raw);
-          if(!Array.isArray(arr)) throw new Error("Response was not a list");
+          const arr=await generateVocabForBatch(b,trackUsage);
           for(const rawC of arr){
             const c=normalizeCard(rawC);
             if(!c.english||!c.arabicBase) continue;
@@ -7095,7 +7139,7 @@ function VocabImportScreen({onBack,trackUsage,onSave,targetDeck}){
             if(!prev||score>prevScore) seen.set(key,c);
           }
         }catch(err){
-          warns.push(`${labelFor(b)} failed: ${err?.message||"unknown error"}`);
+          warns.push({id:Math.random().toString(36).slice(2),message:`${labelForBatch(b)} failed: ${err?.message||"unknown error"}`,batch:b});
         }
       }
       if(cancelRef.current) return;
@@ -7111,6 +7155,33 @@ function VocabImportScreen({onBack,trackUsage,onSave,targetDeck}){
       setStage("input");
     }
   };
+
+  // Re-send a single failed batch (kept on its warning) without re-reading
+  // any files. On success its cards merge in and the warning clears; on a
+  // repeat failure the warning stays, retryable again.
+  const retry=async(w)=>{
+    if(!w.batch||w.retrying) return;
+    setWarnings(p=>p.map(x=>x.id===w.id?{...x,retrying:true}:x));
+    try{
+      const arr=await generateVocabForBatch(w.batch,trackUsage);
+      const fresh=arr.map(normalizeCard).filter(c=>c.english&&c.arabicBase);
+      setCards(prev=>{
+        const seen=new Map(prev.map(c=>[c.wordType+"|"+stripTashkeel(c.arabicBase).replace(/\s+/g,""),c]));
+        for(const c of fresh){
+          const key=c.wordType+"|"+stripTashkeel(c.arabicBase).replace(/\s+/g,"");
+          const prevC=seen.get(key);
+          const score=Object.values(c.forms).filter(Boolean).length;
+          const prevScore=prevC?Object.values(prevC.forms).filter(Boolean).length:-1;
+          if(!prevC||score>prevScore) seen.set(key,c);
+        }
+        return [...seen.values()];
+      });
+      setWarnings(p=>p.filter(x=>x.id!==w.id));
+    }catch(err){
+      setWarnings(p=>p.map(x=>x.id===w.id?{...x,retrying:false,message:`${labelForBatch(w.batch)} failed: ${err?.message||"unknown error"}`}:x));
+    }
+  };
+  const retryAll=()=>warnings.filter(w=>w.batch&&!w.retrying).forEach(retry);
 
   const save=()=>{
     const ts=Date.now();
@@ -7177,12 +7248,24 @@ function VocabImportScreen({onBack,trackUsage,onSave,targetDeck}){
             <Check size={14} style={{verticalAlign:-2}}/> Found {cards.length} word{cards.length!==1?"s":""} from {pagesRead} page{pagesRead!==1?"s":""} — review, prune, then save.
           </div>
           {warnings.length>0&&(
-            <div style={{background:"var(--weak-bg)",border:"1px solid var(--weak-border)",borderRadius:"var(--rs)",padding:"11px 14px",fontSize:12.5,color:"var(--weak)",fontWeight:600}}>
-              ⚠️ {warnings.length} issue{warnings.length!==1?"s":""} while reading — some pages may be missing or incomplete below:
+            <div style={{background:"var(--weak-bg)",border:"1px solid var(--weak-border)",borderRadius:"var(--rs)",padding:"11px 14px",fontSize:12.5,color:"var(--weak)",fontWeight:600,display:"flex",alignItems:"center",gap:10}}>
+              <span style={{flex:1}}>⚠️ {warnings.length} issue{warnings.length!==1?"s":""} while reading — some pages may be missing or incomplete below:</span>
+              {warnings.length>1&&warnings.some(w=>w.batch)&&(
+                <button className="btn" onClick={retryAll} style={{fontSize:11.5,color:"var(--weak)",background:"var(--surface)",border:"1px solid var(--weak-border)",padding:"6px 11px",borderRadius:"var(--rxs)",flexShrink:0}}>
+                  <RefreshCw size={11}/> Retry all
+                </button>
+              )}
             </div>
           )}
-          {warnings.map((w,i)=>(
-            <div key={i} style={{background:"var(--weak-bg)",border:"1px solid var(--weak-border)",borderRadius:"var(--rs)",padding:"9px 13px",fontSize:12,color:"var(--weak)"}}>⚠️ {w}</div>
+          {warnings.map((w)=>(
+            <div key={w.id} style={{background:"var(--weak-bg)",border:"1px solid var(--weak-border)",borderRadius:"var(--rs)",padding:"9px 13px",fontSize:12,color:"var(--weak)",display:"flex",alignItems:"center",gap:10}}>
+              <span style={{flex:1}}>⚠️ {w.message}</span>
+              {w.batch&&(
+                <button className="btn btn-ghost" disabled={w.retrying} onClick={()=>retry(w)} style={{fontSize:11.5,color:"var(--weak)",padding:"4px 10px",flexShrink:0}}>
+                  <RefreshCw size={11} className={w.retrying?"spin":""}/> {w.retrying?"Retrying…":"Retry"}
+                </button>
+              )}
+            </div>
           ))}
           {!targetDeck&&(
             <div>
