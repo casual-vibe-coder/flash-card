@@ -364,6 +364,19 @@ const INFLECTIONAL_FORMS = new Set([
 // A deck counts as "studied" for the rotation queue once this many cards
 // from it have been rated in one sitting.
 const DECK_TOUCH_THRESHOLD = 20;
+// Per-deck rating goal for a given session's card list: normally the flat
+// threshold above, but capped to however many of that deck's cards actually
+// made it into this session — otherwise a deck smaller than the threshold
+// (or one `limit` cut short) could never be rated enough times to count as
+// studied, so it never stops looking stalest and never stops crowding out
+// other decks on every future rotation.
+function deckTouchGoals(cards){
+  const counts={};
+  for(const c of cards) counts[c._deckId]=(counts[c._deckId]||0)+1;
+  const goals={};
+  for(const deckId in counts) goals[deckId]=Math.min(DECK_TOUCH_THRESHOLD,counts[deckId]);
+  return goals;
+}
 const OR_MODELS = [
   // OpenAI
   {id:"openai/gpt-4o-mini",        label:"GPT-4o Mini  · Fast · Cheap"},
@@ -5490,6 +5503,13 @@ function MasterReviewScreen({decks,cardStates,onBack,onSwipeCard,onUndoSwipe,onD
   // Per-deck rated-card counts THIS sitting — Master Review pools many decks
   // into one session, so "studied" has to be tracked per deck, not per session.
   const touchCounts=useRef({});
+  // How many ratings actually mark a given deck "studied" this sitting — normally
+  // DECK_TOUCH_THRESHOLD, but capped to however many of that deck's cards are
+  // actually in this session. Without this, any deck smaller than the threshold
+  // (or one that got cut short by `limit`) could never be rated enough times to
+  // count, so its lastStudiedAt never updates — it stays "stalest" forever and
+  // keeps re-claiming the front of every future rotation, starving other decks.
+  const touchGoals=useRef({});
 
   // Persist screen state only while a session is active or pausable; otherwise leave storage cleared
   useEffect(()=>{
@@ -5543,11 +5563,12 @@ function MasterReviewScreen({decks,cardStates,onBack,onSwipeCard,onUndoSwipe,onD
       pool.forEach(c=>{if(deckCards.has(c.id)&&!tagged.find(t=>t.id===c.id)) tagged.push({...c,_deckId:deck.id});});
     }
     setSessionCards(tagged);setIdx(0);setResults({known:0,weak:0});setFlipped(false);setStarted(true);
-    setSavedSession(null);swipeHist.current=[];touchCounts.current={};startRef.current=Date.now();
+    setSavedSession(null);swipeHist.current=[];touchCounts.current={};touchGoals.current=deckTouchGoals(tagged);startRef.current=Date.now();
   };
 
   const resumeSession=()=>{
     if(!savedSession) return;
+    touchGoals.current=deckTouchGoals(savedSession.cards);
     setSessionCards(savedSession.cards);setIdx(savedSession.idx);setResults(savedSession.results);
     setFlipped(false);setSelForm(null);setStarted(true);startRef.current=Date.now();
   };
@@ -5573,7 +5594,8 @@ function MasterReviewScreen({decks,cardStates,onBack,onSwipeCard,onUndoSwipe,onD
     // are independent (see "Select a form" section below the flip card).
     onSwipeCard(card._deckId,card.id,ns,pendingTestForm(card)||selForm);
     touchCounts.current[card._deckId]=(touchCounts.current[card._deckId]||0)+1;
-    if(touchCounts.current[card._deckId]===DECK_TOUCH_THRESHOLD&&onDeckTouched) onDeckTouched(card._deckId);
+    const touchGoal=touchGoals.current[card._deckId]||DECK_TOUCH_THRESHOLD;
+    if(touchCounts.current[card._deckId]===touchGoal&&onDeckTouched) onDeckTouched(card._deckId);
     if(idx<sessionCards.length-1){
       const nextIdx=idx+1;
       setIdx(nextIdx);setFlipped(false);setSelForm(null);setGen(null);setGenLoading(false);
@@ -7742,6 +7764,10 @@ export default function App() {
   // swipes shouldn't mark a whole deck fresh. Stamped once per session (ref,
   // not state) so it doesn't refire on every subsequent swipe past 20.
   const deckTouchStampedRef=useRef(false);
+  // Capped to however many cards are actually in this study session — a deck
+  // (or mode filter, e.g. "weak") with fewer than DECK_TOUCH_THRESHOLD cards
+  // could otherwise never be rated enough times to count as studied.
+  const deckTouchGoalRef=useRef(DECK_TOUCH_THRESHOLD);
   const touchDeck=(deckId)=>setDecks(p=>p.map(d=>d.id===deckId?{...d,lastStudiedAt:Date.now()}:d));
   // Manual override from the deck menu — corrects decks studied before this
   // feature existed, or outside the app. ts=null clears back to "never studied".
@@ -7773,6 +7799,7 @@ export default function App() {
     studyModeRef.current=mode;
     sessionRes.current={known:0,weak:0};
     deckTouchStampedRef.current=false;
+    deckTouchGoalRef.current=Math.min(DECK_TOUCH_THRESHOLD,toStudy.length);
     studyHistory.current=[]; // fresh undo stack on (re)start
     setSessionCards(toStudy);
     const key=activeDeck.id+"_"+mode;
@@ -7792,7 +7819,7 @@ export default function App() {
       });
     }
     sessionRes.current[ns==="known"?"known":"weak"]++;
-    if(!deckTouchStampedRef.current&&sessionRes.current.known+sessionRes.current.weak>=DECK_TOUCH_THRESHOLD&&activeDeck){
+    if(!deckTouchStampedRef.current&&sessionRes.current.known+sessionRes.current.weak>=deckTouchGoalRef.current&&activeDeck){
       deckTouchStampedRef.current=true;
       touchDeck(activeDeck.id);
     }
