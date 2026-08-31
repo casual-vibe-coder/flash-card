@@ -7515,6 +7515,14 @@ export default function App() {
   const [sessionRestored,setSessionRestored]=useState(false);
   const sessionRes=useRef({known:0,weak:0});
   const studyHistory=useRef([]); // [{prevCard, prevIdx, prevRes}] for undo
+  // Timestamp of the newest decks/cardStates state this tab actually knows
+  // about — from its own last save or its last fetch from Firestore. Lets the
+  // refresh-on-visible effect below tell "cloud has something new" apart from
+  // "cloud still has exactly what I just wrote", without which a plain
+  // getDoc-and-apply on every foreground would occasionally win a race against
+  // an in-flight save and clobber a just-made local edit with the slightly
+  // older copy that read completed against.
+  const lastSyncRef=useRef(0);
   const [darkMode,setDarkMode]=useState(()=>{
     const saved=localStorage.getItem("arabic_fc_dark");
     if(saved!==null) return saved==="true";
@@ -7562,6 +7570,7 @@ export default function App() {
               if(d.usage?.byTag) setUsage(d.usage);
               if(d.studyLog) setStudyLog(sl=>({...initStudyLog(),...d.studyLog}));
               hydrateSessionsFromCloud(d);
+              lastSyncRef.current=d.updatedAt||0;
             } catch(e){ console.error("Data parse error:",e); }
           }
           setDataLoaded(true);
@@ -7606,7 +7615,12 @@ export default function App() {
   // debounce, the moment the tab is hidden or unloading.
   useEffect(()=>{
     if(!user||!dataLoaded) return;
-    const save=()=>setDoc(doc(db,"users",user.uid),{decks,cardStates,settings,usage,studyLog,...(profile?{profile}:{})},{merge:true}).catch(e=>console.error("Save error:",e));
+    const save=()=>{
+      const stamp=Date.now();
+      setDoc(doc(db,"users",user.uid),{decks,cardStates,settings,usage,studyLog,updatedAt:stamp,...(profile?{profile}:{})},{merge:true})
+        .then(()=>{ lastSyncRef.current=stamp; })
+        .catch(e=>console.error("Save error:",e));
+    };
     const t=setTimeout(save,1500);
     const flushIfHidden=()=>{ if(document.visibilityState==="hidden") save(); };
     document.addEventListener("visibilitychange",flushIfHidden);
@@ -7617,6 +7631,46 @@ export default function App() {
       window.removeEventListener("pagehide",save);
     };
   },[decks,cardStates,settings,usage,studyLog,profile,user,dataLoaded]);
+
+  // Refresh-on-foreground: a tab left open across a study session (or just
+  // sitting in a background phone tab) never re-fetches on its own — only
+  // mount/sign-in does a getDoc. So if a DIFFERENT device saves a new deck
+  // (e.g. a PDF import) while this tab sits idle, this tab's `decks` goes
+  // stale — and the very next thing that touches its autosave deps (studying
+  // one card bumps `usage`/`studyLog`, which are both in that effect's dep
+  // array) writes this tab's stale decks straight back over the cloud,
+  // erasing the other device's import. Re-pulling the doc whenever the tab
+  // regains visibility/focus closes that gap. Guarded by `updatedAt` (see
+  // lastSyncRef above) so this can never win a race against this same tab's
+  // own in-flight save and regress to older data.
+  useEffect(()=>{
+    if(!user||!dataLoaded) return;
+    const refresh=()=>{
+      if(document.visibilityState!=="visible") return;
+      getDoc(doc(db,"users",user.uid)).then(snap=>{
+        if(!snap.exists()) return;
+        const d=snap.data();
+        if(!Array.isArray(d.decks)) return;
+        if((d.updatedAt||0)<=lastSyncRef.current) return;
+        setDecks(d.decks);
+        if(d.cardStates){
+          const deckIds=new Set(d.decks.map(dk=>dk.id));
+          const cleaned={};
+          for(const [k,v] of Object.entries(d.cardStates)){
+            if(deckIds.has(k)) cleaned[k]=v;
+          }
+          setCardStates(cleaned);
+        }
+        lastSyncRef.current=d.updatedAt;
+      }).catch(e=>console.error("Refresh error:",e));
+    };
+    document.addEventListener("visibilitychange",refresh);
+    window.addEventListener("focus",refresh);
+    return ()=>{
+      document.removeEventListener("visibilitychange",refresh);
+      window.removeEventListener("focus",refresh);
+    };
+  },[user,dataLoaded]);
 
   // Restore active session from localStorage once data is loaded
   // Reload/refresh always lands on Home now (founder decision 2026-08-06) —
