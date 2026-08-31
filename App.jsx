@@ -7745,18 +7745,39 @@ export default function App() {
     setScreen("home");
   };
 
+  // Immediately push decks/cardStates to Firestore, bypassing the debounced
+  // autosave effect entirely. Import actions are exactly the case that
+  // effect's 1.5s debounce fails: the toast below fires the instant local
+  // state updates, so the user reasonably believes it's saved and may
+  // refresh or switch devices right away — but the write itself was still
+  // sitting in the debounce queue and had not gone out at all yet. A big,
+  // effortful, one-shot action like a PDF/screenshot import can't be allowed
+  // to depend on the tab staying open and idle for another 1.5+ seconds.
+  const flushSaveNow=(newDecks,newCardStates)=>{
+    if(!user) return;
+    const stamp=Date.now();
+    setDoc(doc(db,"users",user.uid),{decks:newDecks,cardStates:newCardStates,settings,usage,studyLog,updatedAt:stamp,...(profile?{profile}:{})},{merge:true})
+      .then(()=>{ lastSyncRef.current=stamp; })
+      .catch(e=>{ console.error("Save error:",e); showToast("Saved on this device but failed to sync — check your connection and don't close this tab yet.","error"); });
+  };
+
   // Save grammar cards from the Grammar Import screen — either into a brand
   // new deckType:"grammar" deck or appended to an existing grammar deck.
   const saveGrammarDeck=(title,cards,target)=>{
+    let newDecks=decks,newCardStates;
     if(target){
-      setCardStates(p=>({...p,[target.id]:[...(p[target.id]||[]),...cards]}));
+      newCardStates={...cardStates,[target.id]:[...(cardStates[target.id]||[]),...cards]};
+      setCardStates(newCardStates);
       showToast(`Added ${cards.length} grammar cards to "${target.title}"`,"success");
     } else {
       const deck={id:`d${Date.now()}`,title,createdAt:Date.now(),deckType:"grammar"};
-      setDecks(p=>[deck,...p]);
-      setCardStates(p=>({...p,[deck.id]:cards}));
+      newDecks=[deck,...decks];
+      newCardStates={...cardStates,[deck.id]:cards};
+      setDecks(newDecks);
+      setCardStates(newCardStates);
       showToast(`Grammar deck "${title}" created — ${cards.length} concepts`,"success");
     }
+    flushSaveNow(newDecks,newCardStates);
     setGrammarTarget(null);
     setScreen("home");
   };
@@ -7765,15 +7786,20 @@ export default function App() {
   // deck or appended to an existing one. Cards are normal wordType (noun/
   // verb/adjective), no deckType tag — same shape as manually-added cards.
   const saveVocabDeck=(title,cards,target)=>{
+    let newDecks=decks,newCardStates;
     if(target){
-      setCardStates(p=>({...p,[target.id]:[...(p[target.id]||[]),...cards]}));
+      newCardStates={...cardStates,[target.id]:[...(cardStates[target.id]||[]),...cards]};
+      setCardStates(newCardStates);
       showToast(`Added ${cards.length} vocab cards to "${target.title}"`,"success");
     } else {
       const deck={id:`d${Date.now()}`,title,createdAt:Date.now()}; // no deckType → normal vocab deck
-      setDecks(p=>[deck,...p]);
-      setCardStates(p=>({...p,[deck.id]:cards}));
+      newDecks=[deck,...decks];
+      newCardStates={...cardStates,[deck.id]:cards};
+      setDecks(newDecks);
+      setCardStates(newCardStates);
       showToast(`Vocab deck "${title}" created — ${cards.length} cards`,"success");
     }
+    flushSaveNow(newDecks,newCardStates);
     setVocabTarget(null);
     setScreen("home");
   };
@@ -7782,12 +7808,15 @@ export default function App() {
   useEffect(()=>{
     const handler=(e)=>{
       const {deck:d,cards:c}=e.detail;
-      setDecks(p=>[d,...p]);
-      setCardStates(p=>({...p,[d.id]:c}));
+      const newDecks=[d,...decks];
+      const newCardStates={...cardStates,[d.id]:c};
+      setDecks(newDecks);
+      setCardStates(newCardStates);
+      flushSaveNow(newDecks,newCardStates);
     };
     window.addEventListener("importDeck",handler);
     return ()=>window.removeEventListener("importDeck",handler);
-  },[]);
+  },[decks,cardStates,user,settings,usage,studyLog,profile]);
 
   // Keep module-level refs in sync — picked up automatically by callClaude /
   // generateImage / synthesizeArabic / transcribeAudio.
