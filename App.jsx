@@ -7592,13 +7592,30 @@ export default function App() {
     return ()=>{mounted=false;unsub();};
   },[loadRetryTick]);
 
-  // Auto-save to Firestore whenever data changes
+  // Auto-save to Firestore whenever data changes. Debounced 1.5s so rapid
+  // edits (typing, quick card swipes) don't spam writes — but the debounce
+  // ALONE silently drops the save if the tab is switched away from, put in
+  // the background, or closed within that window. That's exactly what was
+  // reported as "imported deck disappeared": finish a big PDF/screenshot
+  // import, immediately switch to another device before 1.5s is up, and the
+  // import never reaches Firestore at all — it only ever existed in this
+  // tab's React state. The next device to load then fetches the real (import-
+  // missing) cloud doc, and if that device's own autosave later fires, it
+  // writes that snapshot straight back over the original tab's local state
+  // too, on next reload. Fix: also flush immediately, bypassing the
+  // debounce, the moment the tab is hidden or unloading.
   useEffect(()=>{
     if(!user||!dataLoaded) return;
-    const t=setTimeout(()=>{
-      setDoc(doc(db,"users",user.uid),{decks,cardStates,settings,usage,studyLog,...(profile?{profile}:{})},{merge:true}).catch(e=>console.error("Save error:",e));
-    },1500);
-    return ()=>clearTimeout(t);
+    const save=()=>setDoc(doc(db,"users",user.uid),{decks,cardStates,settings,usage,studyLog,...(profile?{profile}:{})},{merge:true}).catch(e=>console.error("Save error:",e));
+    const t=setTimeout(save,1500);
+    const flushIfHidden=()=>{ if(document.visibilityState==="hidden") save(); };
+    document.addEventListener("visibilitychange",flushIfHidden);
+    window.addEventListener("pagehide",save);
+    return ()=>{
+      clearTimeout(t);
+      document.removeEventListener("visibilitychange",flushIfHidden);
+      window.removeEventListener("pagehide",save);
+    };
   },[decks,cardStates,settings,usage,studyLog,profile,user,dataLoaded]);
 
   // Restore active session from localStorage once data is loaded
