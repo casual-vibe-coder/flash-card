@@ -6417,6 +6417,31 @@ const DECKIDX_KEY="arabic_fc_deckidx";
 function loadDeckIdx(){try{return JSON.parse(localStorage.getItem(DECKIDX_KEY)||"{}");}catch{return {};}}
 function saveDeckIdx(o){try{localStorage.setItem(DECKIDX_KEY,JSON.stringify(o));}catch{}}
 
+// Mirror per-deck "which card was I on" resume position to Firestore too —
+// this was previously localStorage-only, same bug class as activeSession/
+// screens above: study a deck on the phone, and the desktop never hears
+// about it, so its "Resume (Card X/Y)" button never appears. Written with a
+// dotted field path (not a nested object) so `{merge:true}` patches just
+// this one deck+filter key inside the `deckIdx` map on the server, instead
+// of replacing the whole map and wiping every other deck's saved position —
+// a plain nested object here would silently do exactly that.
+function cloudSyncDeckIdx(key,idx){
+  if(!_sessionSyncUid) return;
+  const timerKey="deckIdx."+key;
+  clearTimeout(_sessionSyncTimers[timerKey]);
+  _sessionSyncTimers[timerKey]=setTimeout(()=>{
+    setDoc(doc(db,"users",_sessionSyncUid),{[`deckIdx.${key}`]:idx},{merge:true}).catch(()=>{});
+  },1200);
+}
+// Merge the cloud's deckIdx map into this device's local copy — cloud keys
+// win per-entry (each key is one deck+filter, so there's no real "conflict"
+// to resolve, just whichever device most recently studied that filter).
+function hydrateDeckIdxFromCloud(d,ref){
+  if(!d.deckIdx) return;
+  Object.assign(ref.current,d.deckIdx);
+  saveDeckIdx(ref.current);
+}
+
 // ─────────────────────────────────────────────────────────────
 // DICTATION / WRITING MODULE (Phase 4)
 // Listen → write what you hear → reveal + word-level correction.
@@ -7570,6 +7595,7 @@ export default function App() {
               if(d.usage?.byTag) setUsage(d.usage);
               if(d.studyLog) setStudyLog(sl=>({...initStudyLog(),...d.studyLog}));
               hydrateSessionsFromCloud(d);
+              hydrateDeckIdxFromCloud(d,savedIdx);
               lastSyncRef.current=d.updatedAt||0;
             } catch(e){ console.error("Data parse error:",e); }
           }
@@ -7650,6 +7676,15 @@ export default function App() {
       getDoc(doc(db,"users",user.uid)).then(snap=>{
         if(!snap.exists()) return;
         const d=snap.data();
+        // Session/screen and deck-resume-position hydration are gated by
+        // their own per-key freshness checks (savedAt / plain cloud-wins
+        // merge), independent of the decks/cardStates `updatedAt` guard
+        // below — they must run on every foreground refresh, not just the
+        // ones where decks happened to change, or a device that only
+        // studied cards (never touching decks) would never pick up the
+        // other device's resume position.
+        hydrateSessionsFromCloud(d);
+        hydrateDeckIdxFromCloud(d,savedIdx);
         if(!Array.isArray(d.decks)) return;
         if((d.updatedAt||0)<=lastSyncRef.current) return;
         setDecks(d.decks);
@@ -7912,10 +7947,16 @@ export default function App() {
       const nextIdx=currentIdx+1;
       setCurrentIdx(nextIdx);
       // Save progress for resume, keyed by the filter this session started with
-      if(activeDeck){savedIdx.current[activeDeck.id+"_"+studyModeRef.current]=nextIdx;saveDeckIdx(savedIdx.current);}
+      if(activeDeck){
+        const key=activeDeck.id+"_"+studyModeRef.current;
+        savedIdx.current[key]=nextIdx;saveDeckIdx(savedIdx.current);cloudSyncDeckIdx(key,nextIdx);
+      }
     } else {
       // Reset saved progress on completion, log study time, clear persisted session
-      if(activeDeck){savedIdx.current[activeDeck.id+"_"+studyModeRef.current]=0;saveDeckIdx(savedIdx.current);}
+      if(activeDeck){
+        const key=activeDeck.id+"_"+studyModeRef.current;
+        savedIdx.current[key]=0;saveDeckIdx(savedIdx.current);cloudSyncDeckIdx(key,0);
+      }
       if(studyStartRef.current){
         const mins=Math.max(1,Math.round((Date.now()-studyStartRef.current)/60000));
         logStudy({type:"app",module:"vocab",minutes:mins});studyStartRef.current=null;
