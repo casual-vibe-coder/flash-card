@@ -7791,74 +7791,108 @@ export default function App() {
   };
 
   // Immediately push decks/cardStates to Firestore, bypassing the debounced
-  // autosave effect entirely. Import actions are exactly the case that
-  // effect's 1.5s debounce fails: the toast below fires the instant local
-  // state updates, so the user reasonably believes it's saved and may
-  // refresh or switch devices right away — but the write itself was still
-  // sitting in the debounce queue and had not gone out at all yet. A big,
-  // effortful, one-shot action like a PDF/screenshot import can't be allowed
-  // to depend on the tab staying open and idle for another 1.5+ seconds.
+  // autosave effect entirely, and return a Promise so callers can actually
+  // wait for the write to land before telling the user it's safe. Firing
+  // this fire-and-forget was NOT enough: a setDoc kicked off by
+  // visibilitychange/pagehide does not reliably survive an actual refresh —
+  // the browser can and does cancel in-flight requests when the page tears
+  // down, and this account's cardStates blob (thousands of cards) is large
+  // enough to take real time to transmit, so a refresh thrown right after
+  // import wins that race almost every time. The only real fix is to not
+  // let the UI claim "saved" (and thus invite a refresh) until the write is
+  // actually confirmed round-tripped.
+  const pendingSaveCountRef=useRef(0);
   const flushSaveNow=(newDecks,newCardStates)=>{
-    if(!user) return;
+    if(!user) return Promise.resolve();
     const stamp=Date.now();
-    queueFirestoreWrite(user.uid,{decks:newDecks,cardStates:newCardStates,settings,usage,studyLog,updatedAt:stamp,...(profile?{profile}:{})},{
-      onSuccess:()=>{ lastSyncRef.current=stamp; },
-      onError:()=>{ showToast("Saved on this device but failed to sync — check your connection and don't close this tab yet.","error"); },
+    pendingSaveCountRef.current++;
+    return new Promise((resolve,reject)=>{
+      queueFirestoreWrite(user.uid,{decks:newDecks,cardStates:newCardStates,settings,usage,studyLog,updatedAt:stamp,...(profile?{profile}:{})},{
+        onSuccess:()=>{ lastSyncRef.current=stamp; pendingSaveCountRef.current--; resolve(); },
+        onError:(e)=>{ pendingSaveCountRef.current--; reject(e); },
+      });
     });
   };
+  // Belt-and-suspenders: warn on an actual browser close/refresh while one
+  // of the awaited saves below is still in flight, in case the user refreshes
+  // faster than the "Saving…" toast can register.
+  useEffect(()=>{
+    const onBeforeUnload=(e)=>{
+      if(pendingSaveCountRef.current>0){ e.preventDefault(); e.returnValue=""; }
+    };
+    window.addEventListener("beforeunload",onBeforeUnload);
+    return ()=>window.removeEventListener("beforeunload",onBeforeUnload);
+  },[]);
 
   // Save grammar cards from the Grammar Import screen — either into a brand
   // new deckType:"grammar" deck or appended to an existing grammar deck.
-  const saveGrammarDeck=(title,cards,target)=>{
+  const saveGrammarDeck=async(title,cards,target)=>{
     let newDecks=decks,newCardStates;
     if(target){
       newCardStates={...cardStates,[target.id]:[...(cardStates[target.id]||[]),...cards]};
       setCardStates(newCardStates);
-      showToast(`Added ${cards.length} grammar cards to "${target.title}"`,"success");
     } else {
       const deck={id:`d${Date.now()}`,title,createdAt:Date.now(),deckType:"grammar"};
       newDecks=[deck,...decks];
       newCardStates={...cardStates,[deck.id]:cards};
       setDecks(newDecks);
       setCardStates(newCardStates);
-      showToast(`Grammar deck "${title}" created — ${cards.length} concepts`,"success");
     }
-    flushSaveNow(newDecks,newCardStates);
-    setGrammarTarget(null);
-    setScreen("home");
+    showToast("Saving…","info");
+    try {
+      await flushSaveNow(newDecks,newCardStates);
+      showToast(target?`Added ${cards.length} grammar cards to "${target.title}"`:`Grammar deck "${title}" created — ${cards.length} concepts`,"success");
+      setGrammarTarget(null);
+      setScreen("home");
+    } catch(e) {
+      console.error("Save error:",e);
+      showToast("Couldn't save to the cloud — check your connection and try again before closing this tab.","error");
+    }
   };
 
   // Save vocab cards from the Vocab Import screen — either into a brand new
   // deck or appended to an existing one. Cards are normal wordType (noun/
   // verb/adjective), no deckType tag — same shape as manually-added cards.
-  const saveVocabDeck=(title,cards,target)=>{
+  const saveVocabDeck=async(title,cards,target)=>{
     let newDecks=decks,newCardStates;
     if(target){
       newCardStates={...cardStates,[target.id]:[...(cardStates[target.id]||[]),...cards]};
       setCardStates(newCardStates);
-      showToast(`Added ${cards.length} vocab cards to "${target.title}"`,"success");
     } else {
       const deck={id:`d${Date.now()}`,title,createdAt:Date.now()}; // no deckType → normal vocab deck
       newDecks=[deck,...decks];
       newCardStates={...cardStates,[deck.id]:cards};
       setDecks(newDecks);
       setCardStates(newCardStates);
-      showToast(`Vocab deck "${title}" created — ${cards.length} cards`,"success");
     }
-    flushSaveNow(newDecks,newCardStates);
-    setVocabTarget(null);
-    setScreen("home");
+    showToast("Saving…","info");
+    try {
+      await flushSaveNow(newDecks,newCardStates);
+      showToast(target?`Added ${cards.length} vocab cards to "${target.title}"`:`Vocab deck "${title}" created — ${cards.length} cards`,"success");
+      setVocabTarget(null);
+      setScreen("home");
+    } catch(e) {
+      console.error("Save error:",e);
+      showToast("Couldn't save to the cloud — check your connection and try again before closing this tab.","error");
+    }
   };
 
   // Handle deck import from HomeScreen
   useEffect(()=>{
-    const handler=(e)=>{
+    const handler=async(e)=>{
       const {deck:d,cards:c}=e.detail;
       const newDecks=[d,...decks];
       const newCardStates={...cardStates,[d.id]:c};
       setDecks(newDecks);
       setCardStates(newCardStates);
-      flushSaveNow(newDecks,newCardStates);
+      showToast("Saving…","info");
+      try {
+        await flushSaveNow(newDecks,newCardStates);
+        showToast(`Deck "${d.title}" imported`,"success");
+      } catch(err) {
+        console.error("Save error:",err);
+        showToast("Couldn't save to the cloud — check your connection and try again before closing this tab.","error");
+      }
     };
     window.addEventListener("importDeck",handler);
     return ()=>window.removeEventListener("importDeck",handler);
