@@ -6430,6 +6430,21 @@ async function migrateLegacyCardStates(uid,legacyCardStates,deckIds){
     await setDoc(mainDocRef(uid),{cardStates:deleteField()},{merge:true});
   } catch(e){ console.error("Migration error:",e); }
 }
+// Same idea for deck metadata: a legacy account still has the whole `decks`
+// array as one field, which is exactly the last-write-wins shape that let a
+// stale device erase decks it never saw. Mirror each entry not already in
+// `decksById` into `decksById.<id>` (a dotted-path merge — see queueFirestoreWrite
+// comment), THEN clear the legacy array field, so any device reading before
+// migration finishes still has the legacy array as a fallback (see loadUserDoc).
+async function migrateLegacyDecks(uid,legacyDecks,decksById){
+  const missing=legacyDecks.filter(dk=>!(dk.id in decksById));
+  try {
+    for(const dk of missing){
+      await setDoc(mainDocRef(uid),{[`decksById.${dk.id}`]:dk},{merge:true});
+    }
+    if(legacyDecks.length) await setDoc(mainDocRef(uid),{decks:deleteField()},{merge:true});
+  } catch(e){ console.error("Migration error:",e); }
+}
 function cloudSyncSession(key,payload){
   if(!_sessionSyncUid) return;
   clearTimeout(_sessionSyncTimers[key]);
@@ -7621,6 +7636,15 @@ export default function App() {
   // this file replaces a touched deck's array with a new one (`{...p,[id]:
   // ...}`), so a reference change reliably means "this deck was touched."
   const prevCardStatesRef=useRef({});
+  // Same idea, for deck metadata: which deck OBJECTS (by reference) changed
+  // since the last save. `decks` itself is written per-key (decksById.<id>,
+  // see mainDocRef writes below), never as one whole array field — a device
+  // with stale knowledge (e.g. a phone that loaded a split second before a
+  // desktop's import landed) must never be able to write the WHOLE decks
+  // list back and erase a deck it simply never saw. Diffing means it only
+  // ever mentions the specific deck(s) IT touched, so a deck it doesn't know
+  // about is never named in its writes and can't be clobbered by them.
+  const prevDecksRef=useRef([]);
   const [darkMode,setDarkMode]=useState(()=>{
     const saved=localStorage.getItem("arabic_fc_dark");
     if(saved!==null) return saved==="true";
@@ -7641,18 +7665,32 @@ export default function App() {
           if(snap.exists()){
             const d=snap.data();
             try {
-              // Trust an explicitly-present `decks` array as-is — including an
-              // empty one, which is a legitimate "user deleted everything"
-              // state. Only fall back to the local seed when the field is
-              // truly ABSENT (e.g. a doc predating this field). Previously this
-              // checked `d.decks?.length`, so any load that returned a falsy/
-              // empty decks array (transient read glitch, etc.) silently kept
-              // the in-memory SEED_DECKS/SEED_CARDS, which then got written
-              // back over the real cloud data by the autosave effect below —
-              // wiping the user's real decks.
-              if(Array.isArray(d.decks)) {
-                setDecks(d.decks);
-                const deckIds=new Set(d.decks.map(dk=>dk.id));
+              // Trust an explicitly-present `decks`/`decksById` as-is —
+              // including empty, which is a legitimate "user deleted
+              // everything" state. Only fall back to the local seed when
+              // BOTH are truly ABSENT (e.g. a doc predating either field).
+              // Previously this checked `d.decks?.length`, so any load that
+              // returned a falsy/empty decks array (transient read glitch,
+              // etc.) silently kept the in-memory SEED_DECKS/SEED_CARDS,
+              // which then got written back over the real cloud data by the
+              // autosave effect below — wiping the user's real decks.
+              if(Array.isArray(d.decks)||(d.decksById&&typeof d.decksById==="object")) {
+                // decksById is the current per-deck-merge format (see
+                // migrateLegacyDecks) — a legacy `decks` array is only a
+                // fallback for entries not yet migrated into it, never the
+                // other way around, since decksById may already be MORE
+                // current (e.g. another device added a deck after this
+                // account's last legacy array write).
+                const legacyArr=Array.isArray(d.decks)?d.decks:[];
+                const decksById=d.decksById||{};
+                const mergedDecks={};
+                for(const dk of legacyArr) mergedDecks[dk.id]=dk;
+                for(const [id,dk] of Object.entries(decksById)) mergedDecks[id]=dk;
+                const sortedDecks=Object.values(mergedDecks).sort((a,b)=>(b.createdAt||0)-(a.createdAt||0));
+                setDecks(sortedDecks);
+                prevDecksRef.current=sortedDecks;
+                if(legacyArr.length) migrateLegacyDecks(u.uid,legacyArr,decksById);
+                const deckIds=new Set(sortedDecks.map(dk=>dk.id));
                 // Cards live in deckCards/{deckId} docs, not on the main doc —
                 // see the migration comment below. `d.cardStates` is only read
                 // here as a fallback for decks not yet migrated off it.
@@ -7736,9 +7774,24 @@ export default function App() {
     if(!user||!dataLoaded) return;
     const save=()=>{
       const stamp=Date.now();
-      queueFirestoreWrite("main:"+user.uid,mainDocRef(user.uid),{decks,settings,usage,studyLog,updatedAt:stamp,...(profile?{profile}:{})},{
+      const payload={settings,usage,studyLog,updatedAt:stamp,...(profile?{profile}:{})};
+      // `decks` is written per-key (decksById.<id>), never as one whole array
+      // field — see prevDecksRef comment: only the deck(s) that actually
+      // changed get named here, so a stale copy of this tab's decks can never
+      // erase a deck it doesn't currently know about.
+      const prevD=prevDecksRef.current;
+      const prevById={}; for(const dk of prevD) prevById[dk.id]=dk;
+      const curById={}; for(const dk of decks) curById[dk.id]=dk;
+      for(const dk of decks){
+        if(curById[dk.id]!==prevById[dk.id]) payload[`decksById.${dk.id}`]=dk;
+      }
+      for(const dk of prevD){
+        if(!(dk.id in curById)) payload[`decksById.${dk.id}`]=deleteField();
+      }
+      queueFirestoreWrite("main:"+user.uid,mainDocRef(user.uid),payload,{
         onSuccess:()=>{ lastSyncRef.current=stamp; },
       });
+      prevDecksRef.current=decks;
       // Cards live in their own deckCards/{deckId} doc, not on the main doc
       // (see migrateLegacyCardStates) — only write the deck(s) whose array
       // reference actually changed since the last save, and delete a deck's
@@ -7799,14 +7852,21 @@ export default function App() {
         // other device's resume position.
         hydrateSessionsFromCloud(d);
         hydrateDeckIdxFromCloud(d,savedIdx);
-        if(!Array.isArray(d.decks)) return;
+        if(!Array.isArray(d.decks)&&!(d.decksById&&typeof d.decksById==="object")) return;
         if((d.updatedAt||0)<=lastSyncRef.current) return;
-        setDecks(d.decks);
+        const legacyArr=Array.isArray(d.decks)?d.decks:[];
+        const decksByIdCloud=d.decksById||{};
+        const mergedDecks={};
+        for(const dk of legacyArr) mergedDecks[dk.id]=dk;
+        for(const [id,dk] of Object.entries(decksByIdCloud)) mergedDecks[id]=dk;
+        const sortedDecks=Object.values(mergedDecks).sort((a,b)=>(b.createdAt||0)-(a.createdAt||0));
+        setDecks(sortedDecks);
+        prevDecksRef.current=sortedDecks;
         // Cards live in deckCards/{deckId} docs (see migrateLegacyCardStates)
-        // — re-pull them here too, or a device that only picked up a newer
-        // `decks` array from elsewhere would keep whatever stale cards it
-        // already had for any deck the OTHER device actually touched.
-        const deckIds=new Set(d.decks.map(dk=>dk.id));
+        // — re-pull them here too, or a device that only picked up newer
+        // decks from elsewhere would keep whatever stale cards it already
+        // had for any deck the OTHER device actually touched.
+        const deckIds=new Set(sortedDecks.map(dk=>dk.id));
         const deckCardsSnap=await getDocs(collection(db,"users",user.uid,"deckCards"));
         const fromSub={};
         deckCardsSnap.forEach(docSnap=>{ fromSub[docSnap.id]=docSnap.data().cards||[]; });
@@ -7885,8 +7945,14 @@ export default function App() {
     if(!user) return Promise.resolve();
     const stamp=Date.now();
     pendingSaveCountRef.current++;
+    // `decks` written per-key (decksById.<id>), not as one whole array field
+    // — see prevDecksRef comment. Only the deck(s) this specific import
+    // touched are named, same reasoning as the main autosave effect.
+    const newById={}; for(const dk of newDecks) newById[dk.id]=dk;
+    const payload={settings,usage,studyLog,updatedAt:stamp,...(profile?{profile}:{})};
+    for(const id of touchedDeckIds){ if(newById[id]) payload[`decksById.${id}`]=newById[id]; }
     const mainPromise=new Promise((resolve,reject)=>{
-      queueFirestoreWrite("main:"+user.uid,mainDocRef(user.uid),{decks:newDecks,settings,usage,studyLog,updatedAt:stamp,...(profile?{profile}:{})},{
+      queueFirestoreWrite("main:"+user.uid,mainDocRef(user.uid),payload,{
         onSuccess:()=>{ lastSyncRef.current=stamp; resolve(); },
         onError:(e)=>reject(e),
       });
@@ -7898,6 +7964,7 @@ export default function App() {
       });
     }));
     prevCardStatesRef.current=newCardStates;
+    prevDecksRef.current=newDecks;
     return Promise.all([mainPromise,...deckPromises]).finally(()=>{ pendingSaveCountRef.current--; });
   };
   // Belt-and-suspenders: warn on an actual browser close/refresh while one
