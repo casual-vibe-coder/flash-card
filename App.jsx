@@ -7664,6 +7664,7 @@ export default function App() {
           if(!mounted) return;
           if(snap.exists()){
             const d=snap.data();
+            console.log("[flashcard-debug] uid:",u.uid,"decksById keys:",d.decksById?Object.keys(d.decksById).length:null,"legacy decks length:",Array.isArray(d.decks)?d.decks.length:null,"cardStates keys:",d.cardStates?Object.keys(d.cardStates).length:null,"updatedAt:",d.updatedAt);
             try {
               // Trust an explicitly-present `decks`/`decksById` as-is —
               // including empty, which is a legitimate "user deleted
