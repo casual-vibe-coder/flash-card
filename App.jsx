@@ -6364,11 +6364,50 @@ const SCREEN_KEYS=["study","reading","listening","conversation","masterReading",
 let _sessionSyncUid=null;
 function setSessionSyncUser(uid){_sessionSyncUid=uid;}
 const _sessionSyncTimers={};
+
+// Every setDoc to the user doc — main autosave, session/screen sync, deck-
+// resume-position sync — used to fire its own independent network call the
+// moment its own debounce elapsed. With a large account (thousands of
+// cards, so every decks/cardStates write ships a multi-hundred-KB payload)
+// those calls can easily still be in flight when the next one fires, and
+// Firestore's SDK queues writes that haven't been ack'd yet rather than
+// dropping them — pile up enough of those and it hits its own queue cap and
+// starts REJECTING new writes outright ("Write stream exhausted maximum
+// allowed queued writes"), which is exactly what an import's save could
+// lose to. Routing every write through one serialized, coalescing queue
+// (one in-flight request at a time; multiple writes queued for the same
+// user get merged into a single payload instead of sent one-by-one) keeps
+// this client from ever being the cause of its own backlog.
+let _writeInFlight=false;
+const _pendingWrites={};
+const _pendingCallbacks={};
+function queueFirestoreWrite(uid,data,{onSuccess,onError}={}){
+  if(!uid) return;
+  _pendingWrites[uid]={..._pendingWrites[uid],...data};
+  if(onSuccess||onError){
+    (_pendingCallbacks[uid]=_pendingCallbacks[uid]||[]).push({onSuccess,onError});
+  }
+  pumpWriteQueue();
+}
+function pumpWriteQueue(){
+  if(_writeInFlight) return;
+  const uid=Object.keys(_pendingWrites)[0];
+  if(!uid) return;
+  const data=_pendingWrites[uid];
+  delete _pendingWrites[uid];
+  const callbacks=_pendingCallbacks[uid]||[];
+  delete _pendingCallbacks[uid];
+  _writeInFlight=true;
+  setDoc(doc(db,"users",uid),data,{merge:true})
+    .then(()=>callbacks.forEach(cb=>cb.onSuccess?.()))
+    .catch(e=>{ console.error("Save error:",e); callbacks.forEach(cb=>cb.onError?.(e)); })
+    .finally(()=>{ _writeInFlight=false; pumpWriteQueue(); });
+}
 function cloudSyncSession(key,payload){
   if(!_sessionSyncUid) return;
   clearTimeout(_sessionSyncTimers[key]);
   _sessionSyncTimers[key]=setTimeout(()=>{
-    setDoc(doc(db,"users",_sessionSyncUid),payload,{merge:true}).catch(()=>{});
+    queueFirestoreWrite(_sessionSyncUid,payload);
   },1200);
 }
 function loadSession(){try{const r=localStorage.getItem(SESSION_KEY);if(!r) return null;const s=JSON.parse(r);if(Date.now()-(s.savedAt||0)>SESSION_TTL_MS){localStorage.removeItem(SESSION_KEY);return null;}return s;}catch{return null;}}
@@ -6430,7 +6469,7 @@ function cloudSyncDeckIdx(key,idx){
   const timerKey="deckIdx."+key;
   clearTimeout(_sessionSyncTimers[timerKey]);
   _sessionSyncTimers[timerKey]=setTimeout(()=>{
-    setDoc(doc(db,"users",_sessionSyncUid),{[`deckIdx.${key}`]:idx},{merge:true}).catch(()=>{});
+    queueFirestoreWrite(_sessionSyncUid,{[`deckIdx.${key}`]:idx});
   },1200);
 }
 // Merge the cloud's deckIdx map into this device's local copy — cloud keys
@@ -7643,11 +7682,17 @@ export default function App() {
     if(!user||!dataLoaded) return;
     const save=()=>{
       const stamp=Date.now();
-      setDoc(doc(db,"users",user.uid),{decks,cardStates,settings,usage,studyLog,updatedAt:stamp,...(profile?{profile}:{})},{merge:true})
-        .then(()=>{ lastSyncRef.current=stamp; })
-        .catch(e=>console.error("Save error:",e));
+      queueFirestoreWrite(user.uid,{decks,cardStates,settings,usage,studyLog,updatedAt:stamp,...(profile?{profile}:{})},{
+        onSuccess:()=>{ lastSyncRef.current=stamp; },
+      });
     };
-    const t=setTimeout(save,1500);
+    // 4s, not 1.5s — this account's cardStates blob is large enough (thousands
+    // of cards) that resaving it on every single card swipe during continuous
+    // study was firing far more often than each write could actually
+    // complete, which is exactly how Firestore's SDK write queue got
+    // overwhelmed (see queueFirestoreWrite above). flushIfHidden/pagehide
+    // below still guarantee a save the instant the tab actually goes away.
+    const t=setTimeout(save,4000);
     const flushIfHidden=()=>{ if(document.visibilityState==="hidden") save(); };
     document.addEventListener("visibilitychange",flushIfHidden);
     window.addEventListener("pagehide",save);
@@ -7756,9 +7801,10 @@ export default function App() {
   const flushSaveNow=(newDecks,newCardStates)=>{
     if(!user) return;
     const stamp=Date.now();
-    setDoc(doc(db,"users",user.uid),{decks:newDecks,cardStates:newCardStates,settings,usage,studyLog,updatedAt:stamp,...(profile?{profile}:{})},{merge:true})
-      .then(()=>{ lastSyncRef.current=stamp; })
-      .catch(e=>{ console.error("Save error:",e); showToast("Saved on this device but failed to sync — check your connection and don't close this tab yet.","error"); });
+    queueFirestoreWrite(user.uid,{decks:newDecks,cardStates:newCardStates,settings,usage,studyLog,updatedAt:stamp,...(profile?{profile}:{})},{
+      onSuccess:()=>{ lastSyncRef.current=stamp; },
+      onError:()=>{ showToast("Saved on this device but failed to sync — check your connection and don't close this tab yet.","error"); },
+    });
   };
 
   // Save grammar cards from the Grammar Import screen — either into a brand
