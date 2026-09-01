@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { auth, googleProvider, db } from "./firebase.js";
 import { signInWithPopup, signOut, onAuthStateChanged } from "firebase/auth";
-import { doc, getDoc, setDoc, deleteDoc, deleteField, collection, getDocs } from "firebase/firestore";
+import { doc, getDoc, setDoc, updateDoc, deleteDoc, deleteField, collection, getDocs } from "firebase/firestore";
 import {
   Settings, ArrowLeft, ChevronRight, X, Volume2, RotateCcw, BookOpen,
   RefreshCw, Check, Sparkles, Plus, Edit3, Trash2, Layers, Save, Eye,
@@ -6401,10 +6401,32 @@ function pumpWriteQueue(){
   const callbacks=_pendingCallbacks[key]||[];
   delete _pendingCallbacks[key];
   _writeInFlight=true;
-  setDoc(ref,data,{merge:true})
-    .then(()=>callbacks.forEach(cb=>cb.onSuccess?.()))
-    .catch(e=>{ console.error("Save error:",e); callbacks.forEach(cb=>cb.onError?.(e)); })
-    .finally(()=>{ _writeInFlight=false; pumpWriteQueue(); });
+  // updateDoc, NOT setDoc(...,{merge:true}): a dotted string key like
+  // "decksById.<id>" is only treated as a nested-field path by updateDoc.
+  // setDoc with merge:true takes every object key literally, dots and all —
+  // it silently created flat top-level fields actually named "decksById.x"
+  // instead of nesting into a decksById map (confirmed directly in the
+  // Firestore console: existing data is unaffected, sitting safely under
+  // those literal field names, just never nested the way every read in this
+  // file assumed). updateDoc requires the doc to already exist, so fall back
+  // to setDoc only to create it on this account's very first-ever write.
+  (async()=>{
+    try {
+      try {
+        await updateDoc(ref,data);
+      } catch(e){
+        if(e.code!=="not-found") throw e;
+        await setDoc(ref,data,{merge:true});
+      }
+      callbacks.forEach(cb=>cb.onSuccess?.());
+    } catch(e){
+      console.error("Save error:",e);
+      callbacks.forEach(cb=>cb.onError?.(e));
+    } finally {
+      _writeInFlight=false;
+      pumpWriteQueue();
+    }
+  })();
 }
 // deckCards/{deckId} docs hold that deck's cards ONLY — see the big comment
 // on the migration logic in loadUserDoc for why this exists: cramming every
@@ -6440,10 +6462,24 @@ async function migrateLegacyDecks(uid,legacyDecks,decksById){
   const missing=legacyDecks.filter(dk=>!(dk.id in decksById));
   try {
     for(const dk of missing){
-      await setDoc(mainDocRef(uid),{[`decksById.${dk.id}`]:dk},{merge:true});
+      // updateDoc, not setDoc(...,{merge:true}) — see pumpWriteQueue comment;
+      // setDoc took the dotted key literally instead of nesting it.
+      await updateDoc(mainDocRef(uid),{[`decksById.${dk.id}`]:dk});
     }
     if(legacyDecks.length) await setDoc(mainDocRef(uid),{decks:deleteField()},{merge:true});
   } catch(e){ console.error("Migration error:",e); }
+}
+// Consolidates the flat "decksById.<id>" fields left by the setDoc-took-dots-
+// literally bug into one proper nested decksById map, THEN removes the old
+// flat fields — in that order, so there is always at least one live,
+// findable copy of the data on the server throughout the migration.
+async function migrateFlatDecksById(uid,flatDecksById,fullMergedDecksById){
+  try {
+    await updateDoc(mainDocRef(uid),{decksById:fullMergedDecksById});
+    const clearPayload={};
+    for(const suffix of Object.keys(flatDecksById)) clearPayload[`decksById.${suffix}`]=deleteField();
+    await setDoc(mainDocRef(uid),clearPayload,{merge:true});
+  } catch(e){ console.error("Flat decksById cleanup error:",e); }
 }
 function cloudSyncSession(key,payload){
   if(!_sessionSyncUid) return;
@@ -6514,12 +6550,26 @@ function cloudSyncDeckIdx(key,idx){
     queueFirestoreWrite("main:"+_sessionSyncUid,mainDocRef(_sessionSyncUid),{[`deckIdx.${key}`]:idx});
   },1200);
 }
+// Recovers fields written by the old (buggy) dotted-string-key + setDoc
+// pattern — e.g. "decksById.d1" — which setDoc(...,{merge:true}) took
+// LITERALLY as a top-level field name instead of nesting it, unlike
+// updateDoc (see pumpWriteQueue). That data is real and was never lost, just
+// scattered across top-level fields no read ever looked for. Returns
+// {suffix: value} for every top-level key starting with `prefix`.
+function extractPrefixedFields(d,prefix){
+  const out={};
+  for(const key of Object.keys(d)){
+    if(key.startsWith(prefix)) out[key.slice(prefix.length)]=d[key];
+  }
+  return out;
+}
 // Merge the cloud's deckIdx map into this device's local copy — cloud keys
 // win per-entry (each key is one deck+filter, so there's no real "conflict"
 // to resolve, just whichever device most recently studied that filter).
 function hydrateDeckIdxFromCloud(d,ref){
-  if(!d.deckIdx) return;
-  Object.assign(ref.current,d.deckIdx);
+  const merged={...(d.deckIdx||{}),...extractPrefixedFields(d,"deckIdx.")};
+  if(!Object.keys(merged).length) return;
+  Object.assign(ref.current,merged);
   saveDeckIdx(ref.current);
 }
 
@@ -7685,16 +7735,24 @@ export default function App() {
               // etc.) silently kept the in-memory SEED_DECKS/SEED_CARDS,
               // which then got written back over the real cloud data by the
               // autosave effect below — wiping the user's real decks.
-              if(Array.isArray(d.decks)||(d.decksById&&typeof d.decksById==="object")) {
-                // decksById is the current per-deck-merge format (see
-                // migrateLegacyDecks) — a legacy `decks` array is only a
-                // fallback for entries not yet migrated into it, never the
-                // other way around, since decksById may already be MORE
-                // current (e.g. another device added a deck after this
-                // account's last legacy array write).
+              // flatDecksById recovers the real per-deck data that a prior bug
+              // scattered across literal top-level fields named e.g.
+              // "decksById.d1" (setDoc+merge:true took the dotted string key
+              // literally instead of nesting it — see pumpWriteQueue). Fixed
+              // going forward (now uses updateDoc, which nests correctly),
+              // but this account's existing data is STILL sitting under those
+              // flat names until migrated, so it has to be checked here too,
+              // or an existing account's real decks look like they vanished.
+              const flatDecksById=extractPrefixedFields(d,"decksById.");
+              if(Array.isArray(d.decks)||(d.decksById&&typeof d.decksById==="object")||Object.keys(flatDecksById).length) {
+                // Merge priority: flat legacy-bug fields, then the legacy
+                // whole-array field, then the properly-nested decksById —
+                // nested wins because it's what every FIXED write targets
+                // going forward, so it reflects the most current state for
+                // whatever it contains.
                 const legacyArr=Array.isArray(d.decks)?d.decks:[];
                 const decksById=d.decksById||{};
-                const mergedDecks={};
+                const mergedDecks={...flatDecksById};
                 for(const dk of legacyArr) mergedDecks[dk.id]=dk;
                 for(const [id,dk] of Object.entries(decksById)) mergedDecks[id]=dk;
                 const sortedDecks=Object.values(mergedDecks).sort((a,b)=>(b.createdAt||0)-(a.createdAt||0));
@@ -7702,6 +7760,7 @@ export default function App() {
                 prevDecksRef.current=sortedDecks;
                 cloudDeckDataConfirmedRef.current=true;
                 if(legacyArr.length) migrateLegacyDecks(u.uid,legacyArr,decksById);
+                if(Object.keys(flatDecksById).length) migrateFlatDecksById(u.uid,flatDecksById,mergedDecks);
                 const deckIds=new Set(sortedDecks.map(dk=>dk.id));
                 // Cards live in deckCards/{deckId} docs, not on the main doc —
                 // see the migration comment below. `d.cardStates` is only read
@@ -7872,17 +7931,20 @@ export default function App() {
         // other device's resume position.
         hydrateSessionsFromCloud(d);
         hydrateDeckIdxFromCloud(d,savedIdx);
-        if(!Array.isArray(d.decks)&&!(d.decksById&&typeof d.decksById==="object")) return;
+        const flatDecksById=extractPrefixedFields(d,"decksById.");
+        if(!Array.isArray(d.decks)&&!(d.decksById&&typeof d.decksById==="object")&&!Object.keys(flatDecksById).length) return;
         if((d.updatedAt||0)<=lastSyncRef.current) return;
         const legacyArr=Array.isArray(d.decks)?d.decks:[];
         const decksByIdCloud=d.decksById||{};
-        const mergedDecks={};
+        const mergedDecks={...flatDecksById};
         for(const dk of legacyArr) mergedDecks[dk.id]=dk;
         for(const [id,dk] of Object.entries(decksByIdCloud)) mergedDecks[id]=dk;
         const sortedDecks=Object.values(mergedDecks).sort((a,b)=>(b.createdAt||0)-(a.createdAt||0));
         setDecks(sortedDecks);
         prevDecksRef.current=sortedDecks;
         cloudDeckDataConfirmedRef.current=true;
+        if(legacyArr.length) migrateLegacyDecks(user.uid,legacyArr,decksByIdCloud);
+        if(Object.keys(flatDecksById).length) migrateFlatDecksById(user.uid,flatDecksById,mergedDecks);
         // Cards live in deckCards/{deckId} docs (see migrateLegacyCardStates)
         // — re-pull them here too, or a device that only picked up newer
         // decks from elsewhere would keep whatever stale cards it already
