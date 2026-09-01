@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { auth, googleProvider, db } from "./firebase.js";
 import { signInWithPopup, signOut, onAuthStateChanged } from "firebase/auth";
-import { doc, getDoc, setDoc, collection, getDocs } from "firebase/firestore";
+import { doc, getDoc, setDoc, deleteDoc, deleteField, collection, getDocs } from "firebase/firestore";
 import {
   Settings, ArrowLeft, ChevronRight, X, Volume2, RotateCcw, BookOpen,
   RefreshCw, Check, Sparkles, Plus, Edit3, Trash2, Layers, Save, Eye,
@@ -6368,46 +6368,73 @@ const _sessionSyncTimers={};
 // Every setDoc to the user doc — main autosave, session/screen sync, deck-
 // resume-position sync — used to fire its own independent network call the
 // moment its own debounce elapsed. With a large account (thousands of
-// cards, so every decks/cardStates write ships a multi-hundred-KB payload)
-// those calls can easily still be in flight when the next one fires, and
-// Firestore's SDK queues writes that haven't been ack'd yet rather than
+// cards) those calls can easily still be in flight when the next one fires,
+// and Firestore's SDK queues writes that haven't been ack'd yet rather than
 // dropping them — pile up enough of those and it hits its own queue cap and
 // starts REJECTING new writes outright ("Write stream exhausted maximum
 // allowed queued writes"), which is exactly what an import's save could
 // lose to. Routing every write through one serialized, coalescing queue
 // (one in-flight request at a time; multiple writes queued for the same
-// user get merged into a single payload instead of sent one-by-one) keeps
-// this client from ever being the cause of its own backlog.
+// target doc get merged into a single payload instead of sent one-by-one)
+// keeps this client from ever being the cause of its own backlog. Keyed by
+// an arbitrary string (not just uid) so it can serialize writes to the main
+// user doc AND per-deck cards docs (see deckCardsRef below) through the same
+// queue.
 let _writeInFlight=false;
-const _pendingWrites={};
-const _pendingCallbacks={};
-function queueFirestoreWrite(uid,data,{onSuccess,onError}={}){
-  if(!uid) return;
-  _pendingWrites[uid]={..._pendingWrites[uid],...data};
+const _pendingWrites={}; // key -> {ref,data}
+const _pendingCallbacks={}; // key -> [{onSuccess,onError}]
+function queueFirestoreWrite(key,ref,data,{onSuccess,onError}={}){
+  if(!ref) return;
+  const existing=_pendingWrites[key];
+  _pendingWrites[key]={ref,data:{...(existing?.data),...data}};
   if(onSuccess||onError){
-    (_pendingCallbacks[uid]=_pendingCallbacks[uid]||[]).push({onSuccess,onError});
+    (_pendingCallbacks[key]=_pendingCallbacks[key]||[]).push({onSuccess,onError});
   }
   pumpWriteQueue();
 }
 function pumpWriteQueue(){
   if(_writeInFlight) return;
-  const uid=Object.keys(_pendingWrites)[0];
-  if(!uid) return;
-  const data=_pendingWrites[uid];
-  delete _pendingWrites[uid];
-  const callbacks=_pendingCallbacks[uid]||[];
-  delete _pendingCallbacks[uid];
+  const key=Object.keys(_pendingWrites)[0];
+  if(!key) return;
+  const {ref,data}=_pendingWrites[key];
+  delete _pendingWrites[key];
+  const callbacks=_pendingCallbacks[key]||[];
+  delete _pendingCallbacks[key];
   _writeInFlight=true;
-  setDoc(doc(db,"users",uid),data,{merge:true})
+  setDoc(ref,data,{merge:true})
     .then(()=>callbacks.forEach(cb=>cb.onSuccess?.()))
     .catch(e=>{ console.error("Save error:",e); callbacks.forEach(cb=>cb.onError?.(e)); })
     .finally(()=>{ _writeInFlight=false; pumpWriteQueue(); });
+}
+// deckCards/{deckId} docs hold that deck's cards ONLY — see the big comment
+// on the migration logic in loadUserDoc for why this exists: cramming every
+// deck's entire card list into the one main user doc hit Firestore's hard
+// 1MB-per-document ceiling once an account grew past a few thousand cards,
+// and once that happens EVERY save fails outright, forever, with no amount
+// of retry/timing logic able to help — the doc is just too big to write.
+function deckCardsRef(uid,deckId){ return doc(db,"users",uid,"deckCards",deckId); }
+function mainDocRef(uid){ return doc(db,"users",uid); }
+// Writes each deck's cards to its own doc BEFORE clearing the legacy field
+// on the main doc, sequentially (not one batch) — so if this account has one
+// single deck whose cards alone are still too big for one document, that
+// one failure doesn't block every OTHER deck from migrating, and doesn't
+// risk losing anything either way: the legacy field is only cleared once
+// every deck it still lists has been confirmed written to its own doc.
+async function migrateLegacyCardStates(uid,legacyCardStates,deckIds){
+  const entries=Object.entries(legacyCardStates).filter(([id])=>deckIds.has(id));
+  if(!entries.length) return;
+  try {
+    for(const [deckId,cards] of entries){
+      await setDoc(deckCardsRef(uid,deckId),{cards});
+    }
+    await setDoc(mainDocRef(uid),{cardStates:deleteField()},{merge:true});
+  } catch(e){ console.error("Migration error:",e); }
 }
 function cloudSyncSession(key,payload){
   if(!_sessionSyncUid) return;
   clearTimeout(_sessionSyncTimers[key]);
   _sessionSyncTimers[key]=setTimeout(()=>{
-    queueFirestoreWrite(_sessionSyncUid,payload);
+    queueFirestoreWrite("main:"+_sessionSyncUid,mainDocRef(_sessionSyncUid),payload);
   },1200);
 }
 function loadSession(){try{const r=localStorage.getItem(SESSION_KEY);if(!r) return null;const s=JSON.parse(r);if(Date.now()-(s.savedAt||0)>SESSION_TTL_MS){localStorage.removeItem(SESSION_KEY);return null;}return s;}catch{return null;}}
@@ -6469,7 +6496,7 @@ function cloudSyncDeckIdx(key,idx){
   const timerKey="deckIdx."+key;
   clearTimeout(_sessionSyncTimers[timerKey]);
   _sessionSyncTimers[timerKey]=setTimeout(()=>{
-    queueFirestoreWrite(_sessionSyncUid,{[`deckIdx.${key}`]:idx});
+    queueFirestoreWrite("main:"+_sessionSyncUid,mainDocRef(_sessionSyncUid),{[`deckIdx.${key}`]:idx});
   },1200);
 }
 // Merge the cloud's deckIdx map into this device's local copy — cloud keys
@@ -7587,6 +7614,13 @@ export default function App() {
   // an in-flight save and clobber a just-made local edit with the slightly
   // older copy that read completed against.
   const lastSyncRef=useRef(0);
+  // The last cardStates this tab actually confirmed saved (per deck, by
+  // array reference) — the main autosave effect diffs against this to know
+  // WHICH deck(s) changed since the last save, since cards now live in their
+  // own per-deck doc rather than one shared field. Every mutation path in
+  // this file replaces a touched deck's array with a new one (`{...p,[id]:
+  // ...}`), so a reference change reliably means "this deck was touched."
+  const prevCardStatesRef=useRef({});
   const [darkMode,setDarkMode]=useState(()=>{
     const saved=localStorage.getItem("arabic_fc_dark");
     if(saved!==null) return saved==="true";
@@ -7602,7 +7636,7 @@ export default function App() {
     let mounted=true;
     const loadUserDoc=(u)=>{
       setLoadError(false);
-      getDoc(doc(db,"users",u.uid)).then(snap=>{
+      getDoc(doc(db,"users",u.uid)).then(async snap=>{
           if(!mounted) return;
           if(snap.exists()){
             const d=snap.data();
@@ -7615,18 +7649,38 @@ export default function App() {
               // empty decks array (transient read glitch, etc.) silently kept
               // the in-memory SEED_DECKS/SEED_CARDS, which then got written
               // back over the real cloud data by the autosave effect below —
-              // wiping the user's real decks. cardStates cleaning is nested in
-              // here for the same reason: never derive it from local seed data.
+              // wiping the user's real decks.
               if(Array.isArray(d.decks)) {
                 setDecks(d.decks);
+                const deckIds=new Set(d.decks.map(dk=>dk.id));
+                // Cards live in deckCards/{deckId} docs, not on the main doc —
+                // see the migration comment below. `d.cardStates` is only read
+                // here as a fallback for decks not yet migrated off it.
+                const deckCardsSnap=await getDocs(collection(db,"users",u.uid,"deckCards"));
+                const fromSub={};
+                deckCardsSnap.forEach(docSnap=>{ fromSub[docSnap.id]=docSnap.data().cards||[]; });
+                const merged={...(d.cardStates||{}),...fromSub};
                 // Clean orphaned cardStates — only keep keys matching existing decks
-                if(d.cardStates){
-                  const deckIds=new Set(d.decks.map(dk=>dk.id));
-                  const cleaned={};
-                  for(const [k,v] of Object.entries(d.cardStates)){
-                    if(deckIds.has(k)) cleaned[k]=v;
-                  }
+                const cleaned={};
+                for(const [k,v] of Object.entries(merged)){
+                  if(deckIds.has(k)) cleaned[k]=v;
+                }
+                if(mounted){
                   setCardStates(cleaned);
+                  prevCardStatesRef.current=cleaned;
+                }
+                // One-time migration: a legacy account still has ALL decks'
+                // cards embedded in this one main doc under `cardStates`. That
+                // is exactly what grew past Firestore's hard 1MB-per-document
+                // ceiling once this account passed a few thousand cards —
+                // once a doc is that big, EVERY future write to it fails
+                // outright ("Document ... exceeds the maximum allowed size"),
+                // permanently, no matter how saves are timed or debounced.
+                // Move each deck's cards to its own deckCards/{deckId} doc
+                // (see migrateLegacyCardStates), then clear the field here so
+                // the main doc shrinks back under the limit.
+                if(d.cardStates&&Object.keys(d.cardStates).length){
+                  migrateLegacyCardStates(u.uid,d.cardStates,deckIds);
                 }
               }
               if(d.settings) setSettings(s=>({...s,...d.settings}));
@@ -7682,12 +7736,27 @@ export default function App() {
     if(!user||!dataLoaded) return;
     const save=()=>{
       const stamp=Date.now();
-      queueFirestoreWrite(user.uid,{decks,cardStates,settings,usage,studyLog,updatedAt:stamp,...(profile?{profile}:{})},{
+      queueFirestoreWrite("main:"+user.uid,mainDocRef(user.uid),{decks,settings,usage,studyLog,updatedAt:stamp,...(profile?{profile}:{})},{
         onSuccess:()=>{ lastSyncRef.current=stamp; },
       });
+      // Cards live in their own deckCards/{deckId} doc, not on the main doc
+      // (see migrateLegacyCardStates) — only write the deck(s) whose array
+      // reference actually changed since the last save, and delete a deck's
+      // doc if the deck itself was removed. Every mutation path in this file
+      // replaces a touched deck's array wholesale, so a reference change
+      // reliably means "this deck changed."
+      const prev=prevCardStatesRef.current;
+      for(const id of Object.keys(cardStates)){
+        if(cardStates[id]!==prev[id]){
+          queueFirestoreWrite("deck:"+user.uid+":"+id,deckCardsRef(user.uid,id),{cards:cardStates[id]});
+        }
+      }
+      for(const id of Object.keys(prev)){
+        if(!(id in cardStates)) deleteDoc(deckCardsRef(user.uid,id)).catch(e=>console.error("Delete deck doc error:",e));
+      }
+      prevCardStatesRef.current=cardStates;
     };
-    // 4s, not 1.5s — this account's cardStates blob is large enough (thousands
-    // of cards) that resaving it on every single card swipe during continuous
+    // 4s, not 1.5s — resaving on every single card swipe during continuous
     // study was firing far more often than each write could actually
     // complete, which is exactly how Firestore's SDK write queue got
     // overwhelmed (see queueFirestoreWrite above). flushIfHidden/pagehide
@@ -7718,7 +7787,7 @@ export default function App() {
     if(!user||!dataLoaded) return;
     const refresh=()=>{
       if(document.visibilityState!=="visible") return;
-      getDoc(doc(db,"users",user.uid)).then(snap=>{
+      getDoc(doc(db,"users",user.uid)).then(async snap=>{
         if(!snap.exists()) return;
         const d=snap.data();
         // Session/screen and deck-resume-position hydration are gated by
@@ -7733,14 +7802,21 @@ export default function App() {
         if(!Array.isArray(d.decks)) return;
         if((d.updatedAt||0)<=lastSyncRef.current) return;
         setDecks(d.decks);
-        if(d.cardStates){
-          const deckIds=new Set(d.decks.map(dk=>dk.id));
-          const cleaned={};
-          for(const [k,v] of Object.entries(d.cardStates)){
-            if(deckIds.has(k)) cleaned[k]=v;
-          }
-          setCardStates(cleaned);
+        // Cards live in deckCards/{deckId} docs (see migrateLegacyCardStates)
+        // — re-pull them here too, or a device that only picked up a newer
+        // `decks` array from elsewhere would keep whatever stale cards it
+        // already had for any deck the OTHER device actually touched.
+        const deckIds=new Set(d.decks.map(dk=>dk.id));
+        const deckCardsSnap=await getDocs(collection(db,"users",user.uid,"deckCards"));
+        const fromSub={};
+        deckCardsSnap.forEach(docSnap=>{ fromSub[docSnap.id]=docSnap.data().cards||[]; });
+        const merged={...(d.cardStates||{}),...fromSub};
+        const cleaned={};
+        for(const [k,v] of Object.entries(merged)){
+          if(deckIds.has(k)) cleaned[k]=v;
         }
+        setCardStates(cleaned);
+        prevCardStatesRef.current=cleaned;
         lastSyncRef.current=d.updatedAt;
       }).catch(e=>console.error("Refresh error:",e));
     };
@@ -7801,17 +7877,28 @@ export default function App() {
   // import wins that race almost every time. The only real fix is to not
   // let the UI claim "saved" (and thus invite a refresh) until the write is
   // actually confirmed round-tripped.
+  // touchedDeckIds: which deck(s) in newCardStates actually changed — cards
+  // live in their own deckCards/{deckId} doc (see migrateLegacyCardStates),
+  // so only those need writing, not the whole cardStates map.
   const pendingSaveCountRef=useRef(0);
-  const flushSaveNow=(newDecks,newCardStates)=>{
+  const flushSaveNow=(newDecks,newCardStates,touchedDeckIds)=>{
     if(!user) return Promise.resolve();
     const stamp=Date.now();
     pendingSaveCountRef.current++;
-    return new Promise((resolve,reject)=>{
-      queueFirestoreWrite(user.uid,{decks:newDecks,cardStates:newCardStates,settings,usage,studyLog,updatedAt:stamp,...(profile?{profile}:{})},{
-        onSuccess:()=>{ lastSyncRef.current=stamp; pendingSaveCountRef.current--; resolve(); },
-        onError:(e)=>{ pendingSaveCountRef.current--; reject(e); },
+    const mainPromise=new Promise((resolve,reject)=>{
+      queueFirestoreWrite("main:"+user.uid,mainDocRef(user.uid),{decks:newDecks,settings,usage,studyLog,updatedAt:stamp,...(profile?{profile}:{})},{
+        onSuccess:()=>{ lastSyncRef.current=stamp; resolve(); },
+        onError:(e)=>reject(e),
       });
     });
+    const deckPromises=touchedDeckIds.map(id=>new Promise((resolve,reject)=>{
+      queueFirestoreWrite("deck:"+user.uid+":"+id,deckCardsRef(user.uid,id),{cards:newCardStates[id]},{
+        onSuccess:resolve,
+        onError:reject,
+      });
+    }));
+    prevCardStatesRef.current=newCardStates;
+    return Promise.all([mainPromise,...deckPromises]).finally(()=>{ pendingSaveCountRef.current--; });
   };
   // Belt-and-suspenders: warn on an actual browser close/refresh while one
   // of the awaited saves below is still in flight, in case the user refreshes
@@ -7827,12 +7914,14 @@ export default function App() {
   // Save grammar cards from the Grammar Import screen — either into a brand
   // new deckType:"grammar" deck or appended to an existing grammar deck.
   const saveGrammarDeck=async(title,cards,target)=>{
-    let newDecks=decks,newCardStates;
+    let newDecks=decks,newCardStates,touchedId;
     if(target){
+      touchedId=target.id;
       newCardStates={...cardStates,[target.id]:[...(cardStates[target.id]||[]),...cards]};
       setCardStates(newCardStates);
     } else {
       const deck={id:`d${Date.now()}`,title,createdAt:Date.now(),deckType:"grammar"};
+      touchedId=deck.id;
       newDecks=[deck,...decks];
       newCardStates={...cardStates,[deck.id]:cards};
       setDecks(newDecks);
@@ -7840,7 +7929,7 @@ export default function App() {
     }
     showToast("Saving…","info");
     try {
-      await flushSaveNow(newDecks,newCardStates);
+      await flushSaveNow(newDecks,newCardStates,[touchedId]);
       showToast(target?`Added ${cards.length} grammar cards to "${target.title}"`:`Grammar deck "${title}" created — ${cards.length} concepts`,"success");
       setGrammarTarget(null);
       setScreen("home");
@@ -7854,12 +7943,14 @@ export default function App() {
   // deck or appended to an existing one. Cards are normal wordType (noun/
   // verb/adjective), no deckType tag — same shape as manually-added cards.
   const saveVocabDeck=async(title,cards,target)=>{
-    let newDecks=decks,newCardStates;
+    let newDecks=decks,newCardStates,touchedId;
     if(target){
+      touchedId=target.id;
       newCardStates={...cardStates,[target.id]:[...(cardStates[target.id]||[]),...cards]};
       setCardStates(newCardStates);
     } else {
       const deck={id:`d${Date.now()}`,title,createdAt:Date.now()}; // no deckType → normal vocab deck
+      touchedId=deck.id;
       newDecks=[deck,...decks];
       newCardStates={...cardStates,[deck.id]:cards};
       setDecks(newDecks);
@@ -7867,7 +7958,7 @@ export default function App() {
     }
     showToast("Saving…","info");
     try {
-      await flushSaveNow(newDecks,newCardStates);
+      await flushSaveNow(newDecks,newCardStates,[touchedId]);
       showToast(target?`Added ${cards.length} vocab cards to "${target.title}"`:`Vocab deck "${title}" created — ${cards.length} cards`,"success");
       setVocabTarget(null);
       setScreen("home");
@@ -7887,7 +7978,7 @@ export default function App() {
       setCardStates(newCardStates);
       showToast("Saving…","info");
       try {
-        await flushSaveNow(newDecks,newCardStates);
+        await flushSaveNow(newDecks,newCardStates,[d.id]);
         showToast(`Deck "${d.title}" imported`,"success");
       } catch(err) {
         console.error("Save error:",err);
