@@ -7645,6 +7645,16 @@ export default function App() {
   // ever mentions the specific deck(s) IT touched, so a deck it doesn't know
   // about is never named in its writes and can't be clobbered by them.
   const prevDecksRef=useRef([]);
+  // EMERGENCY SAFETY GUARD (2026-09-01): a load that finds neither `decks`
+  // nor `decksById` on the cloud doc falls back to leaving local state at
+  // its SEED_DECKS/SEED_CARDS default — that's the deliberate "brand new
+  // user" path. But if this ever happens for an EXISTING account (cloud doc
+  // unexpectedly missing its real deck data — under investigation), the
+  // autosave effect must NOT be allowed to write that placeholder data to
+  // the cloud at all: doing so could permanently stamp seed content over an
+  // account that's still recoverable. Set true only when the load actually
+  // saw real deck data (or a legitimate explicit empty state) on the cloud.
+  const cloudDeckDataConfirmedRef=useRef(false);
   const [darkMode,setDarkMode]=useState(()=>{
     const saved=localStorage.getItem("arabic_fc_dark");
     if(saved!==null) return saved==="true";
@@ -7690,6 +7700,7 @@ export default function App() {
                 const sortedDecks=Object.values(mergedDecks).sort((a,b)=>(b.createdAt||0)-(a.createdAt||0));
                 setDecks(sortedDecks);
                 prevDecksRef.current=sortedDecks;
+                cloudDeckDataConfirmedRef.current=true;
                 if(legacyArr.length) migrateLegacyDecks(u.uid,legacyArr,decksById);
                 const deckIds=new Set(sortedDecks.map(dk=>dk.id));
                 // Cards live in deckCards/{deckId} docs, not on the main doc —
@@ -7774,6 +7785,14 @@ export default function App() {
   useEffect(()=>{
     if(!user||!dataLoaded) return;
     const save=()=>{
+      // EMERGENCY SAFETY GUARD (2026-09-01) — see cloudDeckDataConfirmedRef
+      // comment. Refuse to write anything at all until a load has actually
+      // confirmed real deck data from the cloud, so this can never be the
+      // thing that stamps placeholder/fallback state over a real account.
+      if(!cloudDeckDataConfirmedRef.current){
+        console.error("[flashcard-safety] Skipped autosave — cloud deck data was never confirmed loaded this session.");
+        return;
+      }
       const stamp=Date.now();
       const payload={settings,usage,studyLog,updatedAt:stamp,...(profile?{profile}:{})};
       // `decks` is written per-key (decksById.<id>), never as one whole array
@@ -7863,6 +7882,7 @@ export default function App() {
         const sortedDecks=Object.values(mergedDecks).sort((a,b)=>(b.createdAt||0)-(a.createdAt||0));
         setDecks(sortedDecks);
         prevDecksRef.current=sortedDecks;
+        cloudDeckDataConfirmedRef.current=true;
         // Cards live in deckCards/{deckId} docs (see migrateLegacyCardStates)
         // — re-pull them here too, or a device that only picked up newer
         // decks from elsewhere would keep whatever stale cards it already
@@ -7944,6 +7964,12 @@ export default function App() {
   const pendingSaveCountRef=useRef(0);
   const flushSaveNow=(newDecks,newCardStates,touchedDeckIds)=>{
     if(!user) return Promise.resolve();
+    // EMERGENCY SAFETY GUARD (2026-09-01) — see cloudDeckDataConfirmedRef
+    // comment. Block explicit saves too (imports, new decks) until a load
+    // has actually confirmed real cloud deck data this session.
+    if(!cloudDeckDataConfirmedRef.current){
+      return Promise.reject(new Error("Cloud deck data not confirmed loaded yet — refusing to save."));
+    }
     const stamp=Date.now();
     pendingSaveCountRef.current++;
     // `decks` written per-key (decksById.<id>), not as one whole array field
