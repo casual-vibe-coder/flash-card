@@ -4432,6 +4432,10 @@ function buildPersona(profile){
 // aren't standalone flashcard-able words. `seriesId` groups these 8 for the
 // "download all" bulk action in PresetLibraryScreen.
 const BYY1_SERIES="byy1-part1";
+// Human-readable label per seriesId for the "download all" grouped card in
+// PresetLibraryScreen — keyed here (rather than inferred from deck titles)
+// so future series (Book 1 Part 2, Book 2, etc.) just add one line.
+const SERIES_LABELS={ [BYY1_SERIES]:"Bayna Yadayk — Book 1, Part 1" };
 const PRESET_DECKS=[
   {id:"preset-byy1-u1", title:"Bayna Yadayk Book 1 · Unit 1 — Greetings & Introductions", unitId:"1-1", level:"book1", seriesId:BYY1_SERIES,
    cards:[
@@ -4501,9 +4505,9 @@ const PRESET_DECKS=[
      {wordType:"noun",english:"The Qur'an",arabicBase:"القُرْآن",forms:{singular:"القُرْآن"}},
      {wordType:"noun",english:"Ablution",arabicBase:"تَوَضُّؤ",forms:{singular:"تَوَضُّؤ"}},
      {wordType:"noun",english:"Dawn / Fajr prayer time",arabicBase:"الفَجْر",forms:{singular:"الفَجْر"}},
-     {wordType:"verb",english:"To pray",arabicBase:"صَلَّى",forms:{past:"صَلَّى",present:"يُصَلِّي",masdar:"صَلَاة"}},
-     {wordType:"verb",english:"To read / recite",arabicBase:"قَرَأَ",forms:{past:"قَرَأَ",present:"يَقْرَأُ",masdar:"قِرَاءَة"}},
-     {wordType:"verb",english:"To perform ablution",arabicBase:"تَوَضَّأَ",forms:{past:"تَوَضَّأَ",present:"يَتَوَضَّأُ",masdar:"تَوَضُّؤ"}},
+     {wordType:"verb",english:"To pray",arabicBase:"صَلَّى",forms:{past:"صَلَّى",present:"يُصَلِّي",imperative:"صَلِّ",masdar:"صَلَاة",activePart:"مُصَلٍّ"}},
+     {wordType:"verb",english:"To read / recite",arabicBase:"قَرَأَ",forms:{past:"قَرَأَ",present:"يَقْرَأُ",imperative:"اِقْرَأْ",masdar:"قِرَاءَة",activePart:"قَارِئ",passivePart:"مَقْرُوء"}},
+     {wordType:"verb",english:"To perform ablution",arabicBase:"تَوَضَّأَ",forms:{past:"تَوَضَّأَ",present:"يَتَوَضَّأُ",imperative:"تَوَضَّأْ",masdar:"تَوَضُّؤ",activePart:"مُتَوَضِّئ"}},
      {wordType:"noun",english:"God is greatest",arabicBase:"اللَّهُ أَكْبَرُ",forms:{singular:"اللَّهُ أَكْبَرُ"}},
      {wordType:"noun",english:"What God has willed (expression of admiration)",arabicBase:"مَا شَاءَ اللهُ",forms:{singular:"مَا شَاءَ اللهُ"}},
      {wordType:"noun",english:"May God's peace and blessings be upon him",arabicBase:"صَلَّى اللهُ عَلَيْهِ وَسَلَّم",forms:{singular:"صَلَّى اللهُ عَلَيْهِ وَسَلَّم"}},
@@ -4548,9 +4552,9 @@ const PRESET_DECKS=[
      {wordType:"adjective",english:"Near / close",arabicBase:"قَرِيب",forms:{singular:"قَرِيب"}},
      {wordType:"adjective",english:"Fifth",arabicBase:"خَامِس",forms:{singular:"خَامِس"}},
      {wordType:"adjective",english:"Rented",arabicBase:"مُؤَجَّر",forms:{singular:"مُؤَجَّر"}},
-     {wordType:"verb",english:"To want",arabicBase:"أَرَادَ",forms:{past:"أَرَادَ",present:"يُرِيدُ",masdar:"إِرَادَة"}},
-     {wordType:"verb",english:"To enter",arabicBase:"دَخَلَ",forms:{past:"دَخَلَ",present:"يَدْخُلُ",masdar:"دُخُول"}},
-     {wordType:"verb",english:"To live / reside",arabicBase:"سَكَنَ",forms:{past:"سَكَنَ",present:"يَسْكُنُ",masdar:"سَكَن"}},
+     {wordType:"verb",english:"To want",arabicBase:"أَرَادَ",forms:{past:"أَرَادَ",present:"يُرِيدُ",imperative:"أَرِدْ",masdar:"إِرَادَة",activePart:"مُرِيد",passivePart:"مُرَاد"}},
+     {wordType:"verb",english:"To enter",arabicBase:"دَخَلَ",forms:{past:"دَخَلَ",present:"يَدْخُلُ",imperative:"اُدْخُلْ",masdar:"دُخُول",activePart:"دَاخِل"}},
+     {wordType:"verb",english:"To live / reside",arabicBase:"سَكَنَ",forms:{past:"سَكَنَ",present:"يَسْكُنُ",imperative:"اُسْكُنْ",masdar:"سَكَن",activePart:"سَاكِن",harf:"فِي"}},
      {wordType:"noun",english:"How can I help you?",arabicBase:"أَيَّ خِدْمَة؟",forms:{singular:"أَيَّ خِدْمَة؟"}},
      {wordType:"noun",english:"Please, come in",arabicBase:"تَفَضَّلْ",forms:{singular:"تَفَضَّلْ"}},
      {wordType:"noun",english:"How many?",arabicBase:"كَمْ؟",forms:{singular:"كَمْ؟"}},
@@ -4579,14 +4583,14 @@ const PRESET_DECKS=[
      {wordType:"adjective",english:"Fourth",arabicBase:"رَابِع",forms:{singular:"رَابِع"}},
      {wordType:"adjective",english:"Early",arabicBase:"مُبَكِّراً",forms:{singular:"مُبَكِّراً"}},
      {wordType:"adjective",english:"Late",arabicBase:"مُتَأَخِّراً",forms:{singular:"مُتَأَخِّراً"}},
-     {wordType:"verb",english:"To wake up",arabicBase:"اسْتَيْقَظَ",forms:{past:"اسْتَيْقَظَ",present:"يَسْتَيْقِظُ",masdar:"اسْتِيقَاظ"}},
-     {wordType:"verb",english:"To go",arabicBase:"ذَهَبَ",forms:{past:"ذَهَبَ",present:"يَذْهَبُ",masdar:"ذَهَاب"}},
-     {wordType:"verb",english:"To watch",arabicBase:"شَاهَدَ",forms:{past:"شَاهَدَ",present:"يُشَاهِدُ",masdar:"مُشَاهَدَة"}},
-     {wordType:"verb",english:"To wash",arabicBase:"غَسَلَ",forms:{past:"غَسَلَ",present:"يَغْسِلُ",masdar:"غَسْل"}},
-     {wordType:"verb",english:"To do",arabicBase:"فَعَلَ",forms:{past:"فَعَلَ",present:"يَفْعَلُ",masdar:"فِعْل"}},
-     {wordType:"verb",english:"To sweep",arabicBase:"كَنَسَ",forms:{past:"كَنَسَ",present:"يَكْنُسُ",masdar:"كَنْس"}},
-     {wordType:"verb",english:"To iron",arabicBase:"كَوَى",forms:{past:"كَوَى",present:"يَكْوِي",masdar:"كَيّ"}},
-     {wordType:"verb",english:"To sleep",arabicBase:"نَامَ",forms:{past:"نَامَ",present:"يَنَامُ",masdar:"نَوْم"}},
+     {wordType:"verb",english:"To wake up",arabicBase:"اسْتَيْقَظَ",forms:{past:"اسْتَيْقَظَ",present:"يَسْتَيْقِظُ",imperative:"اِسْتَيْقِظْ",masdar:"اسْتِيقَاظ",activePart:"مُسْتَيْقِظ"}},
+     {wordType:"verb",english:"To go",arabicBase:"ذَهَبَ",forms:{past:"ذَهَبَ",present:"يَذْهَبُ",imperative:"اِذْهَبْ",masdar:"ذَهَاب",activePart:"ذَاهِب",harf:"إِلَى"}},
+     {wordType:"verb",english:"To watch",arabicBase:"شَاهَدَ",forms:{past:"شَاهَدَ",present:"يُشَاهِدُ",imperative:"شَاهِدْ",masdar:"مُشَاهَدَة",activePart:"مُشَاهِد",passivePart:"مُشَاهَد"}},
+     {wordType:"verb",english:"To wash",arabicBase:"غَسَلَ",forms:{past:"غَسَلَ",present:"يَغْسِلُ",imperative:"اِغْسِلْ",masdar:"غَسْل",activePart:"غَاسِل",passivePart:"مَغْسُول"}},
+     {wordType:"verb",english:"To do",arabicBase:"فَعَلَ",forms:{past:"فَعَلَ",present:"يَفْعَلُ",imperative:"اِفْعَلْ",masdar:"فِعْل",activePart:"فَاعِل",passivePart:"مَفْعُول"}},
+     {wordType:"verb",english:"To sweep",arabicBase:"كَنَسَ",forms:{past:"كَنَسَ",present:"يَكْنُسُ",imperative:"اُكْنُسْ",masdar:"كَنْس",activePart:"كَانِس",passivePart:"مَكْنُوس"}},
+     {wordType:"verb",english:"To iron",arabicBase:"كَوَى",forms:{past:"كَوَى",present:"يَكْوِي",imperative:"اِكْوِ",masdar:"كَيّ",activePart:"كَاوٍ",passivePart:"مَكْوِيّ"}},
+     {wordType:"verb",english:"To sleep",arabicBase:"نَامَ",forms:{past:"نَامَ",present:"يَنَامُ",imperative:"نَمْ",masdar:"نَوْم",activePart:"نَائِم"}},
      {wordType:"noun",english:"When?",arabicBase:"مَتَى؟",forms:{singular:"مَتَى؟"}},
    ]},
   {id:"preset-byy1-u5", title:"Bayna Yadayk Book 1 · Unit 5 — Food & Drink", unitId:"1-5", level:"book1", seriesId:BYY1_SERIES,
@@ -4626,10 +4630,10 @@ const PRESET_DECKS=[
      {wordType:"adjective",english:"Much / many",arabicBase:"كَثِير",forms:{singular:"كَثِير"}},
      {wordType:"adjective",english:"First (female)",arabicBase:"أُولَى",forms:{singular:"أُولَى"}},
      {wordType:"adjective",english:"Second (female)",arabicBase:"ثَانِيَة",forms:{singular:"ثَانِيَة"}},
-     {wordType:"verb",english:"To eat",arabicBase:"أَكَلَ",forms:{past:"أَكَلَ",present:"يَأْكُلُ",masdar:"أَكْل"}},
-     {wordType:"verb",english:"To drink",arabicBase:"شَرِبَ",forms:{past:"شَرِبَ",present:"يَشْرَبُ",masdar:"شُرْب"}},
-     {wordType:"verb",english:"To request / order",arabicBase:"طَلَبَ",forms:{past:"طَلَبَ",present:"يَطْلُبُ",masdar:"طَلَب"}},
-     {wordType:"verb",english:"To prefer",arabicBase:"فَضَّلَ",forms:{past:"فَضَّلَ",present:"يُفَضِّلُ",masdar:"تَفْضِيل"}},
+     {wordType:"verb",english:"To eat",arabicBase:"أَكَلَ",forms:{past:"أَكَلَ",present:"يَأْكُلُ",imperative:"كُلْ",masdar:"أَكْل",activePart:"آكِل",passivePart:"مَأْكُول"}},
+     {wordType:"verb",english:"To drink",arabicBase:"شَرِبَ",forms:{past:"شَرِبَ",present:"يَشْرَبُ",imperative:"اِشْرَبْ",masdar:"شُرْب",activePart:"شَارِب",passivePart:"مَشْرُوب"}},
+     {wordType:"verb",english:"To request / order",arabicBase:"طَلَبَ",forms:{past:"طَلَبَ",present:"يَطْلُبُ",imperative:"اُطْلُبْ",masdar:"طَلَب",activePart:"طَالِب",passivePart:"مَطْلُوب",harf:"مِنْ"}},
+     {wordType:"verb",english:"To prefer",arabicBase:"فَضَّلَ",forms:{past:"فَضَّلَ",present:"يُفَضِّلُ",imperative:"فَضِّلْ",masdar:"تَفْضِيل",activePart:"مُفَضِّل",passivePart:"مُفَضَّل"}},
      {wordType:"noun",english:"You're welcome / excuse me",arabicBase:"عَفْواً",forms:{singular:"عَفْواً"}},
      {wordType:"noun",english:"Why?",arabicBase:"لِمَاذَا؟",forms:{singular:"لِمَاذَا؟"}},
    ]},
@@ -4660,11 +4664,11 @@ const PRESET_DECKS=[
      {wordType:"adjective",english:"Eighth",arabicBase:"ثَامِن",forms:{singular:"ثَامِن"}},
      {wordType:"adjective",english:"Ninth",arabicBase:"تَاسِع",forms:{singular:"تَاسِع"}},
      {wordType:"adjective",english:"Tenth",arabicBase:"عَاشِر",forms:{singular:"عَاشِر"}},
-     {wordType:"verb",english:"To be able to",arabicBase:"اسْتَطَاعَ",forms:{past:"اسْتَطَاعَ",present:"يَسْتَطِيعُ",masdar:"اسْتِطَاعَة"}},
-     {wordType:"verb",english:"To wait",arabicBase:"انْتَظَرَ",forms:{past:"انْتَظَرَ",present:"يَنْتَظِرُ",masdar:"انْتِظَار"}},
-     {wordType:"verb",english:"To hear",arabicBase:"سَمِعَ",forms:{past:"سَمِعَ",present:"يَسْمَعُ",masdar:"سَمْع"}},
-     {wordType:"verb",english:"To work / do",arabicBase:"عَمِلَ",forms:{past:"عَمِلَ",present:"يَعْمَلُ",masdar:"عَمَل"}},
-     {wordType:"verb",english:"To put / place",arabicBase:"وَضَعَ",forms:{past:"وَضَعَ",present:"يَضَعُ",masdar:"وَضْع"}},
+     {wordType:"verb",english:"To be able to",arabicBase:"اسْتَطَاعَ",forms:{past:"اسْتَطَاعَ",present:"يَسْتَطِيعُ",imperative:"اِسْتَطِعْ",masdar:"اسْتِطَاعَة",activePart:"مُسْتَطِيع"}},
+     {wordType:"verb",english:"To wait",arabicBase:"انْتَظَرَ",forms:{past:"انْتَظَرَ",present:"يَنْتَظِرُ",imperative:"اِنْتَظِرْ",masdar:"انْتِظَار",activePart:"مُنْتَظِر",passivePart:"مُنْتَظَر"}},
+     {wordType:"verb",english:"To hear",arabicBase:"سَمِعَ",forms:{past:"سَمِعَ",present:"يَسْمَعُ",imperative:"اِسْمَعْ",masdar:"سَمْع",activePart:"سَامِع",passivePart:"مَسْمُوع"}},
+     {wordType:"verb",english:"To work / do",arabicBase:"عَمِلَ",forms:{past:"عَمِلَ",present:"يَعْمَلُ",imperative:"اِعْمَلْ",masdar:"عَمَل",activePart:"عَامِل",passivePart:"مَعْمُول",harf:"فِي"}},
+     {wordType:"verb",english:"To put / place",arabicBase:"وَضَعَ",forms:{past:"وَضَعَ",present:"يَضَعُ",imperative:"ضَعْ",masdar:"وَضْع",activePart:"وَاضِع",passivePart:"مَوْضُوع"}},
      {wordType:"noun",english:"To where?",arabicBase:"إِلَى أَيْنَ؟",forms:{singular:"إِلَى أَيْنَ؟"}},
      {wordType:"noun",english:"God willing",arabicBase:"إِنْ شَاءَ الله",forms:{singular:"إِنْ شَاءَ الله"}},
      {wordType:"noun",english:"May God reward you with good",arabicBase:"جَزَاكَ اللَّهُ خَيْراً",forms:{singular:"جَزَاكَ اللَّهُ خَيْراً"}},
@@ -4701,13 +4705,13 @@ const PRESET_DECKS=[
      {wordType:"noun",english:"School day",arabicBase:"يَوْمٌ دِرَاسِيّ",forms:{singular:"يَوْمٌ دِرَاسِيّ"}},
      {wordType:"noun",english:"Now",arabicBase:"الآنَ",forms:{singular:"الآنَ"}},
      {wordType:"adjective",english:"Long (female)",arabicBase:"طَوِيلَة",forms:{singular:"طَوِيلَة"}},
-     {wordType:"verb",english:"To finish / end",arabicBase:"انْتَهَى",forms:{past:"انْتَهَى",present:"يَنْتَهِي",masdar:"انْتِهَاء"}},
-     {wordType:"verb",english:"To begin",arabicBase:"بَدَأَ",forms:{past:"بَدَأَ",present:"يَبْدَأُ",masdar:"بَدْء"}},
-     {wordType:"verb",english:"To come",arabicBase:"جَاءَ",forms:{past:"جَاءَ",present:"يَجِيء",masdar:"مَجِيء"}},
-     {wordType:"verb",english:"To study",arabicBase:"دَرَسَ",forms:{past:"دَرَسَ",present:"يَدْرُسُ",masdar:"دِرَاسَة"}},
-     {wordType:"verb",english:"To be",arabicBase:"كَانَ",forms:{past:"كَانَ",present:"يَكُونُ",masdar:"كَوْن"}},
-     {wordType:"verb",english:"To write",arabicBase:"كَتَبَ",forms:{past:"كَتَبَ",present:"يَكْتُبُ",masdar:"كِتَابَة"}},
-     {wordType:"verb",english:"To look",arabicBase:"نَظَرَ",forms:{past:"نَظَرَ",present:"يَنْظُرُ",masdar:"نَظَر"}},
+     {wordType:"verb",english:"To finish / end",arabicBase:"انْتَهَى",forms:{past:"انْتَهَى",present:"يَنْتَهِي",imperative:"اِنْتَهِ",masdar:"انْتِهَاء",activePart:"مُنْتَهٍ",harf:"مِنْ"}},
+     {wordType:"verb",english:"To begin",arabicBase:"بَدَأَ",forms:{past:"بَدَأَ",present:"يَبْدَأُ",imperative:"اِبْدَأْ",masdar:"بَدْء",activePart:"بَادِئ",harf:"بِـ"}},
+     {wordType:"verb",english:"To come",arabicBase:"جَاءَ",forms:{past:"جَاءَ",present:"يَجِيء",imperative:"جِئْ",masdar:"مَجِيء",activePart:"جَاءٍ"}},
+     {wordType:"verb",english:"To study",arabicBase:"دَرَسَ",forms:{past:"دَرَسَ",present:"يَدْرُسُ",imperative:"اُدْرُسْ",masdar:"دِرَاسَة",activePart:"دَارِس",passivePart:"مَدْرُوس",harf:"فِي"}},
+     {wordType:"verb",english:"To be",arabicBase:"كَانَ",forms:{past:"كَانَ",present:"يَكُونُ",imperative:"كُنْ",masdar:"كَوْن",activePart:"كَائِن"}},
+     {wordType:"verb",english:"To write",arabicBase:"كَتَبَ",forms:{past:"كَتَبَ",present:"يَكْتُبُ",imperative:"اُكْتُبْ",masdar:"كِتَابَة",activePart:"كَاتِب",passivePart:"مَكْتُوب"}},
+     {wordType:"verb",english:"To look",arabicBase:"نَظَرَ",forms:{past:"نَظَرَ",present:"يَنْظُرُ",imperative:"اُنْظُرْ",masdar:"نَظَر",activePart:"نَاظِر",harf:"إِلَى"}},
    ]},
   {id:"preset-byy1-u8", title:"Bayna Yadayk Book 1 · Unit 8 — Work", unitId:"1-8", level:"book1", seriesId:BYY1_SERIES,
    cards:[
@@ -4735,10 +4739,10 @@ const PRESET_DECKS=[
      {wordType:"noun",english:"Profession",arabicBase:"مِهْنَة",forms:{singular:"مِهْنَة",plural:"مِهَن"}},
      {wordType:"noun",english:"Engineering (the field)",arabicBase:"هَنْدَسَة",forms:{singular:"هَنْدَسَة"}},
      {wordType:"noun",english:"Eleven (female)",arabicBase:"حَادِيَة عَشْرَة",forms:{singular:"حَادِيَة عَشْرَة"}},
-     {wordType:"verb",english:"To love / like",arabicBase:"أَحَبَّ",forms:{past:"أَحَبَّ",present:"يُحِبُّ",masdar:"حُبّ"}},
-     {wordType:"verb",english:"To teach",arabicBase:"دَرَّسَ",forms:{past:"دَرَّسَ",present:"يُدَرِّسُ",masdar:"تَدْرِيس"}},
-     {wordType:"verb",english:"To help",arabicBase:"سَاعَدَ",forms:{past:"سَاعَدَ",present:"يُسَاعِدُ",masdar:"مُسَاعَدَة"}},
-     {wordType:"verb",english:"To travel",arabicBase:"سَافَرَ",forms:{past:"سَافَرَ",present:"يُسَافِرُ",masdar:"سَفَر"}},
+     {wordType:"verb",english:"To love / like",arabicBase:"أَحَبَّ",forms:{past:"أَحَبَّ",present:"يُحِبُّ",imperative:"أَحِبَّ",masdar:"حُبّ",activePart:"مُحِبّ",passivePart:"مُحَبّ"}},
+     {wordType:"verb",english:"To teach",arabicBase:"دَرَّسَ",forms:{past:"دَرَّسَ",present:"يُدَرِّسُ",imperative:"دَرِّسْ",masdar:"تَدْرِيس",activePart:"مُدَرِّس",passivePart:"مُدَرَّس"}},
+     {wordType:"verb",english:"To help",arabicBase:"سَاعَدَ",forms:{past:"سَاعَدَ",present:"يُسَاعِدُ",imperative:"سَاعِدْ",masdar:"مُسَاعَدَة",activePart:"مُسَاعِد",passivePart:"مُسَاعَد"}},
+     {wordType:"verb",english:"To travel",arabicBase:"سَافَرَ",forms:{past:"سَافَرَ",present:"يُسَافِرُ",imperative:"سَافِرْ",masdar:"سَفَر",activePart:"مُسَافِر",harf:"إِلَى"}},
    ]},
 ];
 // Best-effort central layer. Returns [] (and never throws) if the collection is
@@ -7875,7 +7879,7 @@ function PresetLibraryScreen({profile,decks,onBack}){
             <div key={seriesId} className="module-card" style={{alignItems:"flex-start",cursor:"default",background:"var(--accent-bg)",border:"1.5px solid var(--accent-border)"}}>
               <div style={{width:40,height:40,borderRadius:12,background:"var(--accent)",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}><Download size={18} color="#fff"/></div>
               <div style={{flex:1,minWidth:0}}>
-                <div style={{fontWeight:700,fontSize:14}}>Whole book · {seriesDecks.length} units</div>
+                <div style={{fontWeight:700,fontSize:14}}>{SERIES_LABELS[seriesId]||"Whole book"} · {seriesDecks.length} units</div>
                 <div style={{fontSize:11.5,color:"var(--text3)",marginTop:2}}>{totalCards} cards total{book?` · ${levelById(book.level).cefr}`:""}</div>
               </div>
               <button className="btn btn-sm" onClick={()=>{const n=downloadPresets(seriesDecks);showToast(`Downloading ${seriesDecks.length} decks (${n} cards)…`,"info");}}
