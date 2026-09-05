@@ -8054,6 +8054,13 @@ export default function App() {
       setLoadError(false);
       getDoc(doc(db,"users",u.uid)).then(async snap=>{
           if(!mounted) return;
+          // A successful read — even "the doc doesn't exist yet" for a
+          // brand-new account — is a confirmed, legitimate cloud state to
+          // build from. Previously this only got set inside the `snap.
+          // exists()` branch below, so a genuinely new user (no doc created
+          // yet at all) could NEVER pass this guard: every save, including
+          // settings and preset-deck downloads, was silently refused forever.
+          cloudDeckDataConfirmedRef.current=true;
           if(snap.exists()){
             const d=snap.data();
             try {
