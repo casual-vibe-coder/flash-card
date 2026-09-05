@@ -4425,33 +4425,320 @@ function buildPersona(profile){
 // presets centrally without an app deploy. "Download" copies a preset into
 // the user's own decks (new ids) where it becomes editable + cloud-synced.
 // ─────────────────────────────────────────────────────────────
+// Bayna Yadayk Book 1, Part 1 — Units 1-8, transcribed from the book's own
+// end-of-book "vocabulary by unit" glossary (المُفْرَدَاتُ بِحَسَبِ الوَحَدَات,
+// printed pages 235-236). Bound grammatical morphemes (attached pronoun
+// suffixes, bare particles like و/لـ/هل) are intentionally omitted — they
+// aren't standalone flashcard-able words. `seriesId` groups these 8 for the
+// "download all" bulk action in PresetLibraryScreen.
+const BYY1_SERIES="byy1-part1";
 const PRESET_DECKS=[
-  {id:"preset-greetings", title:"Greetings & Introductions", unitId:"1-1", level:"book1",
+  {id:"preset-byy1-u1", title:"Bayna Yadayk Book 1 · Unit 1 — Greetings & Introductions", unitId:"1-1", level:"book1", seriesId:BYY1_SERIES,
    cards:[
-     {wordType:"noun",english:"Name",arabicBase:"اِسْم",forms:{singular:"اِسْم",plural:"أَسْمَاء"}},
-     {wordType:"noun",english:"Friend",arabicBase:"صَدِيق",forms:{singular:"صَدِيق",plural:"أَصْدِقَاء"}},
-     {wordType:"noun",english:"Peace / greeting",arabicBase:"سَلَام",forms:{singular:"سَلَام"}},
-     {wordType:"noun",english:"Morning",arabicBase:"صَبَاح",forms:{singular:"صَبَاح",harf:"فِي"}},
-     {wordType:"noun",english:"Evening",arabicBase:"مَسَاء",forms:{singular:"مَسَاء",harf:"فِي"}},
-     {wordType:"noun",english:"Country",arabicBase:"بَلَد",forms:{singular:"بَلَد",plural:"بِلَاد",harf:"مِنْ"}},
-   ]},
-  {id:"preset-family", title:"The Family", unitId:"1-2", level:"book1",
-   cards:[
-     {wordType:"noun",english:"Father",arabicBase:"أَب",forms:{singular:"أَب",plural:"آبَاء"}},
-     {wordType:"noun",english:"Mother",arabicBase:"أُمّ",forms:{singular:"أُمّ",plural:"أُمَّهَات"}},
-     {wordType:"noun",english:"Son",arabicBase:"اِبْن",forms:{singular:"اِبْن",plural:"أَبْنَاء"}},
-     {wordType:"noun",english:"Daughter",arabicBase:"بِنْت",forms:{singular:"بِنْت",plural:"بَنَات"}},
      {wordType:"noun",english:"Brother",arabicBase:"أَخ",forms:{singular:"أَخ",plural:"إِخْوَة"}},
      {wordType:"noun",english:"Sister",arabicBase:"أُخْت",forms:{singular:"أُخْت",plural:"أَخَوَات"}},
+     {wordType:"noun",english:"Name",arabicBase:"اِسْم",forms:{singular:"اِسْم",plural:"أَسْمَاء"}},
+     {wordType:"noun",english:"Nationality",arabicBase:"جِنْسِيَّة",forms:{singular:"جِنْسِيَّة",plural:"جِنْسِيَّات"}},
+     {wordType:"noun",english:"Friend (male)",arabicBase:"صَدِيق",forms:{singular:"صَدِيق",plural:"أَصْدِقَاء"}},
+     {wordType:"noun",english:"Friend (female)",arabicBase:"صَدِيقَة",forms:{singular:"صَدِيقَة",plural:"صَدِيقَات"}},
+     {wordType:"noun",english:"Student (female)",arabicBase:"طَالِبَة",forms:{singular:"طَالِبَة",plural:"طَالِبَات"}},
+     {wordType:"noun",english:"Engineer",arabicBase:"مُهَنْدِس",forms:{singular:"مُهَنْدِس",plural:"مُهَنْدِسُون"}},
+     {wordType:"noun",english:"Teacher",arabicBase:"مُدَرِّس",forms:{singular:"مُدَرِّس",plural:"مُدَرِّسُون"}},
+     {wordType:"noun",english:"Pakistani",arabicBase:"بَاكِسْتَانِيّ",forms:{singular:"بَاكِسْتَانِيّ"}},
+     {wordType:"noun",english:"One",arabicBase:"وَاحِد",forms:{singular:"وَاحِد"}},
+     {wordType:"noun",english:"Two",arabicBase:"اِثْنَان",forms:{singular:"اِثْنَان"}},
+     {wordType:"noun",english:"Three",arabicBase:"ثَلَاثَة",forms:{singular:"ثَلَاثَة"}},
+     {wordType:"noun",english:"Four",arabicBase:"أَرْبَعَة",forms:{singular:"أَرْبَعَة"}},
+     {wordType:"noun",english:"Five",arabicBase:"خَمْسَة",forms:{singular:"خَمْسَة"}},
+     {wordType:"noun",english:"I",arabicBase:"أَنَا",forms:{singular:"أَنَا"}},
+     {wordType:"noun",english:"You (to a male)",arabicBase:"أَنْتَ",forms:{singular:"أَنْتَ"}},
+     {wordType:"noun",english:"You (to a female)",arabicBase:"أَنْتِ",forms:{singular:"أَنْتِ"}},
+     {wordType:"noun",english:"He",arabicBase:"هُوَ",forms:{singular:"هُوَ"}},
+     {wordType:"noun",english:"She",arabicBase:"هِيَ",forms:{singular:"هِيَ"}},
+     {wordType:"noun",english:"This (male)",arabicBase:"هَذَا",forms:{singular:"هَذَا"}},
+     {wordType:"noun",english:"This (female)",arabicBase:"هَذِه",forms:{singular:"هَذِه"}},
+     {wordType:"noun",english:"Welcome / hello",arabicBase:"أَهْلاً وَسَهْلاً",forms:{singular:"أَهْلاً وَسَهْلاً"}},
+     {wordType:"noun",english:"Fine / well",arabicBase:"بِخَيْر",forms:{singular:"بِخَيْر"}},
+     {wordType:"noun",english:"Praise be to God",arabicBase:"الحَمْدُ لله",forms:{singular:"الحَمْدُ لله"}},
+     {wordType:"noun",english:"Peace be upon you",arabicBase:"السَّلَامُ عَلَيْكُم",forms:{singular:"السَّلَامُ عَلَيْكُم"}},
+     {wordType:"noun",english:"And peace be upon you too",arabicBase:"وَعَلَيْكُمُ السَّلَام",forms:{singular:"وَعَلَيْكُمُ السَّلَام"}},
+     {wordType:"noun",english:"How are you? (to a male)",arabicBase:"كَيْفَ حَالُكَ؟",forms:{singular:"كَيْفَ حَالُكَ؟"}},
+     {wordType:"noun",english:"Goodbye",arabicBase:"مَعَ السَّلَامَة",forms:{singular:"مَعَ السَّلَامَة"}},
+     {wordType:"noun",english:"From where?",arabicBase:"مِنْ أَيْنَ؟",forms:{singular:"مِنْ أَيْنَ؟"}},
+     {wordType:"noun",english:"What is your name? (to a male)",arabicBase:"مَا اسْمُكَ؟",forms:{singular:"مَا اسْمُكَ؟"}},
+     {wordType:"noun",english:"What is your nationality? (to a male)",arabicBase:"مَا جِنْسِيَّتُكَ؟",forms:{singular:"مَا جِنْسِيَّتُكَ؟"}},
+     {wordType:"noun",english:"Yes",arabicBase:"نَعَمْ",forms:{singular:"نَعَمْ"}},
    ]},
-  {id:"preset-food", title:"Food & Drink", unitId:"1-5", level:"book1",
+  {id:"preset-byy1-u2", title:"Bayna Yadayk Book 1 · Unit 2 — The Family", unitId:"1-2", level:"book1", seriesId:BYY1_SERIES,
    cards:[
-     {wordType:"noun",english:"Bread",arabicBase:"خُبْز",forms:{singular:"خُبْز"}},
-     {wordType:"noun",english:"Water",arabicBase:"مَاء",forms:{singular:"مَاء"}},
-     {wordType:"noun",english:"Meat",arabicBase:"لَحْم",forms:{singular:"لَحْم",plural:"لُحُوم"}},
+     {wordType:"noun",english:"Father",arabicBase:"أَب",forms:{singular:"أَب",plural:"آبَاء"}},
+     {wordType:"noun",english:"Daughter",arabicBase:"اِبْنَة",forms:{singular:"اِبْنَة",plural:"بَنَات"}},
+     {wordType:"noun",english:"Family",arabicBase:"أُسْرَة",forms:{singular:"أُسْرَة",plural:"أُسَر"}},
+     {wordType:"noun",english:"Children / boys",arabicBase:"أَوْلَاد",forms:{singular:"أَوْلَاد"}},
+     {wordType:"noun",english:"Mother",arabicBase:"أُمّ",forms:{singular:"أُمّ",plural:"أُمَّهَات"}},
+     {wordType:"noun",english:"Eight",arabicBase:"ثَمَانِيَة",forms:{singular:"ثَمَانِيَة"}},
+     {wordType:"noun",english:"Nine",arabicBase:"تِسْعَة",forms:{singular:"تِسْعَة"}},
+     {wordType:"noun",english:"Ten",arabicBase:"عَشَرَة",forms:{singular:"عَشَرَة"}},
+     {wordType:"noun",english:"Six",arabicBase:"سِتَّة",forms:{singular:"سِتَّة"}},
+     {wordType:"noun",english:"Seven",arabicBase:"سَبْعَة",forms:{singular:"سَبْعَة"}},
+     {wordType:"noun",english:"Grandfather",arabicBase:"جَدّ",forms:{singular:"جَدّ",plural:"أَجْدَاد"}},
+     {wordType:"noun",english:"Grandmother",arabicBase:"جَدَّة",forms:{singular:"جَدَّة",plural:"جَدَّات"}},
+     {wordType:"noun",english:"Bathroom",arabicBase:"حَمَّام",forms:{singular:"حَمَّام",plural:"حَمَّامَات"}},
+     {wordType:"noun",english:"Paternal uncle",arabicBase:"عَمّ",forms:{singular:"عَمّ",plural:"أَعْمَام"}},
+     {wordType:"noun",english:"Paternal aunt",arabicBase:"عَمَّة",forms:{singular:"عَمَّة",plural:"عَمَّات"}},
+     {wordType:"noun",english:"Tree",arabicBase:"شَجَرَة",forms:{singular:"شَجَرَة",plural:"أَشْجَار"}},
+     {wordType:"noun",english:"Picture",arabicBase:"صُورَة",forms:{singular:"صُورَة",plural:"صُوَر"}},
+     {wordType:"noun",english:"Room",arabicBase:"غُرْفَة",forms:{singular:"غُرْفَة",plural:"غُرَف"}},
+     {wordType:"noun",english:"Mosque",arabicBase:"مَسْجِد",forms:{singular:"مَسْجِد",plural:"مَسَاجِد"}},
+     {wordType:"noun",english:"Prayer area (in a house)",arabicBase:"مُصَلّى",forms:{singular:"مُصَلّى"}},
+     {wordType:"noun",english:"Coat",arabicBase:"مِعْطَف",forms:{singular:"مِعْطَف",plural:"مَعَاطِف"}},
+     {wordType:"noun",english:"Teacher (female)",arabicBase:"مُعَلِّمَة",forms:{singular:"مُعَلِّمَة",plural:"مُعَلِّمَات"}},
+     {wordType:"noun",english:"Glasses",arabicBase:"نَظَّارَة",forms:{singular:"نَظَّارَة",plural:"نَظَّارَات"}},
+     {wordType:"noun",english:"Father",arabicBase:"وَالِد",forms:{singular:"وَالِد",plural:"آبَاء"}},
+     {wordType:"noun",english:"Mother",arabicBase:"وَالِدَة",forms:{singular:"وَالِدَة",plural:"وَالِدَات"}},
+     {wordType:"noun",english:"Call to prayer",arabicBase:"أَذَان",forms:{singular:"أَذَان"}},
+     {wordType:"noun",english:"The Messenger",arabicBase:"الرَّسُول",forms:{singular:"الرَّسُول"}},
+     {wordType:"noun",english:"The Qur'an",arabicBase:"القُرْآن",forms:{singular:"القُرْآن"}},
+     {wordType:"noun",english:"Ablution",arabicBase:"تَوَضُّؤ",forms:{singular:"تَوَضُّؤ"}},
+     {wordType:"noun",english:"Dawn / Fajr prayer time",arabicBase:"الفَجْر",forms:{singular:"الفَجْر"}},
+     {wordType:"verb",english:"To pray",arabicBase:"صَلَّى",forms:{past:"صَلَّى",present:"يُصَلِّي",masdar:"صَلَاة"}},
+     {wordType:"verb",english:"To read / recite",arabicBase:"قَرَأَ",forms:{past:"قَرَأَ",present:"يَقْرَأُ",masdar:"قِرَاءَة"}},
+     {wordType:"verb",english:"To perform ablution",arabicBase:"تَوَضَّأَ",forms:{past:"تَوَضَّأَ",present:"يَتَوَضَّأُ",masdar:"تَوَضُّؤ"}},
+     {wordType:"noun",english:"God is greatest",arabicBase:"اللَّهُ أَكْبَرُ",forms:{singular:"اللَّهُ أَكْبَرُ"}},
+     {wordType:"noun",english:"What God has willed (expression of admiration)",arabicBase:"مَا شَاءَ اللهُ",forms:{singular:"مَا شَاءَ اللهُ"}},
+     {wordType:"noun",english:"May God's peace and blessings be upon him",arabicBase:"صَلَّى اللهُ عَلَيْهِ وَسَلَّم",forms:{singular:"صَلَّى اللهُ عَلَيْهِ وَسَلَّم"}},
+     {wordType:"noun",english:"Let's go / come on",arabicBase:"هَيَّا بِنَا",forms:{singular:"هَيَّا بِنَا"}},
+     {wordType:"noun",english:"Where?",arabicBase:"أَيْنَ؟",forms:{singular:"أَيْنَ؟"}},
+     {wordType:"noun",english:"Who?",arabicBase:"مَنْ؟",forms:{singular:"مَنْ؟"}},
+   ]},
+  {id:"preset-byy1-u3", title:"Bayna Yadayk Book 1 · Unit 3 — Housing", unitId:"1-3", level:"book1", seriesId:BYY1_SERIES,
+   cards:[
+     {wordType:"noun",english:"Furniture",arabicBase:"أَثَاث",forms:{singular:"أَثَاث"}},
+     {wordType:"noun",english:"Armchair / sofa",arabicBase:"أَرِيكَة",forms:{singular:"أَرِيكَة",plural:"أَرَائِك"}},
+     {wordType:"noun",english:"Seller",arabicBase:"بَائِع",forms:{singular:"بَائِع",plural:"بَاعَة"}},
+     {wordType:"noun",english:"Door",arabicBase:"بَاب",forms:{singular:"بَاب",plural:"أَبْوَاب"}},
+     {wordType:"noun",english:"House",arabicBase:"بَيْت",forms:{singular:"بَيْت",plural:"بُيُوت"}},
+     {wordType:"noun",english:"Refrigerator",arabicBase:"ثَلَّاجَة",forms:{singular:"ثَلَّاجَة",plural:"ثَلَّاجَات"}},
+     {wordType:"noun",english:"University",arabicBase:"جَامِعَة",forms:{singular:"جَامِعَة",plural:"جَامِعَات"}},
+     {wordType:"noun",english:"Neighborhood",arabicBase:"حَيّ",forms:{singular:"حَيّ",plural:"أَحْيَاء"}},
+     {wordType:"noun",english:"Floor (of a building)",arabicBase:"دَوْر",forms:{singular:"دَوْر",plural:"أَدْوَار"}},
+     {wordType:"noun",english:"Number",arabicBase:"رَقْم",forms:{singular:"رَقْم",plural:"أَرْقَام"}},
+     {wordType:"noun",english:"Curtain",arabicBase:"سِتَارَة",forms:{singular:"سِتَارَة",plural:"سَتَائِر"}},
+     {wordType:"noun",english:"Carpet / rug",arabicBase:"سَجَّادَة",forms:{singular:"سَجَّادَة",plural:"سَجَاجِيد"}},
+     {wordType:"noun",english:"Water heater",arabicBase:"سَخَّان",forms:{singular:"سَخَّان",plural:"سَخَّانَات"}},
+     {wordType:"noun",english:"Bed",arabicBase:"سَرِير",forms:{singular:"سَرِير",plural:"أَسِرَّة"}},
+     {wordType:"noun",english:"Apartment",arabicBase:"شُقَّة",forms:{singular:"شُقَّة",plural:"شُقَق"}},
+     {wordType:"noun",english:"Thing",arabicBase:"شَيْء",forms:{singular:"شَيْء",plural:"أَشْيَاء"}},
+     {wordType:"noun",english:"Living room",arabicBase:"غُرْفَة جُلُوس",forms:{singular:"غُرْفَة جُلُوس"}},
+     {wordType:"noun",english:"Bedroom",arabicBase:"غُرْفَة نَوْم",forms:{singular:"غُرْفَة نَوْم"}},
+     {wordType:"noun",english:"Oven",arabicBase:"فُرْن",forms:{singular:"فُرْن",plural:"أَفْرَان"}},
+     {wordType:"noun",english:"Mirror",arabicBase:"مِرْآة",forms:{singular:"مِرْآة",plural:"مَرَايَا"}},
+     {wordType:"noun",english:"Tenant",arabicBase:"مُسْتَأْجِر",forms:{singular:"مُسْتَأْجِر",plural:"مُسْتَأْجِرُون"}},
+     {wordType:"noun",english:"Buyer",arabicBase:"مُشْتَرِي",forms:{singular:"مُشْتَرِي",plural:"مُشْتَرُون"}},
+     {wordType:"noun",english:"Airport",arabicBase:"مَطَار",forms:{singular:"مَطَار",plural:"مَطَارَات"}},
+     {wordType:"noun",english:"Kitchen",arabicBase:"مَطْبَخ",forms:{singular:"مَطْبَخ",plural:"مَطَابِخ"}},
+     {wordType:"noun",english:"Monday",arabicBase:"الاثْنَيْن",forms:{singular:"الاثْنَيْن"}},
+     {wordType:"noun",english:"Sunday",arabicBase:"الأَحَد",forms:{singular:"الأَحَد"}},
+     {wordType:"noun",english:"Wednesday",arabicBase:"الأَرْبِعَاء",forms:{singular:"الأَرْبِعَاء"}},
+     {wordType:"noun",english:"Tuesday",arabicBase:"الثُّلَاثَاء",forms:{singular:"الثُّلَاثَاء"}},
+     {wordType:"noun",english:"Friday",arabicBase:"الجُمُعَة",forms:{singular:"الجُمُعَة"}},
+     {wordType:"noun",english:"Thursday",arabicBase:"الخَمِيس",forms:{singular:"الخَمِيس"}},
+     {wordType:"noun",english:"Saturday",arabicBase:"السَّبْت",forms:{singular:"السَّبْت"}},
+     {wordType:"adjective",english:"Beautiful (female)",arabicBase:"جَمِيلَة",forms:{singular:"جَمِيلَة"}},
+     {wordType:"adjective",english:"Near / close",arabicBase:"قَرِيب",forms:{singular:"قَرِيب"}},
+     {wordType:"adjective",english:"Fifth",arabicBase:"خَامِس",forms:{singular:"خَامِس"}},
+     {wordType:"adjective",english:"Rented",arabicBase:"مُؤَجَّر",forms:{singular:"مُؤَجَّر"}},
+     {wordType:"verb",english:"To want",arabicBase:"أَرَادَ",forms:{past:"أَرَادَ",present:"يُرِيدُ",masdar:"إِرَادَة"}},
+     {wordType:"verb",english:"To enter",arabicBase:"دَخَلَ",forms:{past:"دَخَلَ",present:"يَدْخُلُ",masdar:"دُخُول"}},
+     {wordType:"verb",english:"To live / reside",arabicBase:"سَكَنَ",forms:{past:"سَكَنَ",present:"يَسْكُنُ",masdar:"سَكَن"}},
+     {wordType:"noun",english:"How can I help you?",arabicBase:"أَيَّ خِدْمَة؟",forms:{singular:"أَيَّ خِدْمَة؟"}},
+     {wordType:"noun",english:"Please, come in",arabicBase:"تَفَضَّلْ",forms:{singular:"تَفَضَّلْ"}},
+     {wordType:"noun",english:"How many?",arabicBase:"كَمْ؟",forms:{singular:"كَمْ؟"}},
+     {wordType:"noun",english:"What?",arabicBase:"مَاذَا؟",forms:{singular:"مَاذَا؟"}},
+     {wordType:"noun",english:"Please",arabicBase:"مِنْ فَضْلِك",forms:{singular:"مِنْ فَضْلِك"}},
+   ]},
+  {id:"preset-byy1-u4", title:"Bayna Yadayk Book 1 · Unit 4 — Daily Life", unitId:"1-4", level:"book1", seriesId:BYY1_SERIES,
+   cards:[
+     {wordType:"noun",english:"Dishes / plates",arabicBase:"أَطْبَاق",forms:{singular:"أَطْبَاق"}},
+     {wordType:"noun",english:"Television",arabicBase:"تِلْفَاز",forms:{singular:"تِلْفَاز"}},
+     {wordType:"noun",english:"Bus",arabicBase:"حَافِلَة",forms:{singular:"حَافِلَة",plural:"حَافِلَات"}},
+     {wordType:"noun",english:"Clock / hour",arabicBase:"السَّاعَة",forms:{singular:"السَّاعَة",plural:"سَاعَات"}},
+     {wordType:"noun",english:"Car",arabicBase:"سَيَّارَة",forms:{singular:"سَيَّارَة",plural:"سَيَّارَات"}},
+     {wordType:"noun",english:"Morning",arabicBase:"صَبَاح",forms:{singular:"صَبَاح"}},
+     {wordType:"noun",english:"Newspaper",arabicBase:"صَحِيفَة",forms:{singular:"صَحِيفَة",plural:"صُحُف"}},
+     {wordType:"noun",english:"The prayer",arabicBase:"الصَّلَاة",forms:{singular:"الصَّلَاة",plural:"صَلَوَات"}},
+     {wordType:"noun",english:"Book",arabicBase:"كِتَاب",forms:{singular:"كِتَاب",plural:"كُتُب"}},
+     {wordType:"noun",english:"School",arabicBase:"مَدْرَسَة",forms:{singular:"مَدْرَسَة",plural:"مَدَارِس"}},
+     {wordType:"noun",english:"Clothes",arabicBase:"مَلَابِس",forms:{singular:"مَلَابِس"}},
+     {wordType:"noun",english:"Day off / holiday",arabicBase:"يَوْمُ عُطْلَة",forms:{singular:"يَوْمُ عُطْلَة"}},
+     {wordType:"noun",english:"Work day",arabicBase:"يَوْمُ عَمَل",forms:{singular:"يَوْمُ عَمَل"}},
+     {wordType:"adjective",english:"Big / large",arabicBase:"كَبِير",forms:{singular:"كَبِير",plural:"كِبَار"}},
+     {wordType:"adjective",english:"First",arabicBase:"أَوَّل",forms:{singular:"أَوَّل"}},
+     {wordType:"adjective",english:"Second",arabicBase:"ثَانِي",forms:{singular:"ثَانِي"}},
+     {wordType:"adjective",english:"Third",arabicBase:"ثَالِث",forms:{singular:"ثَالِث"}},
+     {wordType:"adjective",english:"Fourth",arabicBase:"رَابِع",forms:{singular:"رَابِع"}},
+     {wordType:"adjective",english:"Early",arabicBase:"مُبَكِّراً",forms:{singular:"مُبَكِّراً"}},
+     {wordType:"adjective",english:"Late",arabicBase:"مُتَأَخِّراً",forms:{singular:"مُتَأَخِّراً"}},
+     {wordType:"verb",english:"To wake up",arabicBase:"اسْتَيْقَظَ",forms:{past:"اسْتَيْقَظَ",present:"يَسْتَيْقِظُ",masdar:"اسْتِيقَاظ"}},
+     {wordType:"verb",english:"To go",arabicBase:"ذَهَبَ",forms:{past:"ذَهَبَ",present:"يَذْهَبُ",masdar:"ذَهَاب"}},
+     {wordType:"verb",english:"To watch",arabicBase:"شَاهَدَ",forms:{past:"شَاهَدَ",present:"يُشَاهِدُ",masdar:"مُشَاهَدَة"}},
+     {wordType:"verb",english:"To wash",arabicBase:"غَسَلَ",forms:{past:"غَسَلَ",present:"يَغْسِلُ",masdar:"غَسْل"}},
+     {wordType:"verb",english:"To do",arabicBase:"فَعَلَ",forms:{past:"فَعَلَ",present:"يَفْعَلُ",masdar:"فِعْل"}},
+     {wordType:"verb",english:"To sweep",arabicBase:"كَنَسَ",forms:{past:"كَنَسَ",present:"يَكْنُسُ",masdar:"كَنْس"}},
+     {wordType:"verb",english:"To iron",arabicBase:"كَوَى",forms:{past:"كَوَى",present:"يَكْوِي",masdar:"كَيّ"}},
+     {wordType:"verb",english:"To sleep",arabicBase:"نَامَ",forms:{past:"نَامَ",present:"يَنَامُ",masdar:"نَوْم"}},
+     {wordType:"noun",english:"When?",arabicBase:"مَتَى؟",forms:{singular:"مَتَى؟"}},
+   ]},
+  {id:"preset-byy1-u5", title:"Bayna Yadayk Book 1 · Unit 5 — Food & Drink", unitId:"1-5", level:"book1", seriesId:BYY1_SERIES,
+   cards:[
      {wordType:"noun",english:"Rice",arabicBase:"أَرُزّ",forms:{singular:"أَرُزّ"}},
-     {wordType:"noun",english:"Apple",arabicBase:"تُفَّاحَة",forms:{singular:"تُفَّاحَة",plural:"تُفَّاح"}},
+     {wordType:"noun",english:"Dates",arabicBase:"تَمْر",forms:{singular:"تَمْر"}},
      {wordType:"noun",english:"Milk",arabicBase:"حَلِيب",forms:{singular:"حَلِيب"}},
+     {wordType:"noun",english:"Bread",arabicBase:"خُبْز",forms:{singular:"خُبْز"}},
+     {wordType:"noun",english:"Chicken",arabicBase:"دَجَاج",forms:{singular:"دَجَاج"}},
+     {wordType:"noun",english:"Husband",arabicBase:"زَوْج",forms:{singular:"زَوْج",plural:"أَزْوَاج"}},
+     {wordType:"noun",english:"Wife",arabicBase:"زَوْجَة",forms:{singular:"زَوْجَة",plural:"زَوْجَات"}},
+     {wordType:"noun",english:"Salad",arabicBase:"سَلَطَة",forms:{singular:"سَلَطَة",plural:"سَلَطَات"}},
+     {wordType:"noun",english:"Fish",arabicBase:"سَمَك",forms:{singular:"سَمَك"}},
+     {wordType:"noun",english:"Tea",arabicBase:"شَاي",forms:{singular:"شَاي"}},
+     {wordType:"noun",english:"Guests",arabicBase:"ضُيُوف",forms:{singular:"ضُيُوف"}},
+     {wordType:"noun",english:"Food",arabicBase:"طَعَام",forms:{singular:"طَعَام"}},
+     {wordType:"noun",english:"Dinner",arabicBase:"عَشَاء",forms:{singular:"عَشَاء"}},
+     {wordType:"noun",english:"Grapes",arabicBase:"عِنَب",forms:{singular:"عِنَب"}},
+     {wordType:"noun",english:"Lunch",arabicBase:"غَدَاء",forms:{singular:"غَدَاء"}},
+     {wordType:"noun",english:"Fruit",arabicBase:"فَاكِهَة",forms:{singular:"فَاكِهَة",plural:"فَوَاكِه"}},
+     {wordType:"noun",english:"Breakfast",arabicBase:"فُطُور",forms:{singular:"فُطُور"}},
+     {wordType:"noun",english:"Coffee",arabicBase:"قَهْوَة",forms:{singular:"قَهْوَة"}},
+     {wordType:"noun",english:"Meat",arabicBase:"لَحْم",forms:{singular:"لَحْم",plural:"لُحُوم"}},
+     {wordType:"noun",english:"Water",arabicBase:"مَاء",forms:{singular:"مَاء"}},
+     {wordType:"noun",english:"Dining table",arabicBase:"مَائِدَة",forms:{singular:"مَائِدَة",plural:"مَوَائِد"}},
+     {wordType:"noun",english:"Traveler (female)",arabicBase:"مُسَافِرَة",forms:{singular:"مُسَافِرَة"}},
+     {wordType:"noun",english:"Hostess / flight attendant",arabicBase:"مُضِيفَة",forms:{singular:"مُضِيفَة"}},
+     {wordType:"noun",english:"Restaurant",arabicBase:"مَطْعَم",forms:{singular:"مَطْعَم",plural:"مَطَاعِم"}},
+     {wordType:"noun",english:"Meal",arabicBase:"وَجْبَة",forms:{singular:"وَجْبَة",plural:"وَجَبَات"}},
+     {wordType:"noun",english:"Weight",arabicBase:"وَزْن",forms:{singular:"وَزْن"}},
+     {wordType:"noun",english:"Day",arabicBase:"يَوْم",forms:{singular:"يَوْم",plural:"أَيَّام"}},
+     {wordType:"noun",english:"Sixty",arabicBase:"سِتُّون",forms:{singular:"سِتُّون"}},
+     {wordType:"adjective",english:"Hungry",arabicBase:"جَوْعَانُ",forms:{singular:"جَوْعَانُ"}},
+     {wordType:"adjective",english:"Fat / plump",arabicBase:"سَمِين",forms:{singular:"سَمِين"}},
+     {wordType:"adjective",english:"Thin / slim",arabicBase:"نَحِيف",forms:{singular:"نَحِيف"}},
+     {wordType:"adjective",english:"Little / few",arabicBase:"قَلِيل",forms:{singular:"قَلِيل"}},
+     {wordType:"adjective",english:"Much / many",arabicBase:"كَثِير",forms:{singular:"كَثِير"}},
+     {wordType:"adjective",english:"First (female)",arabicBase:"أُولَى",forms:{singular:"أُولَى"}},
+     {wordType:"adjective",english:"Second (female)",arabicBase:"ثَانِيَة",forms:{singular:"ثَانِيَة"}},
+     {wordType:"verb",english:"To eat",arabicBase:"أَكَلَ",forms:{past:"أَكَلَ",present:"يَأْكُلُ",masdar:"أَكْل"}},
+     {wordType:"verb",english:"To drink",arabicBase:"شَرِبَ",forms:{past:"شَرِبَ",present:"يَشْرَبُ",masdar:"شُرْب"}},
+     {wordType:"verb",english:"To request / order",arabicBase:"طَلَبَ",forms:{past:"طَلَبَ",present:"يَطْلُبُ",masdar:"طَلَب"}},
+     {wordType:"verb",english:"To prefer",arabicBase:"فَضَّلَ",forms:{past:"فَضَّلَ",present:"يُفَضِّلُ",masdar:"تَفْضِيل"}},
+     {wordType:"noun",english:"You're welcome / excuse me",arabicBase:"عَفْواً",forms:{singular:"عَفْواً"}},
+     {wordType:"noun",english:"Why?",arabicBase:"لِمَاذَا؟",forms:{singular:"لِمَاذَا؟"}},
+   ]},
+  {id:"preset-byy1-u6", title:"Bayna Yadayk Book 1 · Unit 6 — Prayer (Salah)", unitId:"1-6", level:"book1", seriesId:BYY1_SERIES,
+   cards:[
+     {wordType:"noun",english:"Airplane",arabicBase:"طَائِرَة",forms:{singular:"طَائِرَة",plural:"طَائِرَات"}},
+     {wordType:"noun",english:"Noon / Dhuhr prayer",arabicBase:"الظُّهْر",forms:{singular:"الظُّهْر"}},
+     {wordType:"noun",english:"Evening / Isha prayer",arabicBase:"العِشَاء",forms:{singular:"العِشَاء"}},
+     {wordType:"noun",english:"Afternoon / Asr prayer",arabicBase:"العَصْر",forms:{singular:"العَصْر"}},
+     {wordType:"noun",english:"Sunset / Maghrib prayer",arabicBase:"المَغْرِب",forms:{singular:"المَغْرِب"}},
+     {wordType:"noun",english:"Prayers",arabicBase:"صَلَوَات",forms:{singular:"صَلَوَات"}},
+     {wordType:"noun",english:"Night",arabicBase:"لَيْل",forms:{singular:"لَيْل"}},
+     {wordType:"noun",english:"Madinah, the Enlightened City",arabicBase:"المَدِينَة المُنَوَّرَة",forms:{singular:"المَدِينَة المُنَوَّرَة"}},
+     {wordType:"noun",english:"The Sacred Mosque (Makkah)",arabicBase:"المَسْجِد الحَرَام",forms:{singular:"المَسْجِد الحَرَام"}},
+     {wordType:"noun",english:"The Prophet's Mosque",arabicBase:"المَسْجِد النَّبَوِيّ",forms:{singular:"المَسْجِد النَّبَوِيّ"}},
+     {wordType:"noun",english:"Makkah",arabicBase:"مَكَّة",forms:{singular:"مَكَّة"}},
+     {wordType:"noun",english:"Alarm clock",arabicBase:"مُنَبِّه",forms:{singular:"مُنَبِّه",plural:"مُنَبِّهَات"}},
+     {wordType:"noun",english:"A good idea",arabicBase:"فِكْرَة طَيِّبَة",forms:{singular:"فِكْرَة طَيِّبَة"}},
+     {wordType:"adjective",english:"Far",arabicBase:"بَعِيد",forms:{singular:"بَعِيد"}},
+     {wordType:"adjective",english:"Sick",arabicBase:"مَرِيض",forms:{singular:"مَرِيض"}},
+     {wordType:"adjective",english:"Lazy",arabicBase:"كَسْلَانُ",forms:{singular:"كَسْلَانُ"}},
+     {wordType:"adjective",english:"Correct / right",arabicBase:"صَحِيحٌ",forms:{singular:"صَحِيحٌ"}},
+     {wordType:"adjective",english:"Sorry",arabicBase:"آسِفٌ",forms:{singular:"آسِفٌ"}},
+     {wordType:"adjective",english:"Going (on one's way)",arabicBase:"ذَاهِبٌ",forms:{singular:"ذَاهِبٌ"}},
+     {wordType:"adjective",english:"Better / best",arabicBase:"أَفْضَلُ",forms:{singular:"أَفْضَلُ"}},
+     {wordType:"adjective",english:"Sixth",arabicBase:"سَادِس",forms:{singular:"سَادِس"}},
+     {wordType:"adjective",english:"Seventh",arabicBase:"سَابِع",forms:{singular:"سَابِع"}},
+     {wordType:"adjective",english:"Eighth",arabicBase:"ثَامِن",forms:{singular:"ثَامِن"}},
+     {wordType:"adjective",english:"Ninth",arabicBase:"تَاسِع",forms:{singular:"تَاسِع"}},
+     {wordType:"adjective",english:"Tenth",arabicBase:"عَاشِر",forms:{singular:"عَاشِر"}},
+     {wordType:"verb",english:"To be able to",arabicBase:"اسْتَطَاعَ",forms:{past:"اسْتَطَاعَ",present:"يَسْتَطِيعُ",masdar:"اسْتِطَاعَة"}},
+     {wordType:"verb",english:"To wait",arabicBase:"انْتَظَرَ",forms:{past:"انْتَظَرَ",present:"يَنْتَظِرُ",masdar:"انْتِظَار"}},
+     {wordType:"verb",english:"To hear",arabicBase:"سَمِعَ",forms:{past:"سَمِعَ",present:"يَسْمَعُ",masdar:"سَمْع"}},
+     {wordType:"verb",english:"To work / do",arabicBase:"عَمِلَ",forms:{past:"عَمِلَ",present:"يَعْمَلُ",masdar:"عَمَل"}},
+     {wordType:"verb",english:"To put / place",arabicBase:"وَضَعَ",forms:{past:"وَضَعَ",present:"يَضَعُ",masdar:"وَضْع"}},
+     {wordType:"noun",english:"To where?",arabicBase:"إِلَى أَيْنَ؟",forms:{singular:"إِلَى أَيْنَ؟"}},
+     {wordType:"noun",english:"God willing",arabicBase:"إِنْ شَاءَ الله",forms:{singular:"إِنْ شَاءَ الله"}},
+     {wordType:"noun",english:"May God reward you with good",arabicBase:"جَزَاكَ اللَّهُ خَيْراً",forms:{singular:"جَزَاكَ اللَّهُ خَيْراً"}},
+     {wordType:"noun",english:"Next to / beside",arabicBase:"بِجَانِب",forms:{singular:"بِجَانِب"}},
+   ]},
+  {id:"preset-byy1-u7", title:"Bayna Yadayk Book 1 · Unit 7 — Study", unitId:"1-7", level:"book1", seriesId:BYY1_SERIES,
+   cards:[
+     {wordType:"noun",english:"Exam / test",arabicBase:"اخْتِبَار",forms:{singular:"اخْتِبَار",plural:"اخْتِبَارَات"}},
+     {wordType:"noun",english:"Week",arabicBase:"أُسْبُوع",forms:{singular:"أُسْبُوع",plural:"أَسَابِيع"}},
+     {wordType:"noun",english:"Break / recess",arabicBase:"اسْتِرَاحَة",forms:{singular:"اسْتِرَاحَة"}},
+     {wordType:"noun",english:"Month",arabicBase:"شَهْر",forms:{singular:"شَهْر",plural:"أَشْهُر"}},
+     {wordType:"noun",english:"Islamic culture",arabicBase:"ثَقَافَة إِسْلَامِيَّة",forms:{singular:"ثَقَافَة إِسْلَامِيَّة"}},
+     {wordType:"noun",english:"Study schedule / timetable",arabicBase:"جَدْوَلٌ دِرَاسِيّ",forms:{singular:"جَدْوَلٌ دِرَاسِيّ"}},
+     {wordType:"noun",english:"Computer",arabicBase:"حَاسُوب",forms:{singular:"حَاسُوب",plural:"حَوَاسِيب"}},
+     {wordType:"noun",english:"Class period / lesson",arabicBase:"حِصَّة",forms:{singular:"حِصَّة",plural:"حِصَص"}},
+     {wordType:"noun",english:"Study / studying",arabicBase:"دِرَاسَة",forms:{singular:"دِرَاسَة"}},
+     {wordType:"noun",english:"Ramadan",arabicBase:"رَمَضَان",forms:{singular:"رَمَضَان"}},
+     {wordType:"noun",english:"Mathematics",arabicBase:"رِيَاضِيَّات",forms:{singular:"رِيَاضِيَّات"}},
+     {wordType:"noun",english:"Sha'ban (month name)",arabicBase:"شَعْبَان",forms:{singular:"شَعْبَان"}},
+     {wordType:"noun",english:"Classroom / grade level",arabicBase:"صَفّ دِرَاسِيّ",forms:{singular:"صَفّ دِرَاسِيّ",plural:"صُفُوف"}},
+     {wordType:"noun",english:"Academic year",arabicBase:"عَامٌ دِرَاسِيّ",forms:{singular:"عَامٌ دِرَاسِيّ"}},
+     {wordType:"noun",english:"Vacation / holiday",arabicBase:"عُطْلَة",forms:{singular:"عُطْلَة",plural:"عُطَل"}},
+     {wordType:"noun",english:"Sciences",arabicBase:"عُلُوم",forms:{singular:"عُلُوم"}},
+     {wordType:"noun",english:"College of Education",arabicBase:"كُلِّيَّةُ التَّرْبِيَة",forms:{singular:"كُلِّيَّةُ التَّرْبِيَة"}},
+     {wordType:"noun",english:"College of Medicine",arabicBase:"كُلِّيَّةُ الطِّبّ",forms:{singular:"كُلِّيَّةُ الطِّبّ"}},
+     {wordType:"noun",english:"Arabic language",arabicBase:"لُغَةٌ عَرَبِيَّةٌ",forms:{singular:"لُغَةٌ عَرَبِيَّةٌ"}},
+     {wordType:"noun",english:"Board / panel",arabicBase:"لَوْحَة",forms:{singular:"لَوْحَة",plural:"لَوْحَات"}},
+     {wordType:"noun",english:"Laboratory",arabicBase:"مُخْتَبَر",forms:{singular:"مُخْتَبَر",plural:"مُخْتَبَرَات"}},
+     {wordType:"noun",english:"Teacher (female)",arabicBase:"مُدَرِّسَة",forms:{singular:"مُدَرِّسَة",plural:"مُدَرِّسَات"}},
+     {wordType:"noun",english:"Teacher (male)",arabicBase:"مُعَلِّم",forms:{singular:"مُعَلِّم",plural:"مُعَلِّمُون"}},
+     {wordType:"noun",english:"Library / bookstore",arabicBase:"مَكْتَبَة",forms:{singular:"مَكْتَبَة",plural:"مَكْتَبَات"}},
+     {wordType:"noun",english:"Study subjects / materials",arabicBase:"مَوَادّ دِرَاسِيَّة",forms:{singular:"مَوَادّ دِرَاسِيَّة"}},
+     {wordType:"noun",english:"Time",arabicBase:"وَقْت",forms:{singular:"وَقْت",plural:"أَوْقَات"}},
+     {wordType:"noun",english:"School day",arabicBase:"يَوْمٌ دِرَاسِيّ",forms:{singular:"يَوْمٌ دِرَاسِيّ"}},
+     {wordType:"noun",english:"Now",arabicBase:"الآنَ",forms:{singular:"الآنَ"}},
+     {wordType:"adjective",english:"Long (female)",arabicBase:"طَوِيلَة",forms:{singular:"طَوِيلَة"}},
+     {wordType:"verb",english:"To finish / end",arabicBase:"انْتَهَى",forms:{past:"انْتَهَى",present:"يَنْتَهِي",masdar:"انْتِهَاء"}},
+     {wordType:"verb",english:"To begin",arabicBase:"بَدَأَ",forms:{past:"بَدَأَ",present:"يَبْدَأُ",masdar:"بَدْء"}},
+     {wordType:"verb",english:"To come",arabicBase:"جَاءَ",forms:{past:"جَاءَ",present:"يَجِيء",masdar:"مَجِيء"}},
+     {wordType:"verb",english:"To study",arabicBase:"دَرَسَ",forms:{past:"دَرَسَ",present:"يَدْرُسُ",masdar:"دِرَاسَة"}},
+     {wordType:"verb",english:"To be",arabicBase:"كَانَ",forms:{past:"كَانَ",present:"يَكُونُ",masdar:"كَوْن"}},
+     {wordType:"verb",english:"To write",arabicBase:"كَتَبَ",forms:{past:"كَتَبَ",present:"يَكْتُبُ",masdar:"كِتَابَة"}},
+     {wordType:"verb",english:"To look",arabicBase:"نَظَرَ",forms:{past:"نَظَرَ",present:"يَنْظُرُ",masdar:"نَظَر"}},
+   ]},
+  {id:"preset-byy1-u8", title:"Bayna Yadayk Book 1 · Unit 8 — Work", unitId:"1-8", level:"book1", seriesId:BYY1_SERIES,
+   cards:[
+     {wordType:"noun",english:"Child",arabicBase:"طِفْل",forms:{singular:"طِفْل",plural:"أَطْفَال"}},
+     {wordType:"noun",english:"Nursing (the field)",arabicBase:"تَمْرِيض",forms:{singular:"تَمْرِيض"}},
+     {wordType:"noun",english:"Clock / watch",arabicBase:"سَاعَة",forms:{singular:"سَاعَة",plural:"سَاعَات"}},
+     {wordType:"noun",english:"Tourism",arabicBase:"سِيَاحَة",forms:{singular:"سِيَاحَة"}},
+     {wordType:"noun",english:"Company",arabicBase:"شَرِكَة",forms:{singular:"شَرِكَة",plural:"شَرِكَات"}},
+     {wordType:"noun",english:"Pharmacist",arabicBase:"صَيْدَلِيّ",forms:{singular:"صَيْدَلِيّ",plural:"صَيَادِلَة"}},
+     {wordType:"noun",english:"Pharmacy (the field)",arabicBase:"صَيْدَلَة",forms:{singular:"صَيْدَلَة"}},
+     {wordType:"noun",english:"Doctor",arabicBase:"طَبِيب",forms:{singular:"طَبِيب",plural:"أَطِبَّاء"}},
+     {wordType:"noun",english:"Medicine (the field)",arabicBase:"طِبّ",forms:{singular:"طِبّ"}},
+     {wordType:"noun",english:"Students",arabicBase:"طُلَّاب",forms:{singular:"طُلَّاب"}},
+     {wordType:"noun",english:"Pilot",arabicBase:"طَيَّار",forms:{singular:"طَيَّار",plural:"طَيَّارُون"}},
+     {wordType:"noun",english:"Aviation (the field)",arabicBase:"طَيَرَان",forms:{singular:"طَيَرَان"}},
+     {wordType:"noun",english:"Work / job",arabicBase:"عَمَل",forms:{singular:"عَمَل",plural:"أَعْمَال"}},
+     {wordType:"noun",english:"College of Nursing",arabicBase:"كُلِّيَّةُ التَّمْرِيض",forms:{singular:"كُلِّيَّةُ التَّمْرِيض"}},
+     {wordType:"noun",english:"College of Pharmacy",arabicBase:"كُلِّيَّةُ الصَّيْدَلَة",forms:{singular:"كُلِّيَّةُ الصَّيْدَلَة"}},
+     {wordType:"noun",english:"College of Aviation",arabicBase:"كُلِّيَّةُ الطَّيَرَان",forms:{singular:"كُلِّيَّةُ الطَّيَرَان"}},
+     {wordType:"noun",english:"College of Engineering",arabicBase:"كُلِّيَّةُ الهَنْدَسَة",forms:{singular:"كُلِّيَّةُ الهَنْدَسَة"}},
+     {wordType:"noun",english:"Primary / elementary stage",arabicBase:"مَرْحَلَة ابْتِدَائِيَّة",forms:{singular:"مَرْحَلَة ابْتِدَائِيَّة"}},
+     {wordType:"noun",english:"Middle / intermediate stage",arabicBase:"مَرْحَلَة مُتَوَسِّطَة",forms:{singular:"مَرْحَلَة مُتَوَسِّطَة"}},
+     {wordType:"noun",english:"Hospital",arabicBase:"مُسْتَشْفى",forms:{singular:"مُسْتَشْفى",plural:"مُسْتَشْفَيَات"}},
+     {wordType:"noun",english:"Nurse (male)",arabicBase:"مُمَرِّض",forms:{singular:"مُمَرِّض",plural:"مُمَرِّضُون"}},
+     {wordType:"noun",english:"Profession",arabicBase:"مِهْنَة",forms:{singular:"مِهْنَة",plural:"مِهَن"}},
+     {wordType:"noun",english:"Engineering (the field)",arabicBase:"هَنْدَسَة",forms:{singular:"هَنْدَسَة"}},
+     {wordType:"noun",english:"Eleven (female)",arabicBase:"حَادِيَة عَشْرَة",forms:{singular:"حَادِيَة عَشْرَة"}},
+     {wordType:"verb",english:"To love / like",arabicBase:"أَحَبَّ",forms:{past:"أَحَبَّ",present:"يُحِبُّ",masdar:"حُبّ"}},
+     {wordType:"verb",english:"To teach",arabicBase:"دَرَّسَ",forms:{past:"دَرَّسَ",present:"يُدَرِّسُ",masdar:"تَدْرِيس"}},
+     {wordType:"verb",english:"To help",arabicBase:"سَاعَدَ",forms:{past:"سَاعَدَ",present:"يُسَاعِدُ",masdar:"مُسَاعَدَة"}},
+     {wordType:"verb",english:"To travel",arabicBase:"سَافَرَ",forms:{past:"سَافَرَ",present:"يُسَافِرُ",masdar:"سَفَر"}},
    ]},
 ];
 // Best-effort central layer. Returns [] (and never throws) if the collection is
@@ -4472,6 +4759,27 @@ function downloadPreset(pd){
   const deck={id:`d${now}`,title:pd.title,createdAt:now,...(pd.unitId?{unitId:pd.unitId,level:pd.level||(unitById(pd.unitId)?.level)}:{})};
   window.dispatchEvent(new CustomEvent("importDeck",{detail:{deck,cards}}));
   return cards.length;
+}
+// Bulk version — downloads several presets (e.g. a whole book's worth of
+// units) as ONE combined import instead of calling downloadPreset in a loop.
+// Firing 8 separate "importDeck" events back-to-back would all get picked up
+// by the same (not-yet-re-rendered) event listener closure, each computing
+// `newDecks=[d,...decks]` off the SAME stale `decks` snapshot — only the
+// last of the 8 would actually survive. Dispatching one "importDecks" event
+// with the whole batch avoids that entirely: the app does one state update
+// and one save for everything at once.
+function downloadPresets(pds){
+  const now=Date.now();
+  const decks=[]; const cardsByDeckId={}; let total=0;
+  pds.forEach((pd,pi)=>{
+    const deckId=`d${now}-${pi}`;
+    const cards=(pd.cards||[]).map((c,i)=>({...c,id:`c${now}-${pi}-${i}`,status:"new"}));
+    decks.push({id:deckId,title:pd.title,createdAt:now+pi,...(pd.unitId?{unitId:pd.unitId,level:pd.level||(unitById(pd.unitId)?.level)}:{})});
+    cardsByDeckId[deckId]=cards;
+    total+=cards.length;
+  });
+  window.dispatchEvent(new CustomEvent("importDecks",{detail:{decks,cardsByDeckId}}));
+  return total;
 }
 
 const CONTEXT_FIELDS=[
@@ -7539,6 +7847,13 @@ function PresetLibraryScreen({profile,decks,onBack}){
   const wl=profile?.workingLevel;
   const filtered=(onlyMyLevel&&wl)?list.filter(d=>d.level===wl):list;
   const owned=new Set((decks||[]).map(d=>d.title));
+  // Group decks sharing a seriesId (e.g. all 8 units of one book/part) so a
+  // whole series can be downloaded in one tap instead of one at a time.
+  const seriesIds=[...new Set(filtered.map(d=>d.seriesId).filter(Boolean))];
+  const seriesGroups=seriesIds.map(sid=>({
+    seriesId:sid,
+    decks:filtered.filter(d=>d.seriesId===sid).sort((a,b)=>(unitById(a.unitId)?.index||0)-(unitById(b.unitId)?.index||0)),
+  }));
   return (
     <div className="screen">
       <Hdr title="Preset Library" sub="Starter decks" onBack={onBack}/>
@@ -7553,6 +7868,23 @@ function PresetLibraryScreen({profile,decks,onBack}){
           </div>
         )}
         {filtered.length===0&&<div style={{textAlign:"center",color:"var(--text3)",fontSize:14,padding:"32px 0"}}><Layers size={26} style={{opacity:.3,marginBottom:8}}/><br/>No preset decks for this level yet.</div>}
+        {seriesGroups.map(({seriesId,decks:seriesDecks})=>{
+          const totalCards=seriesDecks.reduce((s,d)=>s+(d.cards||[]).length,0);
+          const book=seriesDecks[0]?.unitId?unitById(seriesDecks[0].unitId):null;
+          return (
+            <div key={seriesId} className="module-card" style={{alignItems:"flex-start",cursor:"default",background:"var(--accent-bg)",border:"1.5px solid var(--accent-border)"}}>
+              <div style={{width:40,height:40,borderRadius:12,background:"var(--accent)",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}><Download size={18} color="#fff"/></div>
+              <div style={{flex:1,minWidth:0}}>
+                <div style={{fontWeight:700,fontSize:14}}>Whole book · {seriesDecks.length} units</div>
+                <div style={{fontSize:11.5,color:"var(--text3)",marginTop:2}}>{totalCards} cards total{book?` · ${levelById(book.level).cefr}`:""}</div>
+              </div>
+              <button className="btn btn-sm" onClick={()=>{const n=downloadPresets(seriesDecks);showToast(`Downloading ${seriesDecks.length} decks (${n} cards)…`,"info");}}
+                style={{background:"var(--accent)",color:"#fff",flexShrink:0,alignSelf:"center",gap:5,fontSize:12.5}}>
+                <Download size={13}/> Download all {seriesDecks.length}
+              </button>
+            </div>
+          );
+        })}
         {filtered.map(pd=>{
           const u=pd.unitId?unitById(pd.unitId):null;
           const already=owned.has(pd.title);
@@ -8142,6 +8474,29 @@ export default function App() {
     };
     window.addEventListener("importDeck",handler);
     return ()=>window.removeEventListener("importDeck",handler);
+  },[decks,cardStates,user,settings,usage,studyLog,profile]);
+
+  // Handle bulk deck import (e.g. "download all 8 units") — see
+  // downloadPresets: one combined state update + one save for the whole
+  // batch, instead of N separate importDeck events racing each other.
+  useEffect(()=>{
+    const handler=async(e)=>{
+      const {decks:newDeckList,cardsByDeckId}=e.detail;
+      const newDecks=[...newDeckList,...decks];
+      const newCardStates={...cardStates,...cardsByDeckId};
+      setDecks(newDecks);
+      setCardStates(newCardStates);
+      showToast(`Saving ${newDeckList.length} decks…`,"info");
+      try {
+        await flushSaveNow(newDecks,newCardStates,newDeckList.map(d=>d.id));
+        showToast(`${newDeckList.length} decks imported`,"success");
+      } catch(err) {
+        console.error("Save error:",err);
+        showToast("Couldn't save to the cloud — check your connection and try again before closing this tab.","error");
+      }
+    };
+    window.addEventListener("importDecks",handler);
+    return ()=>window.removeEventListener("importDecks",handler);
   },[decks,cardStates,user,settings,usage,studyLog,profile]);
 
   // Keep module-level refs in sync — picked up automatically by callClaude /
