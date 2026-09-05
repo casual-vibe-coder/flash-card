@@ -737,6 +737,26 @@ let _autoGenerateImage = false; // opt-in per learning aid; off by default
 
 function pickModelForTag(tag){return _modelByTag[tag]||_defaultModel;}
 
+// A batch-heavy import (many photos in one go) means many sequential /api/claude
+// calls, each individually caught per-batch — but a serverless platform-level
+// failure (function timeout, gateway error) doesn't come back as JSON at all,
+// it comes back as an HTML error page or empty body. Blindly calling res.json()
+// on that throws a cryptic "Unexpected token < in JSON" that tells the user
+// (and the warning banner they see) nothing useful about what actually
+// happened. Surface the real HTTP status instead.
+async function parseAIResponse(res){
+  let bodyText;
+  try { bodyText=await res.text(); }
+  catch { throw new Error(`AI request failed (HTTP ${res.status}, couldn't read response).`); }
+  let d;
+  try { d=JSON.parse(bodyText); }
+  catch {
+    throw new Error(res.ok
+      ? "AI returned an unreadable response — try again, or with fewer images at once."
+      : `AI request failed (HTTP ${res.status}) — try again, or with fewer images at once.`);
+  }
+  return d;
+}
 async function callClaude(prompt, maxTokens=1500, tag="other", trackFn=null, timeoutMs=null) {
   // Optional client-side timeout so a hung request fails fast instead of
   // leaving the UI spinning forever (used by quick interactive calls like
@@ -755,7 +775,7 @@ async function callClaude(prompt, maxTokens=1500, tag="other", trackFn=null, tim
       }),
       ...(ctrl ? {signal:ctrl.signal} : {}),
     });
-    const d = await res.json();
+    const d = await parseAIResponse(res);
     if(d.error) throw new Error(typeof d.error==="string"?d.error:(d.error.message||"AI request failed"));
     // api/claude.js normalises OpenRouter response → {content:[{type:"text",text}], usage:{input_tokens, output_tokens}}
     const outputText = d.content?.find(b=>b.type==="text")?.text || "";
@@ -791,7 +811,7 @@ async function callClaudeVision(content, maxTokens=3000, tag="other", trackFn=nu
       ..._orKey ? {apiKey:_orKey} : {},
     }),
   });
-  const d = await res.json();
+  const d = await parseAIResponse(res);
   if(d.error) throw new Error(typeof d.error==="string"?d.error:(d.error.message||"AI request failed"));
   const outputText = d.content?.find(b=>b.type==="text")?.text || "";
   if(!outputText) throw new Error("Empty response from AI — check your API key in Settings.");
