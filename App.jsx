@@ -1610,12 +1610,17 @@ function daysAgoLabel(ts){
 
 // Shared deck-card renderer for the Home lists (vocab + grammar sections).
 // Shows weak/known/new pills so untouched cards are visible at a glance.
-function renderDeckCard(deck,cardStates,onOpenDeck,isGrammar=false){
+function renderDeckCard(deck,cardStates,onOpenDeck,isGrammar=false,poolThresholdDays){
   const dc=cardStates[deck.id]||[];
   const weak=dc.filter(c=>c.status==="weak").length;
   const known=dc.filter(c=>c.status==="known").length;
   const newC=dc.length-weak-known;
   const pct=dc.length>0?Math.round((known/dc.length)*100):0;
+  // Countdown badge is NEW-pool only — once a deck is in Rotation (old pool)
+  // there's no "days left" to show, it just cycles indefinitely.
+  const threshold=poolThresholdDays||NEW_POOL_DEFAULT_THRESHOLD_DAYS;
+  const inNewPool=!isGrammar&&getDeckPool(deck,threshold)==="new";
+  const daysLeft=inNewPool?Math.max(0,threshold-Math.floor((Date.now()-(deck.createdAt||0))/86400000)):null;
   return (
     <button key={deck.id} className="btn" onClick={()=>onOpenDeck(deck)}
       style={{background:"var(--surface)",border:"1.5px solid var(--border)",borderRadius:"var(--r)",padding:"15px 17px",textAlign:"left",width:"100%",flexDirection:"column",alignItems:"stretch",gap:8}}>
@@ -1631,6 +1636,11 @@ function renderDeckCard(deck,cardStates,onOpenDeck,isGrammar=false){
         {weak>0&&<span className="tag tag-weak">{weak} weak</span>}
         {known>0&&<span className="tag tag-know">{known} known</span>}
         {newC>0&&<span style={{fontSize:11,fontWeight:600,color:"var(--text3)",background:"var(--surface2)",border:"1px solid var(--border)",borderRadius:100,padding:"2px 9px"}}>{newC} new</span>}
+        {inNewPool&&(
+          <span style={{fontSize:11,fontWeight:600,color:"var(--accent)",background:"var(--accent-bg)",border:"1px solid var(--accent-border)",borderRadius:100,padding:"2px 9px",display:"inline-flex",alignItems:"center",gap:4}}>
+            <Sparkles size={10}/> {deck.pinnedNew?"Pinned":`${daysLeft}d left`}
+          </span>
+        )}
         {!isGrammar&&<span style={{fontSize:11,color:"var(--text3)",marginLeft:"auto"}}>{daysAgoLabel(deck.lastStudiedAt)}</span>}
       </div>
       <div className="progress-track"><div className="progress-fill" style={{width:`${pct}%`,background:"var(--know)"}}/></div>
@@ -1638,7 +1648,7 @@ function renderDeckCard(deck,cardStates,onOpenDeck,isGrammar=false){
   );
 }
 
-function HomeScreen({decks,cardStates,onOpenDeck,onSettings,onCreateDeck,onReading,onListening,onConversation,onDictation,onCapsules,onSearch,onProgress,onMasterReview,onGuide,onPresets,onGrammarImport,onVocabImport,darkMode,onToggleDark,studyLog}) {
+function HomeScreen({decks,cardStates,onOpenDeck,onSettings,onCreateDeck,onReading,onListening,onConversation,onDictation,onCapsules,onSearch,onProgress,onMasterReview,onGuide,onPresets,onGrammarImport,onVocabImport,darkMode,onToggleDark,studyLog,poolThresholdDays}) {
   const [deckSort,setDeckSort]=useState(()=>localStorage.getItem("arabic_fc_deck_sort")||"newest");
   useEffect(()=>{localStorage.setItem("arabic_fc_deck_sort",deckSort);},[deckSort]);
   const sortDecks=(arr)=>{
@@ -1807,7 +1817,7 @@ function HomeScreen({decks,cardStates,onOpenDeck,onSettings,onCreateDeck,onReadi
         </button>
         {vocabDecks.length===0&&<div style={{textAlign:"center",color:"var(--text3)",fontSize:14,padding:"36px 0"}}><Layers size={28} style={{opacity:.3,marginBottom:8}}/><br/>No decks yet — create one, download a preset, or import vocabulary above.</div>}
         <div style={{display:"flex",flexDirection:"column",gap:9}}>
-          {vocabDecks.map(deck=>renderDeckCard(deck,cardStates,onOpenDeck))}
+          {vocabDecks.map(deck=>renderDeckCard(deck,cardStates,onOpenDeck,false,poolThresholdDays))}
         </div>
 
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginTop:22,marginBottom:10}}>
@@ -7818,6 +7828,11 @@ function MasterReviewScreen({decks,cardStates,onBack,onSwipeCard,onUndoSwipe,onD
   const [started,setStarted]=useState(saved.started||false);
   const [mode,setMode]=useState(saved.mode||"smart");
   const [limit,setLimit]=useState(saved.limit||50);
+  const LIMIT_PRESETS=[20,50,100,150,200,999];
+  // Reopen the custom field automatically if a saved session's limit isn't
+  // one of the presets — otherwise it'd look like nothing was selected.
+  const [customLimitOpen,setCustomLimitOpen]=useState(()=>!LIMIT_PRESETS.includes(saved.limit||50));
+  const [customLimitInput,setCustomLimitInput]=useState(()=>String(saved.limit||50));
   const [masterModulePool,setMasterModulePool]=useState(saved.masterModulePool||"all");
   const [sessionCards,setSessionCards]=useState(()=>hydrateSessionCards(saved.sessionCards,cardStates));
   // Clamp in case a card in the saved session was deleted while paused —
@@ -8268,12 +8283,28 @@ Return ONLY valid JSON: {"sentence":"...","translation":"...","imagePrompt":"...
         <div>
           <div className="sec">Cards Per Session</div>
           <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
-            {[20,50,100,150,200,999].map(n=>(
-              <button key={n} className={`chip ${limit===n?"chip-on":""}`} onClick={()=>setLimit(n)} style={{flex:1,justifyContent:"center",padding:"8px 0",fontSize:12,minWidth:48}}>
+            {LIMIT_PRESETS.map(n=>(
+              <button key={n} className={`chip ${!customLimitOpen&&limit===n?"chip-on":""}`}
+                onClick={()=>{setCustomLimitOpen(false);setLimit(n);}} style={{flex:1,justifyContent:"center",padding:"8px 0",fontSize:12,minWidth:48}}>
                 {n>=999?"All":n}
               </button>
             ))}
+            <button className={`chip ${customLimitOpen?"chip-on":""}`}
+              onClick={()=>{setCustomLimitOpen(true);setCustomLimitInput(String(limit));}} style={{flex:1,justifyContent:"center",padding:"8px 0",fontSize:12,minWidth:48}}>
+              Custom
+            </button>
           </div>
+          {customLimitOpen&&(
+            <input type="number" min="1" inputMode="numeric" className="input" placeholder="Number of cards" autoFocus
+              value={customLimitInput}
+              onChange={e=>{
+                const v=e.target.value;
+                setCustomLimitInput(v);
+                const n=parseInt(v,10);
+                if(n>0) setLimit(n);
+              }}
+              style={{marginTop:8,fontSize:13,padding:"9px 10px"}}/>
+          )}
         </div>
 
         {/* Mode selection */}
@@ -10898,7 +10929,7 @@ export default function App() {
   const commonProps={decks,cardStates,trackUsage};
 
   const screens={
-    home:<HomeScreen {...commonProps} onOpenDeck={openDeck} onSettings={()=>go("settings")} onCreateDeck={()=>go("createDeck")} onReading={()=>go("reading")} onListening={()=>go("listening")} onConversation={()=>go("conversation")} onDictation={()=>go("dictation")} onCapsules={()=>go("capsules")} onSearch={()=>setShowSearch(true)} onProgress={()=>go("progress")} onMasterReview={()=>go("masterReview")} onGuide={()=>go("guide")} onPresets={()=>go("preset")} onGrammarImport={()=>{setGrammarTarget(null);go("grammarImport");}} onVocabImport={()=>{setVocabTarget(null);go("vocabImport");}} darkMode={darkMode} onToggleDark={()=>setDarkMode(d=>!d)} studyLog={studyLog}/>,
+    home:<HomeScreen {...commonProps} onOpenDeck={openDeck} onSettings={()=>go("settings")} onCreateDeck={()=>go("createDeck")} onReading={()=>go("reading")} onListening={()=>go("listening")} onConversation={()=>go("conversation")} onDictation={()=>go("dictation")} onCapsules={()=>go("capsules")} onSearch={()=>setShowSearch(true)} onProgress={()=>go("progress")} onMasterReview={()=>go("masterReview")} onGuide={()=>go("guide")} onPresets={()=>go("preset")} onGrammarImport={()=>{setGrammarTarget(null);go("grammarImport");}} onVocabImport={()=>{setVocabTarget(null);go("vocabImport");}} darkMode={darkMode} onToggleDark={()=>setDarkMode(d=>!d)} studyLog={studyLog} poolThresholdDays={getPoolThresholdDays(settings)}/>,
     grammarImport:<GrammarImportScreen key={grammarTarget?.id||"new"} onBack={()=>{setGrammarTarget(null);go("home");}} trackUsage={trackUsage} onSave={saveGrammarDeck} targetDeck={grammarTarget}/>,
     vocabImport:<VocabImportScreen key={vocabTarget?.id||"new"} onBack={()=>{setVocabTarget(null);go("home");}} trackUsage={trackUsage} onSave={saveVocabDeck} targetDeck={vocabTarget}/>,
     capsules:<CapsulesScreen profile={profile} onOpen={(s)=>go(s)} onBack={()=>go("home")}/>,
