@@ -370,12 +370,37 @@ const DECK_TOUCH_THRESHOLD = 20;
 // (or one `limit` cut short) could never be rated enough times to count as
 // studied, so it never stops looking stalest and never stops crowding out
 // other decks on every future rotation.
-function deckTouchGoals(cards){
+function deckTouchGoals(cards,cap=DECK_TOUCH_THRESHOLD){
   const counts={};
   for(const c of cards) counts[c._deckId]=(counts[c._deckId]||0)+1;
   const goals={};
-  for(const deckId in counts) goals[deckId]=Math.min(DECK_TOUCH_THRESHOLD,counts[deckId]);
+  for(const deckId in counts) goals[deckId]=Math.min(cap,counts[deckId]);
   return goals;
+}
+// ── Two-pool review (NEW vs OLD) ─────────────────────────────
+// Recent decks (younger than the threshold, or manually pinned) get daily
+// review via "Review New" — every deck, every card, every day. Everything
+// else falls into the Rotation queue above. Pool is derived at READ TIME
+// from `createdAt`/`pinnedNew` — never stored — so changing the threshold
+// in Settings reclassifies every deck immediately, no migration needed.
+const NEW_POOL_DEFAULT_THRESHOLD_DAYS=21;
+const NEW_POOL_MIN_THRESHOLD_DAYS=14;
+const NEW_POOL_MAX_THRESHOLD_DAYS=28;
+function getPoolThresholdDays(settings){
+  const n=settings?.newPoolThresholdDays;
+  if(typeof n!=="number"||Number.isNaN(n)) return NEW_POOL_DEFAULT_THRESHOLD_DAYS;
+  return Math.min(NEW_POOL_MAX_THRESHOLD_DAYS,Math.max(NEW_POOL_MIN_THRESHOLD_DAYS,n));
+}
+function getDeckPool(deck,thresholdDays){
+  if(deck.pinnedNew) return "new";
+  const age=Date.now()-(deck.createdAt||0);
+  return age<thresholdDays*86400000?"new":"old";
+}
+// Local (not UTC) calendar-day key — the "X of Y new decks done today" tally
+// resets at local midnight, since that's when a learner's day actually turns
+// over. TODAY_KEY() elsewhere is UTC-based; deliberately not reused here.
+function localDateKey(d=new Date()){
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
 }
 const OR_MODELS = [
   // OpenAI
@@ -2528,6 +2553,22 @@ function SettingsScreen({settings,setSettings,onBack,usage,user,onSignOut,onRepl
           </div>
         </div>
 
+        {/* Daily Review (two-pool system) */}
+        <div style={{background:"var(--surface)",border:"1.5px solid var(--border)",borderRadius:"var(--r)",padding:"15px 17px"}}>
+          <div style={{display:"flex",alignItems:"center",gap:7,marginBottom:10}}><Sparkles size={14} color="var(--accent)"/><div className="sec" style={{margin:0}}>Daily Review</div></div>
+          <div style={{fontSize:12,color:"var(--text3)",lineHeight:1.6,marginBottom:12}}>
+            A deck younger than this graduates from daily "Review New" into the long-cycle Rotation once it ages out.
+          </div>
+          <div style={{display:"flex",justifyContent:"space-between",marginBottom:5}}>
+            <label className="lbl" style={{margin:0}}>Graduate After</label>
+            <span style={{fontSize:11,color:"var(--text3)",fontFamily:"monospace"}}>{local.newPoolThresholdDays??NEW_POOL_DEFAULT_THRESHOLD_DAYS} days</span>
+          </div>
+          <input type="range" min={NEW_POOL_MIN_THRESHOLD_DAYS} max={NEW_POOL_MAX_THRESHOLD_DAYS} step="1"
+            value={local.newPoolThresholdDays??NEW_POOL_DEFAULT_THRESHOLD_DAYS}
+            onChange={e=>set("newPoolThresholdDays",parseInt(e.target.value,10))} style={{width:"100%"}}/>
+          <div style={{fontSize:11,color:"var(--text3)",marginTop:2}}>{NEW_POOL_MIN_THRESHOLD_DAYS}–{NEW_POOL_MAX_THRESHOLD_DAYS} days · default {NEW_POOL_DEFAULT_THRESHOLD_DAYS}. Pin an individual deck (Deck Options → Keep in Daily Review) to hold it past this regardless.</div>
+        </div>
+
         {/* Study Targets */}
         <div style={{background:"var(--surface)",border:"1.5px solid var(--border)",borderRadius:"var(--r)",padding:"15px 17px"}}>
           <div className="sec">Study Targets</div>
@@ -2786,7 +2827,7 @@ CRITICAL: Every Arabic word MUST have full tashkeel (فَتْحَة ضَمَّة
 // ─────────────────────────────────────────────────────────────
 // DECK SCREEN — with edit/delete deck
 // ─────────────────────────────────────────────────────────────
-function DeckScreen({deck,cards,onStartStudy,onBack,onAddCards,onImportMore,onEditCard,onDeleteCard,onRenameDeck,onDeleteDeck,onSetDeckUnit,onSetDeckLastStudied,savedIdx}) {
+function DeckScreen({deck,cards,onStartStudy,onBack,onAddCards,onImportMore,onEditCard,onDeleteCard,onRenameDeck,onDeleteDeck,onSetDeckUnit,onSetDeckLastStudied,onTogglePinnedNew,onGraduateNow,poolThresholdDays,savedIdx}) {
   const [deckMenu,setDeckMenu]=useState(false);
   const [renaming,setRenaming]=useState(false);
   const [linkingUnit,setLinkingUnit]=useState(false);
@@ -2795,6 +2836,9 @@ function DeckScreen({deck,cards,onStartStudy,onBack,onAddCards,onImportMore,onEd
   const [newTitle,setNewTitle]=useState(deck.title);
   const [confirmDelete,setConfirmDelete]=useState(false);
   const linkedUnit=deck.unitId?unitById(deck.unitId):null;
+  const threshold=poolThresholdDays||NEW_POOL_DEFAULT_THRESHOLD_DAYS;
+  const pool=deck.deckType!=="grammar"?getDeckPool(deck,threshold):null;
+  const daysUntilGraduation=Math.max(0,threshold-Math.floor((Date.now()-(deck.createdAt||0))/86400000));
   const [search,setSearch]=useState("");
   const [statusFilter,setStatusFilter]=useState("all");
   const [studyFilter,setStudyFilter]=useState("all");
@@ -2829,10 +2873,23 @@ function DeckScreen({deck,cards,onStartStudy,onBack,onAddCards,onImportMore,onEd
         }/>
 
       <div style={{padding:"18px 20px 0"}}>
-        <div onClick={()=>{setDeckMenu(true);setLinkingUnit(true);}} style={{display:"inline-flex",alignItems:"center",gap:6,marginBottom:12,cursor:"pointer",fontSize:12,padding:"5px 11px",borderRadius:100,
-          background:linkedUnit?"var(--accent-bg)":"var(--surface2)",color:linkedUnit?"var(--accent)":"var(--text3)",border:`1px solid ${linkedUnit?"var(--accent-border)":"var(--border)"}`}}>
-          <BookOpen size={12}/>
-          {linkedUnit?<>Book {linkedUnit.book} · {linkedUnit.titleEn} <span style={{opacity:.7}}>({levelById(linkedUnit.level).cefr})</span></>:"Link to curriculum unit"}
+        <div style={{display:"flex",flexWrap:"wrap",gap:8,marginBottom:12}}>
+          <div onClick={()=>{setDeckMenu(true);setLinkingUnit(true);}} style={{display:"inline-flex",alignItems:"center",gap:6,cursor:"pointer",fontSize:12,padding:"5px 11px",borderRadius:100,
+            background:linkedUnit?"var(--accent-bg)":"var(--surface2)",color:linkedUnit?"var(--accent)":"var(--text3)",border:`1px solid ${linkedUnit?"var(--accent-border)":"var(--border)"}`}}>
+            <BookOpen size={12}/>
+            {linkedUnit?<>Book {linkedUnit.book} · {linkedUnit.titleEn} <span style={{opacity:.7}}>({levelById(linkedUnit.level).cefr})</span></>:"Link to curriculum unit"}
+          </div>
+          {pool==="new"&&(
+            <div style={{display:"inline-flex",alignItems:"center",gap:6,fontSize:12,padding:"5px 11px",borderRadius:100,background:"var(--accent-bg)",color:"var(--accent)",border:"1px solid var(--accent-border)"}}>
+              <Sparkles size={12}/>
+              {deck.pinnedNew?"New · pinned":`New · graduates in ${daysUntilGraduation}d`}
+            </div>
+          )}
+          {pool==="old"&&(
+            <div style={{display:"inline-flex",alignItems:"center",gap:6,fontSize:12,padding:"5px 11px",borderRadius:100,background:"var(--know-bg)",color:"var(--know)",border:"1px solid var(--know-border)"}}>
+              <RotateCcw size={12}/> In Rotation
+            </div>
+          )}
         </div>
         <div style={{background:"var(--surface)",border:"1.5px solid var(--border)",borderRadius:"var(--r)",padding:"14px 16px",marginBottom:12}}>
           <div style={{display:"flex",justifyContent:"space-between",marginBottom:8}}>
@@ -2953,6 +3010,19 @@ function DeckScreen({deck,cards,onStartStudy,onBack,onAddCards,onImportMore,onEd
                   <button className="btn" onClick={()=>{setStudiedDate(new Date(deck.lastStudiedAt||Date.now()).toISOString().slice(0,10));setSettingStudied(true);}}
                     style={{background:"var(--surface2)",color:"var(--text)",padding:"13px 16px",borderRadius:"var(--rs)",justifyContent:"flex-start",gap:12,fontSize:14}}>
                     <Clock size={15} color="var(--text2)"/> Set Last Studied Date <span style={{marginLeft:"auto",fontSize:11.5,color:"var(--text3)",fontWeight:400}}>{daysAgoLabel(deck.lastStudiedAt)}</span>
+                  </button>
+                )}
+                {deck.deckType!=="grammar"&&(
+                  <button className="btn" onClick={()=>{onTogglePinnedNew(deck.id);showToast(deck.pinnedNew?"Removed from daily review pin":"Kept in daily review","success");setDeckMenu(false);}}
+                    style={{background:"var(--surface2)",color:"var(--text)",padding:"13px 16px",borderRadius:"var(--rs)",justifyContent:"flex-start",gap:12,fontSize:14}}>
+                    <Star size={15} color={deck.pinnedNew?"var(--accent)":"var(--text2)"} fill={deck.pinnedNew?"var(--accent)":"none"}/>
+                    {deck.pinnedNew?"Unpin from Daily Review":"Keep in Daily Review"}
+                  </button>
+                )}
+                {pool==="new"&&(
+                  <button className="btn" onClick={()=>{onGraduateNow(deck.id);showToast("Moved into Rotation","success");setDeckMenu(false);}}
+                    style={{background:"var(--surface2)",color:"var(--text)",padding:"13px 16px",borderRadius:"var(--rs)",justifyContent:"flex-start",gap:12,fontSize:14}}>
+                    <RotateCcw size={15} color="var(--text2)"/> Graduate Now
                   </button>
                 )}
                 <button className="btn" onClick={()=>{
@@ -7742,7 +7812,7 @@ CRITICAL: Every Arabic phrase must have full tashkeel.`,
 // ─────────────────────────────────────────────────────────────
 // MASTER REVIEW — Anki-style across all decks
 // ─────────────────────────────────────────────────────────────
-function MasterReviewScreen({decks,cardStates,onBack,onSwipeCard,onUndoSwipe,onDeckTouched,onToggleWeakForm,trackUsage,onAddToFlashcard,studyLog,onLogStudy,onMasterReading,onMasterListening,onMasterSpeaking}) {
+function MasterReviewScreen({decks,cardStates,onBack,onSwipeCard,onUndoSwipe,onDeckTouched,onToggleWeakForm,trackUsage,onAddToFlashcard,studyLog,onLogStudy,onMasterReading,onMasterListening,onMasterSpeaking,poolThresholdDays,newPoolDaily,onNewPoolDeckDone}) {
   const SCREEN_NAME="masterReview";
   const saved=useRef(loadScreen(SCREEN_NAME)||{}).current;
   const [started,setStarted]=useState(saved.started||false);
@@ -7804,8 +7874,16 @@ function MasterReviewScreen({decks,cardStates,onBack,onSwipeCard,onUndoSwipe,onD
   const weakCards=allCards.filter(c=>c.status==="weak");
   const newCards=allCards.filter(c=>c.status==="new"||!c.status);
   const knownCards=allCards.filter(c=>c.status==="known");
-  const vocabDeckCount=decks.filter(d=>d.deckType!=="grammar").length;
-  const neverStudiedDeckCount=decks.filter(d=>d.deckType!=="grammar"&&!d.lastStudiedAt).length;
+  const threshold=poolThresholdDays||NEW_POOL_DEFAULT_THRESHOLD_DAYS;
+  const oldPoolDecks=decks.filter(d=>d.deckType!=="grammar"&&getDeckPool(d,threshold)==="old");
+  const newPoolDecks=decks.filter(d=>d.deckType!=="grammar"&&getDeckPool(d,threshold)==="new");
+  // Rotation now draws only from the OLD pool — NEW decks are invisible to
+  // it and get their own daily "Review New" queue below.
+  const vocabDeckCount=oldPoolDecks.length;
+  const neverStudiedDeckCount=oldPoolDecks.filter(d=>!d.lastStudiedAt).length;
+  const newPoolCardCount=newPoolDecks.reduce((sum,d)=>sum+(cardStates[d.id]||[]).filter(c=>c.wordType!=="grammar").length,0);
+  const oldPoolCardCount=oldPoolDecks.reduce((sum,d)=>sum+(cardStates[d.id]||[]).filter(c=>c.wordType!=="grammar").length,0);
+  const newPoolDoneToday=(newPoolDaily?.completedDeckIds||[]).filter(id=>newPoolDecks.some(d=>d.id===id)).length;
 
   const start=(m)=>{
     const startMode=m||mode;
@@ -7817,17 +7895,26 @@ function MasterReviewScreen({decks,cardStates,onBack,onSwipeCard,onUndoSwipe,onD
     else if(startMode==="weak") pool=[...weakCards];
     else if(startMode==="new") pool=[...newCards];
     else if(startMode==="rotation"){
-      // Cycle through every deck evenly instead of letting due-dates decide —
-      // whole decks pulled stalest-first (never-studied decks first), each
-      // deck's own cards kept in their natural/creation order (deliberately
-      // NOT due/weak-sorted — the point of Rotation is going through a deck
-      // top-to-bottom for context and coverage, not an optimized queue).
-      // Once this fills `limit`, later (fresher) decks don't make the cut.
-      const staleDecks=[...decks].filter(d=>d.deckType!=="grammar").sort((a,b)=>(a.lastStudiedAt||0)-(b.lastStudiedAt||0));
+      // Cycle through every OLD-pool deck evenly instead of letting due-dates
+      // decide — whole decks pulled stalest-first (never-studied decks
+      // first), each deck's own cards kept in their natural/creation order
+      // (deliberately NOT due/weak-sorted — the point of Rotation is going
+      // through a deck top-to-bottom for context and coverage, not an
+      // optimized queue). Once this fills `limit`, later (fresher) decks
+      // don't make the cut.
+      const staleDecks=[...oldPoolDecks].sort((a,b)=>(a.lastStudiedAt||0)-(b.lastStudiedAt||0));
       for(const deck of staleDecks) pool.push(...(cardStates[deck.id]||[]).filter(c=>c.wordType!=="grammar"));
     }
+    else if(startMode==="newPool"){
+      // Every NEW-pool deck, every card, every day — no selection, no cap.
+      // Stable order: newest deck first (arbitrary but consistent).
+      const freshDecks=[...newPoolDecks].sort((a,b)=>(b.createdAt||0)-(a.createdAt||0));
+      for(const deck of freshDecks) pool.push(...(cardStates[deck.id]||[]).filter(c=>c.wordType!=="grammar"));
+    }
     else pool=[...sortByDueDate(allCards)];
-    pool=pool.slice(0,limit);
+    // "Review New" ignores the session card limit — the whole point is the
+    // full daily load being visible up front, not a truncated sample.
+    if(startMode!=="newPool") pool=pool.slice(0,limit);
     if(!pool.length){showToast("No cards available for this mode","error");return;}
     // Tag each card with its deckId for proper state updates
     const tagged=[];
@@ -7836,7 +7923,12 @@ function MasterReviewScreen({decks,cardStates,onBack,onSwipeCard,onUndoSwipe,onD
       pool.forEach(c=>{if(deckCards.has(c.id)&&!tagged.find(t=>t.id===c.id)) tagged.push({...c,_deckId:deck.id});});
     }
     setSessionCards(tagged);setIdx(0);setResults({known:0,weak:0});setFlipped(false);setStarted(true);
-    setSavedSession(null);swipeHist.current=[];touchCounts.current={};touchGoals.current=deckTouchGoals(tagged);startRef.current=Date.now();
+    setSavedSession(null);swipeHist.current=[];touchCounts.current={};
+    // "Review New" only counts a deck done once EVERY one of its cards is
+    // rated this sitting — unlike Rotation's DECK_TOUCH_THRESHOLD cap, a
+    // daily-review deck shouldn't be markable "done" partway through.
+    touchGoals.current=deckTouchGoals(tagged,startMode==="newPool"?Infinity:DECK_TOUCH_THRESHOLD);
+    startRef.current=Date.now();
   };
 
   const resumeSession=()=>{
@@ -7868,7 +7960,12 @@ function MasterReviewScreen({decks,cardStates,onBack,onSwipeCard,onUndoSwipe,onD
     onSwipeCard(card._deckId,card.id,ns,pendingTestForm(card)||selForm);
     touchCounts.current[card._deckId]=(touchCounts.current[card._deckId]||0)+1;
     const touchGoal=touchGoals.current[card._deckId]||DECK_TOUCH_THRESHOLD;
-    if(touchCounts.current[card._deckId]===touchGoal&&onDeckTouched) onDeckTouched(card._deckId);
+    if(touchCounts.current[card._deckId]===touchGoal){
+      // Review New completion is tracked separately from Rotation's
+      // lastStudiedAt — the two pools are deliberately independent signals.
+      if(mode==="newPool"){ if(onNewPoolDeckDone) onNewPoolDeckDone(card._deckId); }
+      else if(onDeckTouched) onDeckTouched(card._deckId);
+    }
     if(idx<sessionCards.length-1){
       const nextIdx=idx+1;
       setIdx(nextIdx);setFlipped(false);setSelForm(null);setGen(null);setGenLoading(false);
@@ -7997,11 +8094,12 @@ Return ONLY valid JSON: {"sentence":"...","translation":"...","imagePrompt":"...
     if(!selForm&&availForms.length){
       setTimeout(()=>setSelForm(testForm||availForms[0]?.[0]||null),0);
     }
-    // Rotation groups whole decks together in session order, so "which deck
-    // am I in, how far through it" is meaningful here (unlike Smart/Due/Weak,
-    // which jumble cards from many decks and would make this flicker).
+    // Rotation and Review New both group whole decks together in session
+    // order, so "which deck am I in, how far through it" is meaningful here
+    // (unlike Smart/Due/Weak, which jumble cards from many decks and would
+    // make this flicker).
     let deckBreadcrumb=null;
-    if(mode==="rotation"&&card._deckId){
+    if((mode==="rotation"||mode==="newPool")&&card._deckId){
       const cardDeck=decks.find(d=>d.id===card._deckId);
       if(cardDeck){
         const deckCardsInSession=sessionCards.filter(c=>c._deckId===card._deckId);
@@ -8192,6 +8290,18 @@ Return ONLY valid JSON: {"sentence":"...","translation":"...","imagePrompt":"...
             <div style={{fontSize:12,color:"var(--text3)",marginTop:2}}>Due ({dueCards.length}) → Weak ({weakCards.length}) → New ({newCards.length})</div>
           </div>
         </div>
+        <div className="test-option" onClick={()=>{if(!newPoolDecks.length) return;setMode("newPool");start("newPool");}}
+          style={!newPoolDecks.length?{opacity:.5,cursor:"default"}:{}}>
+          <div style={{width:40,height:40,borderRadius:12,background:"var(--accent-bg)",display:"flex",alignItems:"center",justifyContent:"center"}}><Sparkles size={18} color="var(--accent)"/></div>
+          <div style={{flex:1}}>
+            <div style={{fontWeight:600,fontSize:14}}>Review New</div>
+            <div style={{fontSize:12,color:"var(--text3)",marginTop:2}}>
+              {newPoolDecks.length
+                ? `${newPoolDoneToday} of ${newPoolDecks.length} new decks done today · ${newPoolCardCount} cards`
+                : "Nothing new right now"}
+            </div>
+          </div>
+        </div>
         <div className="test-option" onClick={()=>{setMode("rotation");start("rotation");}}>
           <div style={{width:40,height:40,borderRadius:12,background:"var(--know-bg)",display:"flex",alignItems:"center",justifyContent:"center"}}><RotateCcw size={18} color="var(--know)"/></div>
           <div style={{flex:1}}>
@@ -8230,6 +8340,22 @@ Return ONLY valid JSON: {"sentence":"...","translation":"...","imagePrompt":"...
             <div><span style={{fontWeight:700,color:"var(--weak)"}}>{weakCards.length}</span> <span style={{color:"var(--text3)"}}>weak</span></div>
             <div><span style={{fontWeight:700,color:"var(--text3)"}}>{newCards.length}</span> <span style={{color:"var(--text3)"}}>new</span></div>
             <div><span style={{fontWeight:700,color:"var(--know)"}}>{knownCards.length}</span> <span style={{color:"var(--text3)"}}>known</span></div>
+          </div>
+        </div>
+
+        {/* Pool breakdown — new-cycle vs old-cycle cards always sum to the
+            same total as All Cards above; this is what tells you whether a
+            day's load is worth splitting into two sittings. */}
+        <div style={{background:"var(--surface)",border:"1.5px solid var(--border)",borderRadius:"var(--rs)",padding:"12px 14px"}}>
+          <div className="sec">Pool Breakdown</div>
+          <div style={{display:"flex",gap:16,fontSize:13,marginBottom:8}}>
+            <div><span style={{fontWeight:700,color:"var(--accent)"}}>{newPoolCardCount}</span> <span style={{color:"var(--text3)"}}>new-cycle ({newPoolDecks.length} decks)</span></div>
+            <div><span style={{fontWeight:700,color:"var(--know)"}}>{oldPoolCardCount}</span> <span style={{color:"var(--text3)"}}>old-cycle ({oldPoolDecks.length} decks)</span></div>
+            <div style={{marginLeft:"auto"}}><span style={{fontWeight:700,color:"var(--text2)"}}>{newPoolCardCount+oldPoolCardCount}</span> <span style={{color:"var(--text3)"}}>total</span></div>
+          </div>
+          <div className="progress-track" style={{height:6,display:"flex",overflow:"hidden"}}>
+            <div style={{width:`${(newPoolCardCount+oldPoolCardCount)?Math.round(newPoolCardCount/(newPoolCardCount+oldPoolCardCount)*100):0}%`,background:"var(--accent)"}}/>
+            <div style={{flex:1,background:"var(--know)"}}/>
           </div>
         </div>
 
@@ -10274,6 +10400,37 @@ export default function App() {
     };
   },[user,dataLoaded]);
 
+  // Two-pool graduation (NEW → OLD): evaluated lazily whenever decks/settings
+  // change (which includes "on app open") rather than via a scheduled job.
+  // A deck graduates once it's no longer pinned AND its age has crossed the
+  // threshold; `graduatedAt` is stamped once so this never re-fires for a
+  // deck that's already graduated.
+  useEffect(()=>{
+    if(!dataLoaded||!decks.length) return;
+    const threshold=getPoolThresholdDays(settings);
+    // First-ever pass after this feature ships: every one of the account's
+    // existing decks is already older than the threshold, so this is a
+    // one-time MIGRATION, not organic graduation — preserve lastStudiedAt so
+    // the existing rotation cycle isn't disrupted.
+    const firstRun=!settings.poolMigrationDone;
+    const toGraduate=decks.filter(d=>d.deckType!=="grammar"&&!d.graduatedAt&&getDeckPool(d,threshold)==="old");
+    if(!toGraduate.length){
+      if(firstRun) setSettings(s=>({...s,poolMigrationDone:true}));
+      return;
+    }
+    const now=Date.now();
+    const graduatingIds=new Set(toGraduate.map(d=>d.id));
+    setDecks(p=>p.map(d=>{
+      if(!graduatingIds.has(d.id)) return d;
+      // Organic graduation (not the initial migration): the deck just spent
+      // three weeks in daily review, so it should wait one full rotation
+      // cycle like any deck just finished — reset lastStudiedAt to now,
+      // sending it to the back of the OLD-pool queue.
+      return firstRun?{...d,graduatedAt:now}:{...d,graduatedAt:now,lastStudiedAt:now};
+    }));
+    if(firstRun) setSettings(s=>({...s,poolMigrationDone:true}));
+  },[dataLoaded,decks,settings.newPoolThresholdDays,settings.poolMigrationDone]);
+
   // Restore active session from localStorage once data is loaded
   // Reload/refresh always lands on Home now (founder decision 2026-08-06) —
   // deliberately NOT auto-navigating into whatever screen was active before,
@@ -10544,6 +10701,19 @@ export default function App() {
     setCardStates(p=>{const n={...p};delete n[id];return n;});
     go("home");
   };
+  // Manual override — keeps a deck in the NEW pool (daily review) past the
+  // age threshold, indefinitely, until toggled off.
+  const togglePinnedNew=(id)=>setDecks(p=>p.map(d=>d.id===id?{...d,pinnedNew:!d.pinnedNew}:d));
+  // Manual override — pushes a deck straight into the OLD pool (Rotation)
+  // right now, by backdating createdAt past the graduation threshold. The
+  // graduation effect below then picks it up on its next pass and stamps
+  // graduatedAt + lastStudiedAt (back of the rotation queue), same as an
+  // organic graduation.
+  const graduateNow=(id)=>setDecks(p=>p.map(d=>{
+    if(d.id!==id) return d;
+    const threshold=getPoolThresholdDays(settings);
+    return {...d,pinnedNew:false,createdAt:Date.now()-(threshold+1)*86400000};
+  }));
   const savedIdx=useRef(loadDeckIdx());
   const studyStartRef=useRef(null);
   const studyModeRef=useRef("all"); // which filter the active study session was started with
@@ -10560,6 +10730,21 @@ export default function App() {
   // Manual override from the deck menu — corrects decks studied before this
   // feature existed, or outside the app. ts=null clears back to "never studied".
   const setDeckLastStudied=(deckId,ts)=>setDecks(p=>p.map(d=>d.id===deckId?{...d,lastStudiedAt:ts}:d));
+  // Marks a NEW-pool deck "done" in today's Review New tally. Stored in
+  // settings (autosaved wholesale like the rest of settings) rather than
+  // browser storage, so the count is consistent across devices. Keyed by
+  // LOCAL date — see localDateKey — and reset by simply starting a fresh
+  // {date,completedDeckIds} once the stored date is no longer today.
+  const markNewPoolDeckDone=(deckId)=>setSettings(s=>{
+    const today=localDateKey();
+    const cur=s.newPoolDaily?.date===today?s.newPoolDaily:{date:today,completedDeckIds:[]};
+    if(cur.completedDeckIds.includes(deckId)) return s;
+    return {...s,newPoolDaily:{date:today,completedDeckIds:[...cur.completedDeckIds,deckId]}};
+  });
+  // Derived, not trusted as-is: `settings.newPoolDaily` may still be holding
+  // yesterday's (or older) tally if the app hasn't been touched since — this
+  // is what actually resets the "X of Y done today" count at local midnight.
+  const newPoolDailyToday=settings.newPoolDaily?.date===localDateKey()?settings.newPoolDaily:{date:localDateKey(),completedDeckIds:[]};
   // Direct per-form weak flag, independent of the swipe/SRS flow — lets you
   // flag a SECOND form weak (e.g. Plural 2) while a different form (e.g.
   // Passive Part) is already the active retest, without that swipe silently
@@ -10724,7 +10909,7 @@ export default function App() {
     settings:<SettingsScreen settings={settings} setSettings={setSettings} onBack={()=>go("home")} usage={usage} user={user} onSignOut={handleSignOut} onReplayOnboarding={()=>setShowOnboarding(true)} profile={profile} setProfile={setProfile} studyLog={studyLog} onUpdateTargets={(t)=>setStudyLog(sl=>({...sl,targets:t}))} decks={decks} cardStates={cardStates} setCardStates={setCardStates} trackUsage={trackUsage} onResetUsage={resetUsageCounters}/>,
     createDeck:<CreateDeckScreen onBack={()=>go("home")} onCreate={createDeck}/>,
     addCards:activeDeck&&<AddCardsScreen deck={activeDeck} onBack={()=>go("deck")} onSave={saveCards} trackUsage={trackUsage}/>,
-    deck:activeDeck&&<DeckScreen deck={activeDeck} cards={cardStates[activeDeck.id]||[]} onStartStudy={startStudy} onBack={()=>go("home")} onAddCards={()=>{if(activeDeck.deckType==="grammar"){setGrammarTarget(activeDeck);go("grammarImport");}else go("addCards");}} onImportMore={()=>{setVocabTarget(activeDeck);go("vocabImport");}} onEditCard={c=>{if(c.wordType==="grammar"){showToast("Grammar cards can't be edited yet — remove it and re-import that section.","info");return;}setActiveCard(c);go("editCard");}} onDeleteCard={deleteCard} onRenameDeck={renameDeck} onDeleteDeck={deleteDeck} onSetDeckUnit={setDeckUnit} onSetDeckLastStudied={setDeckLastStudied} savedIdx={{all:savedIdx.current[activeDeck.id+"_all"]||0,new:savedIdx.current[activeDeck.id+"_new"]||0,weak:savedIdx.current[activeDeck.id+"_weak"]||0,known:savedIdx.current[activeDeck.id+"_known"]||0,due:savedIdx.current[activeDeck.id+"_due"]||0}}/>,
+    deck:activeDeck&&<DeckScreen deck={activeDeck} cards={cardStates[activeDeck.id]||[]} onStartStudy={startStudy} onBack={()=>go("home")} onAddCards={()=>{if(activeDeck.deckType==="grammar"){setGrammarTarget(activeDeck);go("grammarImport");}else go("addCards");}} onImportMore={()=>{setVocabTarget(activeDeck);go("vocabImport");}} onEditCard={c=>{if(c.wordType==="grammar"){showToast("Grammar cards can't be edited yet — remove it and re-import that section.","info");return;}setActiveCard(c);go("editCard");}} onDeleteCard={deleteCard} onRenameDeck={renameDeck} onDeleteDeck={deleteDeck} onSetDeckUnit={setDeckUnit} onSetDeckLastStudied={setDeckLastStudied} onTogglePinnedNew={togglePinnedNew} onGraduateNow={graduateNow} poolThresholdDays={getPoolThresholdDays(settings)} savedIdx={{all:savedIdx.current[activeDeck.id+"_all"]||0,new:savedIdx.current[activeDeck.id+"_new"]||0,weak:savedIdx.current[activeDeck.id+"_weak"]||0,known:savedIdx.current[activeDeck.id+"_known"]||0,due:savedIdx.current[activeDeck.id+"_due"]||0}}/>,
     editCard:activeCard&&activeDeck&&<EditCardScreen card={activeCard} onBack={()=>go("deck")} onSave={saveEditedCard} trackUsage={trackUsage}/>,
     study:activeDeck&&sessionCards.length>0&&<StudyScreen cards={sessionCards} currentIndex={currentIdx} onSwipe={handleSwipe} onBack={undoStudy} canUndo={studyHistory.current.length>0} onExit={()=>go("deck")} trackUsage={trackUsage} decks={decks} cardStates={cardStates} onAddToFlashcard={addToFlashcard} onToggleWeakForm={(cardId,formKey)=>toggleWeakForm(activeDeck.id,cardId,formKey)}/>,
     complete:<CompleteScreen known={sessionRes.current.known} weak={sessionRes.current.weak} onBack={()=>go("deck")}/>,
@@ -10736,6 +10921,7 @@ export default function App() {
     conversation:<ConversationScreen {...commonProps} onBack={()=>go("home")} onFinish={()=>{saveScreen("conversation",null);saveSession(null);go("home");setSessionRating({module:"speaking"});}} onLogStudy={logStudy} onAddToFlashcard={addToFlashcard}/>,
     progress:<ProgressScreen cardStates={cardStates} studyLog={studyLog} onBack={()=>go("home")} onLogManual={(e)=>logStudy(e)}/>,
     masterReview:<MasterReviewScreen decks={decks} cardStates={cardStates} onBack={()=>go("home")} onSwipeCard={handleMasterSwipe} onUndoSwipe={restoreCard} onDeckTouched={touchDeck} onToggleWeakForm={toggleWeakForm} trackUsage={trackUsage} onAddToFlashcard={addToFlashcard} studyLog={studyLog} onLogStudy={logStudy}
+      poolThresholdDays={getPoolThresholdDays(settings)} newPoolDaily={newPoolDailyToday} onNewPoolDeckDone={markNewPoolDeckDone}
       onMasterReading={(pool)=>{setMasterPool(pool);go("masterReading");}}
       onMasterListening={(pool)=>{setMasterPool(pool);go("masterListening");}}
       onMasterSpeaking={(pool)=>{setMasterPool(pool);go("masterSpeaking");}}/>,
