@@ -7921,15 +7921,15 @@ function MasterReviewScreen({decks,cardStates,onBack,onSwipeCard,onUndoSwipe,onD
       for(const deck of staleDecks) pool.push(...(cardStates[deck.id]||[]).filter(c=>c.wordType!=="grammar"));
     }
     else if(startMode==="newPool"){
-      // Every NEW-pool deck, every card, every day — no selection, no cap.
-      // Stable order: newest deck first (arbitrary but consistent).
-      const freshDecks=[...newPoolDecks].sort((a,b)=>(b.createdAt||0)-(a.createdAt||0));
-      for(const deck of freshDecks) pool.push(...(cardStates[deck.id]||[]).filter(c=>c.wordType!=="grammar"));
+      // Same cycling as Rotation: whole NEW-pool decks pulled stalest-first
+      // (never-touched decks first) so a session cut short by the card limit
+      // always picks up wherever the LEAST recently covered deck left off,
+      // instead of the same handful of decks hogging the front every time.
+      const staleNewDecks=[...newPoolDecks].sort((a,b)=>(a.lastStudiedAt||0)-(b.lastStudiedAt||0));
+      for(const deck of staleNewDecks) pool.push(...(cardStates[deck.id]||[]).filter(c=>c.wordType!=="grammar"));
     }
     else pool=[...sortByDueDate(allCards)];
-    // "Review New" ignores the session card limit — the whole point is the
-    // full daily load being visible up front, not a truncated sample.
-    if(startMode!=="newPool") pool=pool.slice(0,limit);
+    pool=pool.slice(0,limit);
     if(!pool.length){showToast("No cards available for this mode","error");return;}
     // Tag each card with its deckId for proper state updates
     const tagged=[];
@@ -7939,9 +7939,12 @@ function MasterReviewScreen({decks,cardStates,onBack,onSwipeCard,onUndoSwipe,onD
     }
     setSessionCards(tagged);setIdx(0);setResults({known:0,weak:0});setFlipped(false);setStarted(true);
     setSavedSession(null);swipeHist.current=[];touchCounts.current={};
-    // "Review New" only counts a deck done once EVERY one of its cards is
-    // rated this sitting — unlike Rotation's DECK_TOUCH_THRESHOLD cap, a
-    // daily-review deck shouldn't be markable "done" partway through.
+    // "Review New" counts a deck done once every one of ITS cards THAT MADE
+    // IT INTO THIS SESSION is rated — unlike Rotation's DECK_TOUCH_THRESHOLD
+    // cap, a daily-review deck shouldn't be markable "done" partway through
+    // its own cards. deckTouchGoals already derives the per-deck count from
+    // `tagged` (post session-limit slice), so a deck the limit cut off mid-
+    // way is simply "done" once its truncated share this sitting is cleared.
     touchGoals.current=deckTouchGoals(tagged,startMode==="newPool"?Infinity:DECK_TOUCH_THRESHOLD);
     startRef.current=Date.now();
   };
@@ -7976,10 +7979,13 @@ function MasterReviewScreen({decks,cardStates,onBack,onSwipeCard,onUndoSwipe,onD
     touchCounts.current[card._deckId]=(touchCounts.current[card._deckId]||0)+1;
     const touchGoal=touchGoals.current[card._deckId]||DECK_TOUCH_THRESHOLD;
     if(touchCounts.current[card._deckId]===touchGoal){
-      // Review New completion is tracked separately from Rotation's
-      // lastStudiedAt — the two pools are deliberately independent signals.
-      if(mode==="newPool"){ if(onNewPoolDeckDone) onNewPoolDeckDone(card._deckId); }
-      else if(onDeckTouched) onDeckTouched(card._deckId);
+      // Review New completion feeds BOTH signals: the daily "X of Y done
+      // today" tally (onNewPoolDeckDone), and lastStudiedAt via onDeckTouched
+      // — the latter is what makes Review New's own stalest-first ordering
+      // (see `start`) actually cycle instead of the same decks sorting first
+      // forever. Every other mode only needs lastStudiedAt.
+      if(mode==="newPool"&&onNewPoolDeckDone) onNewPoolDeckDone(card._deckId);
+      if(onDeckTouched) onDeckTouched(card._deckId);
     }
     if(idx<sessionCards.length-1){
       const nextIdx=idx+1;
