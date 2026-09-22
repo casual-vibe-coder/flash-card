@@ -1,7 +1,8 @@
 import { useState, useRef, useEffect, useCallback } from "react";
-import { auth, googleProvider, db } from "./firebase.js";
+import { auth, googleProvider, db, storage } from "./firebase.js";
 import { signInWithPopup, signOut, onAuthStateChanged } from "firebase/auth";
 import { doc, getDoc, setDoc, updateDoc, deleteDoc, deleteField, collection, getDocs } from "firebase/firestore";
+import { ref as storageRef, uploadString, getDownloadURL } from "firebase/storage";
 import {
   Settings, ArrowLeft, ChevronRight, X, Volume2, RotateCcw, BookOpen,
   RefreshCw, Check, Sparkles, Plus, Edit3, Trash2, Layers, Save, Eye,
@@ -3257,7 +3258,7 @@ CRITICAL: Every Arabic word MUST have full tashkeel (فَتْحَة ضَمَّة
 // ─────────────────────────────────────────────────────────────
 // STUDY SCREEN
 // ─────────────────────────────────────────────────────────────
-function StudyScreen({cards,currentIndex,onSwipe,onBack,canUndo,onExit,trackUsage,decks,cardStates,onAddToFlashcard,activeFormOverride,onToggleWeakForm}) {
+function StudyScreen({cards,currentIndex,onSwipe,onBack,canUndo,onExit,trackUsage,decks,cardStates,onAddToFlashcard,activeFormOverride,onToggleWeakForm,onSaveAid}) {
   const [flipped,setFlipped]=useState(false);
   const [selForm,setSelForm]=useState(null);
   const [gen,setGen]=useState(null);
@@ -3279,7 +3280,11 @@ function StudyScreen({cards,currentIndex,onSwipe,onBack,canUndo,onExit,trackUsag
     genRef.current++;
     // Reference-chip default: the pending test form if any, else the first
     // available form — same as before, just scoped to inflectional forms now.
-    setFlipped(false);setSelForm(testForm||availForms[0]?.[0]||null);setGen(null);setGenLoading(false);setImgLoading(false);
+    const nextForm=testForm||availForms[0]?.[0]||null;
+    // A learning aid already generated for this exact card+form sticks — load
+    // it straight from the card instead of requiring a fresh (paid) generate.
+    const cached=nextForm?card.aidByForm?.[nextForm]:null;
+    setFlipped(false);setSelForm(nextForm);setGen(cached||null);setGenLoading(false);setImgLoading(false);
     if(window.speechSynthesis) window.speechSynthesis.cancel();
     stopTtsAudio();
     setPlaying(false);setPlayingEx(-1);
@@ -3321,6 +3326,10 @@ Return ONLY valid JSON: {"sentence":"...","translation":"...","imagePrompt":"...
       const parsed=extractJSON(raw);
       setGen({...parsed,imageUrl:null});
       setGenLoading(false);
+      // Cache the text immediately — sticks even if no image ever gets
+      // added, and this is a manual (re)generate, so it's meant to overwrite
+      // whatever was cached for this form before ("Fresh example" button).
+      onSaveAid?.(card.id,selForm,{...parsed,imageUrl:null});
       // Image generation is opt-in (Settings → Image Model → "Auto-generate
       // images"). When off, we show an "Add image" button on the card and
       // only spend the $0.039 if the user explicitly asks for it.
@@ -3330,6 +3339,7 @@ Return ONLY valid JSON: {"sentence":"...","translation":"...","imagePrompt":"...
         if(id!==genRef.current) return;
         setGen(prev=>prev?{...prev,imageUrl:url}:prev);
         setImgLoading(false);
+        if(url) onSaveAid?.(card.id,selForm,{...parsed,imageUrl:url});
       }
     } catch (err) {
       if(id!==genRef.current) return;
@@ -3466,7 +3476,7 @@ Return ONLY valid JSON: {"sentence":"...","translation":"...","imagePrompt":"...
                   const isWeak=(card.weakForms||[]).includes(key);
                   const canFlag=INFLECTIONAL_FORMS.has(key);
                   return (
-                  <button key={key} className={`chip ${selForm===key?"chip-on":""}`} onClick={()=>{setSelForm(key);setGen(null);}} style={{padding:"8px 14px"}}>
+                  <button key={key} className={`chip ${selForm===key?"chip-on":""}`} onClick={()=>{setSelForm(key);setGen(card.aidByForm?.[key]||null);}} style={{padding:"8px 14px"}}>
                     {canFlag&&<span onClick={(e)=>{e.stopPropagation();onToggleWeakForm?.(card.id,key);}}
                       title={isWeak?"Marked weak — tap to clear":"Tap to flag this form weak"}
                       style={{color:isWeak?(selForm===key?"rgba(255,200,200,.9)":"var(--weak)"):(selForm===key?"rgba(255,255,255,.4)":"var(--border)"),fontSize:13,marginRight:1,cursor:"pointer"}}>{isWeak?"●":"○"}</span>}
@@ -3481,8 +3491,8 @@ Return ONLY valid JSON: {"sentence":"...","translation":"...","imagePrompt":"...
                 <div className="ar" style={{fontSize:28,color:"var(--accent)",fontWeight:500}}>{card.forms[selForm]}</div>
               </div>
             )}
-            <button className="btn btn-primary" onClick={generate} disabled={genLoading||!selForm} style={{width:"100%",padding:"12px",borderRadius:"var(--rs)",fontSize:14,marginBottom:gen?12:0}}>
-              {genLoading?<><RefreshCw size={14} className="spin"/>Generating…</>:<><Sparkles size={14}/>Generate Learning Aid</>}
+            <button className="btn btn-primary" onClick={()=>generate()} disabled={genLoading||!selForm} style={{width:"100%",padding:"12px",borderRadius:"var(--rs)",fontSize:14,marginBottom:gen?12:0}}>
+              {genLoading?<><RefreshCw size={14} className="spin"/>Generating…</>:gen?<><RefreshCw size={14}/>Regenerate (uses tokens)</>:<><Sparkles size={14}/>Generate Learning Aid</>}
             </button>
             {gen&&!genLoading&&(
               <div className="gen-appear" style={{display:"flex",flexDirection:"column",gap:10}}>
@@ -3515,6 +3525,7 @@ Return ONLY valid JSON: {"sentence":"...","translation":"...","imagePrompt":"...
                         const url=await generateImage(gen.imagePrompt,trackUsage);
                         setGen(prev=>prev?{...prev,imageUrl:url}:prev);
                         setImgLoading(false);
+                        if(url) onSaveAid?.(card.id,selForm,{...gen,imageUrl:url});
                       }}
                       title={`Regenerate this image · costs ~$${(IMAGE_PRICES[_imageModel]||0.039).toFixed(3)}`}
                       style={{position:"absolute",top:8,right:8,width:32,height:32,borderRadius:"50%",background:"rgba(0,0,0,.55)",color:"white",border:"none",cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",backdropFilter:"blur(4px)"}}>
@@ -3531,6 +3542,7 @@ Return ONLY valid JSON: {"sentence":"...","translation":"...","imagePrompt":"...
                       const url=await generateImage(gen.imagePrompt,trackUsage);
                       setGen(prev=>prev?{...prev,imageUrl:url}:prev);
                       setImgLoading(false);
+                      if(url) onSaveAid?.(card.id,selForm,{...gen,imageUrl:url});
                     }}
                     style={{background:"var(--surface2)",border:"1px dashed var(--border)",borderRadius:"var(--rs)",padding:"14px 16px",cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",gap:8,fontSize:13,color:"var(--text2)",fontWeight:500,width:"100%"}}>
                     <ImageIcon size={15}/> Add a mnemonic image
@@ -7861,7 +7873,7 @@ CRITICAL: Every Arabic phrase must have full tashkeel.`,
 // due date) — these are the ones "Pause New Cards" and "Max Reviews Per Day"
 // (Settings → Backlog Recovery) apply to.
 const SRS_MODES=["smart","due","weak","new","all"];
-function MasterReviewScreen({decks,cardStates,onBack,onSwipeCard,onUndoSwipe,onDeckTouched,onToggleWeakForm,trackUsage,onAddToFlashcard,studyLog,onLogStudy,onMasterReading,onMasterListening,onMasterSpeaking,poolThresholdDays,newPoolDaily,onNewPoolDeckDone,pauseNewCards,maxReviewsPerDayEnabled,maxReviewsPerDay,reviewsDoneToday,onReviewLogged}) {
+function MasterReviewScreen({decks,cardStates,onBack,onSwipeCard,onUndoSwipe,onDeckTouched,onToggleWeakForm,trackUsage,onAddToFlashcard,studyLog,onLogStudy,onMasterReading,onMasterListening,onMasterSpeaking,poolThresholdDays,newPoolDaily,onNewPoolDeckDone,pauseNewCards,maxReviewsPerDayEnabled,maxReviewsPerDay,reviewsDoneToday,onReviewLogged,onSaveAid}) {
   const SCREEN_NAME="masterReview";
   const saved=useRef(loadScreen(SCREEN_NAME)||{}).current;
   const [started,setStarted]=useState(saved.started||false);
@@ -8077,6 +8089,22 @@ function MasterReviewScreen({decks,cardStates,onBack,onSwipeCard,onUndoSwipe,onD
     setSavedSession({cards:sessionCards,idx:snap.prevIdx,results:snap.prevResults});
   };
 
+  // Default form + learning-aid cache load for whatever card is now current
+  // (advance, undo, resume, or a brand-new session all land here via idx/
+  // started/sessionCards changing). Replaces a prior render-time setTimeout
+  // hack for the form default, and is what makes a previously-generated
+  // sentence/image stick instead of needing to be regenerated every time.
+  useEffect(()=>{
+    if(!started) return;
+    const curCard=sessionCards[idx];
+    if(!curCard) return;
+    const availForms=Object.entries(curCard.forms||{}).filter(([,v])=>v);
+    const testForm=pendingTestForm(curCard);
+    const nextForm=testForm||availForms[0]?.[0]||null;
+    setSelForm(nextForm);
+    setGen(nextForm?curCard.aidByForm?.[nextForm]||null:null);
+  },[started,idx,sessionCards]);
+
   // Keyboard shortcuts
   useEffect(()=>{
     if(!started) return;
@@ -8149,6 +8177,10 @@ Return ONLY valid JSON: {"sentence":"...","translation":"...","imagePrompt":"...
       const parsed=extractJSON(raw);
       setGen({...parsed,imageUrl:null});
       setGenLoading(false);
+      // Cache the text immediately — sticks even if no image ever gets
+      // added, and this is a manual (re)generate, so it's meant to overwrite
+      // whatever was cached for this form before.
+      onSaveAid?.(card._deckId,card.id,selForm,{...parsed,imageUrl:null});
       // Image generation is opt-in (Settings → Image Model → "Auto-generate
       // images"), same as the per-deck study screen.
       if(_autoGenerateImage){
@@ -8157,6 +8189,7 @@ Return ONLY valid JSON: {"sentence":"...","translation":"...","imagePrompt":"...
         if(id!==genRef.current) return;
         setGen(prev=>prev?{...prev,imageUrl:url}:prev);
         setImgLoading(false);
+        if(url) onSaveAid?.(card._deckId,card.id,selForm,{...parsed,imageUrl:url});
       }
     } catch (err) {
       if(id!==genRef.current) return;
@@ -8175,9 +8208,6 @@ Return ONLY valid JSON: {"sentence":"...","translation":"...","imagePrompt":"...
   if(started&&card){
     const availForms=Object.entries(card.forms||{}).filter(([,v])=>v);
     const testForm=pendingTestForm(card);
-    if(!selForm&&availForms.length){
-      setTimeout(()=>setSelForm(testForm||availForms[0]?.[0]||null),0);
-    }
     // Rotation and Review New both group whole decks together in session
     // order, so "which deck am I in, how far through it" is meaningful here
     // (unlike Smart/Due/Weak, which jumble cards from many decks and would
@@ -8241,7 +8271,7 @@ Return ONLY valid JSON: {"sentence":"...","translation":"...","imagePrompt":"...
                     const isWeak=(card.weakForms||[]).includes(key);
                     const canFlag=INFLECTIONAL_FORMS.has(key);
                     return (
-                    <button key={key} className={`chip ${selForm===key?"chip-on":""}`} onClick={()=>{setSelForm(key);setGen(null);}} style={{padding:"8px 14px"}}>
+                    <button key={key} className={`chip ${selForm===key?"chip-on":""}`} onClick={()=>{setSelForm(key);setGen(card.aidByForm?.[key]||null);}} style={{padding:"8px 14px"}}>
                       {canFlag&&<span onClick={(e)=>{e.stopPropagation();onToggleWeakForm?.(card._deckId,card.id,key);}}
                         title={isWeak?"Marked weak — tap to clear":"Tap to flag this form weak"}
                         style={{color:isWeak?(selForm===key?"rgba(255,200,200,.9)":"var(--weak)"):(selForm===key?"rgba(255,255,255,.4)":"var(--border)"),fontSize:13,marginRight:1,cursor:"pointer"}}>{isWeak?"●":"○"}</span>}
@@ -8257,7 +8287,7 @@ Return ONLY valid JSON: {"sentence":"...","translation":"...","imagePrompt":"...
                 </div>
               )}
               <button className="btn btn-primary" onClick={generateAid} disabled={genLoading||!selForm} style={{width:"100%",padding:"10px",borderRadius:"var(--rs)",fontSize:13,marginBottom:gen?10:0}}>
-                {genLoading?<><RefreshCw size={13} className="spin"/>Generating…</>:<><Sparkles size={13}/>Generate Learning Aid</>}
+                {genLoading?<><RefreshCw size={13} className="spin"/>Generating…</>:gen?<><RefreshCw size={13}/>Regenerate (uses tokens)</>:<><Sparkles size={13}/>Generate Learning Aid</>}
               </button>
               {gen&&!genLoading&&(
                 <div className="gen-appear" style={{display:"flex",flexDirection:"column",gap:8}}>
@@ -8290,6 +8320,7 @@ Return ONLY valid JSON: {"sentence":"...","translation":"...","imagePrompt":"...
                           const url=await generateImage(gen.imagePrompt,trackUsage);
                           setGen(prev=>prev?{...prev,imageUrl:url}:prev);
                           setImgLoading(false);
+                          if(url) onSaveAid?.(card._deckId,card.id,selForm,{...gen,imageUrl:url});
                         }}
                         title={`Regenerate this image · costs ~$${(IMAGE_PRICES[_imageModel]||0.039).toFixed(3)}`}
                         style={{position:"absolute",top:8,right:8,width:32,height:32,borderRadius:"50%",background:"rgba(0,0,0,.55)",color:"white",border:"none",cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",backdropFilter:"blur(4px)"}}>
@@ -8304,6 +8335,7 @@ Return ONLY valid JSON: {"sentence":"...","translation":"...","imagePrompt":"...
                         const url=await generateImage(gen.imagePrompt,trackUsage);
                         setGen(prev=>prev?{...prev,imageUrl:url}:prev);
                         setImgLoading(false);
+                        if(url) onSaveAid?.(card._deckId,card.id,selForm,{...gen,imageUrl:url});
                       }}
                       style={{background:"var(--surface2)",border:"1px dashed var(--border)",borderRadius:"var(--rs)",padding:"12px 14px",cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",gap:8,fontSize:12.5,color:"var(--text2)",fontWeight:500,width:"100%"}}>
                       <ImageIcon size={14}/> Add a mnemonic image
@@ -10978,6 +11010,36 @@ export default function App() {
     setCardStates(p=>({...p,[deckId]:[...(p[deckId]||[]),card]}));
     setDecks(p=>p.map(d=>d.id===deckId?{...d,createdAt:Date.now()}:d));
   };
+  // Persists a generated learning aid (sentence/translation/image) onto the
+  // card itself, keyed by which grammatical form it was generated for — so
+  // revisiting the same card+form later loads instantly for free instead of
+  // re-spending AI/image tokens. The image is the one part that can't go
+  // straight into Firestore: a generated image comes back as a base64 data:
+  // URI (100-500KB), and Firestore documents (cards live in deckCards/{id})
+  // have a hard 1MB ceiling — this account already blew past that once with
+  // plain card data. So the base64 gets uploaded to Firebase Storage (built
+  // for exactly this) and only the short resulting download URL is saved on
+  // the card; an aid re-saved from cache (imageUrl already a Storage URL,
+  // not "data:") is left alone, no re-upload.
+  const saveCardAid=async(deckId,cardId,formKey,aid)=>{
+    if(!formKey||!deckId||!cardId) return;
+    let {imageUrl,...rest}=aid;
+    if(imageUrl&&imageUrl.startsWith("data:")&&user){
+      try {
+        const path=`users/${user.uid}/cardImages/${deckId}/${cardId}_${formKey}.png`;
+        const imgRef=storageRef(storage,path);
+        await uploadString(imgRef,imageUrl,"data_url");
+        imageUrl=await getDownloadURL(imgRef);
+      } catch(e){
+        console.error("Card image upload failed:",e);
+        // Don't fall back to writing the raw base64 into Firestore — better
+        // to cache the text and let the image regenerate next time than to
+        // risk a deck document blowing past the size limit.
+        imageUrl=null;
+      }
+    }
+    setCardStates(p=>({...p,[deckId]:(p[deckId]||[]).map(c=>c.id===cardId?{...c,aidByForm:{...(c.aidByForm||{}),[formKey]:{...rest,imageUrl}}}:c)}));
+  };
 
   const logStudy=(entry)=>setStudyLog(prev=>addStudyEntry(prev,entry));
 
@@ -11031,7 +11093,7 @@ export default function App() {
     addCards:activeDeck&&<AddCardsScreen deck={activeDeck} onBack={()=>go("deck")} onSave={saveCards} trackUsage={trackUsage}/>,
     deck:activeDeck&&<DeckScreen deck={activeDeck} cards={cardStates[activeDeck.id]||[]} onStartStudy={startStudy} onBack={()=>go("home")} onAddCards={()=>{if(activeDeck.deckType==="grammar"){setGrammarTarget(activeDeck);go("grammarImport");}else go("addCards");}} onImportMore={()=>{setVocabTarget(activeDeck);go("vocabImport");}} onEditCard={c=>{if(c.wordType==="grammar"){showToast("Grammar cards can't be edited yet — remove it and re-import that section.","info");return;}setActiveCard(c);go("editCard");}} onDeleteCard={deleteCard} onRenameDeck={renameDeck} onDeleteDeck={deleteDeck} onSetDeckUnit={setDeckUnit} onSetDeckLastStudied={setDeckLastStudied} onTogglePinnedNew={togglePinnedNew} onGraduateNow={graduateNow} poolThresholdDays={getPoolThresholdDays(settings)} savedIdx={{all:savedIdx.current[activeDeck.id+"_all"]||0,new:savedIdx.current[activeDeck.id+"_new"]||0,weak:savedIdx.current[activeDeck.id+"_weak"]||0,known:savedIdx.current[activeDeck.id+"_known"]||0,due:savedIdx.current[activeDeck.id+"_due"]||0}}/>,
     editCard:activeCard&&activeDeck&&<EditCardScreen card={activeCard} onBack={()=>go("deck")} onSave={saveEditedCard} trackUsage={trackUsage}/>,
-    study:activeDeck&&sessionCards.length>0&&<StudyScreen cards={sessionCards} currentIndex={currentIdx} onSwipe={handleSwipe} onBack={undoStudy} canUndo={studyHistory.current.length>0} onExit={()=>go("deck")} trackUsage={trackUsage} decks={decks} cardStates={cardStates} onAddToFlashcard={addToFlashcard} onToggleWeakForm={(cardId,formKey)=>toggleWeakForm(activeDeck.id,cardId,formKey)}/>,
+    study:activeDeck&&sessionCards.length>0&&<StudyScreen cards={sessionCards} currentIndex={currentIdx} onSwipe={handleSwipe} onBack={undoStudy} canUndo={studyHistory.current.length>0} onExit={()=>go("deck")} trackUsage={trackUsage} decks={decks} cardStates={cardStates} onAddToFlashcard={addToFlashcard} onToggleWeakForm={(cardId,formKey)=>toggleWeakForm(activeDeck.id,cardId,formKey)} onSaveAid={(cardId,formKey,aid)=>saveCardAid(activeDeck.id,cardId,formKey,aid)}/>,
     complete:<CompleteScreen known={sessionRes.current.known} weak={sessionRes.current.weak} onBack={()=>go("deck")}/>,
     reading:<ReadingScreen {...commonProps} onBack={()=>go("home")} onFinish={()=>{saveScreen("reading",null);saveSession(null);go("home");setSessionRating({module:"reading"});}} onAddToFlashcard={addToFlashcard} onLogStudy={logStudy}/>,
     listening:<ListeningScreen {...commonProps} onBack={()=>go("home")} onFinish={()=>{saveScreen("listening",null);saveSession(null);go("home");setSessionRating({module:"listening"});}} onAddToFlashcard={addToFlashcard} onLogStudy={logStudy}/>,
@@ -11040,7 +11102,7 @@ export default function App() {
     masterSpeaking:<ConversationScreen {...commonProps} master={true} masterPool={masterPool} onBack={()=>go("masterReview")} onFinish={()=>{saveScreen("masterSpeaking",null);saveSession(null);go("home");setSessionRating({module:"speaking",master:true});}} onLogStudy={logStudy} onAddToFlashcard={addToFlashcard}/>,
     conversation:<ConversationScreen {...commonProps} onBack={()=>go("home")} onFinish={()=>{saveScreen("conversation",null);saveSession(null);go("home");setSessionRating({module:"speaking"});}} onLogStudy={logStudy} onAddToFlashcard={addToFlashcard}/>,
     progress:<ProgressScreen cardStates={cardStates} studyLog={studyLog} onBack={()=>go("home")} onLogManual={(e)=>logStudy(e)}/>,
-    masterReview:<MasterReviewScreen decks={decks} cardStates={cardStates} onBack={()=>go("home")} onSwipeCard={handleMasterSwipe} onUndoSwipe={restoreCard} onDeckTouched={touchDeck} onToggleWeakForm={toggleWeakForm} trackUsage={trackUsage} onAddToFlashcard={addToFlashcard} studyLog={studyLog} onLogStudy={logStudy}
+    masterReview:<MasterReviewScreen decks={decks} cardStates={cardStates} onBack={()=>go("home")} onSwipeCard={handleMasterSwipe} onUndoSwipe={restoreCard} onDeckTouched={touchDeck} onToggleWeakForm={toggleWeakForm} trackUsage={trackUsage} onAddToFlashcard={addToFlashcard} studyLog={studyLog} onLogStudy={logStudy} onSaveAid={saveCardAid}
       poolThresholdDays={getPoolThresholdDays(settings)} newPoolDaily={newPoolDailyToday} onNewPoolDeckDone={markNewPoolDeckDone}
       pauseNewCards={!!settings.pauseNewCards} maxReviewsPerDayEnabled={!!settings.maxReviewsPerDayEnabled} maxReviewsPerDay={settings.maxReviewsPerDay??100} reviewsDoneToday={reviewsDoneTodayCount} onReviewLogged={logReviewToday}
       onMasterReading={(pool)=>{setMasterPool(pool);go("masterReading");}}

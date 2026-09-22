@@ -1,0 +1,11 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    // Cached learning-aid images for flashcards — each user can only read
+    // and write their own images, mirroring the users/{uid} scoping already
+    // used for this account's Firestore data.
+    match /users/{uid}/cardImages/{allPaths=**} {
+      allow read, write: if request.auth != null && request.auth.uid == uid;
+    }
+  }
+}
