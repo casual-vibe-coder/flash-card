@@ -3258,7 +3258,7 @@ CRITICAL: Every Arabic word MUST have full tashkeel (فَتْحَة ضَمَّة
 // ─────────────────────────────────────────────────────────────
 // STUDY SCREEN
 // ─────────────────────────────────────────────────────────────
-function StudyScreen({cards,currentIndex,onSwipe,onBack,canUndo,onExit,trackUsage,decks,cardStates,onAddToFlashcard,activeFormOverride,onToggleWeakForm,onSaveAid}) {
+function StudyScreen({cards,currentIndex,onSwipe,onBack,canUndo,onExit,trackUsage,decks,cardStates,onAddToFlashcard,activeFormOverride,onToggleWeakForm,onSaveAid,deckId}) {
   const [flipped,setFlipped]=useState(false);
   const [selForm,setSelForm]=useState(null);
   const [gen,setGen]=useState(null);
@@ -3275,15 +3275,22 @@ function StudyScreen({cards,currentIndex,onSwipe,onBack,canUndo,onExit,trackUsag
   // A pending inflectional weak form (e.g. failed "plural" last time) means
   // THIS review should test that form as the primary answer, not the base word.
   const testForm=pendingTestForm(card);
+  // `cards` is a snapshot taken once when the session started — it never
+  // picks up a learning aid saved mid-session (onSaveAid writes into the
+  // App's live `cardStates`, not this frozen array). Reading aidByForm off
+  // `card` directly always misses what was just cached; look it up in the
+  // live cardStates prop instead, which DOES get fresh data on every save.
+  const liveCard=(cardStates[deckId]||[]).find(c=>c.id===card.id)||card;
 
   useEffect(()=>{
     genRef.current++;
-    // Reference-chip default: the pending test form if any, else the first
-    // available form — same as before, just scoped to inflectional forms now.
-    const nextForm=testForm||availForms[0]?.[0]||null;
+    // Reference-chip default: the pending test form if any, else whichever
+    // form an aid was most recently generated for, else just the first
+    // available form.
+    const nextForm=testForm||liveCard.lastAidForm||availForms[0]?.[0]||null;
     // A learning aid already generated for this exact card+form sticks — load
     // it straight from the card instead of requiring a fresh (paid) generate.
-    const cached=nextForm?card.aidByForm?.[nextForm]:null;
+    const cached=nextForm?liveCard.aidByForm?.[nextForm]:null;
     setFlipped(false);setSelForm(nextForm);setGen(cached||null);setGenLoading(false);setImgLoading(false);
     if(window.speechSynthesis) window.speechSynthesis.cancel();
     stopTtsAudio();
@@ -3476,7 +3483,7 @@ Return ONLY valid JSON: {"sentence":"...","translation":"...","imagePrompt":"...
                   const isWeak=(card.weakForms||[]).includes(key);
                   const canFlag=INFLECTIONAL_FORMS.has(key);
                   return (
-                  <button key={key} className={`chip ${selForm===key?"chip-on":""}`} onClick={()=>{setSelForm(key);setGen(card.aidByForm?.[key]||null);}} style={{padding:"8px 14px"}}>
+                  <button key={key} className={`chip ${selForm===key?"chip-on":""}`} onClick={()=>{setSelForm(key);setGen(liveCard.aidByForm?.[key]||null);}} style={{padding:"8px 14px"}}>
                     {canFlag&&<span onClick={(e)=>{e.stopPropagation();onToggleWeakForm?.(card.id,key);}}
                       title={isWeak?"Marked weak — tap to clear":"Tap to flag this form weak"}
                       style={{color:isWeak?(selForm===key?"rgba(255,200,200,.9)":"var(--weak)"):(selForm===key?"rgba(255,255,255,.4)":"var(--border)"),fontSize:13,marginRight:1,cursor:"pointer"}}>{isWeak?"●":"○"}</span>}
@@ -8098,11 +8105,23 @@ function MasterReviewScreen({decks,cardStates,onBack,onSwipeCard,onUndoSwipe,onD
     if(!started) return;
     const curCard=sessionCards[idx];
     if(!curCard) return;
-    const availForms=Object.entries(curCard.forms||{}).filter(([,v])=>v);
-    const testForm=pendingTestForm(curCard);
-    const nextForm=testForm||availForms[0]?.[0]||null;
+    // sessionCards is a snapshot taken once at session start — it never
+    // picks up a learning aid saved mid-session. Look the live card up in
+    // cardStates (which DOES get fresh data from every onSaveAid) instead.
+    const liveCard=(cardStates[curCard._deckId]||[]).find(c=>c.id===curCard.id)||curCard;
+    const availForms=Object.entries(liveCard.forms||{}).filter(([,v])=>v);
+    const testForm=pendingTestForm(liveCard);
+    const nextForm=testForm||liveCard.lastAidForm||availForms[0]?.[0]||null;
     setSelForm(nextForm);
-    setGen(nextForm?curCard.aidByForm?.[nextForm]||null:null);
+    setGen(nextForm?liveCard.aidByForm?.[nextForm]||null:null);
+    // Deliberately NOT watching cardStates here — this effect's job is "load
+    // whatever's cached when you ARRIVE at a card" (idx/session change), not
+    // "keep re-syncing while you're sitting on one." generateAid/handleSwipe
+    // already update `gen`/selection live as you interact; if cardStates were
+    // a dependency too, ANY card update anywhere (a different card rated, an
+    // unrelated image upload finishing) would refire this and could stomp a
+    // form you'd since manually switched to.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   },[started,idx,sessionCards]);
 
   // Keyboard shortcuts
@@ -8119,6 +8138,9 @@ function MasterReviewScreen({decks,cardStates,onBack,onSwipeCard,onUndoSwipe,onD
   },[started,flipped,idx,selForm]);
 
   const card=sessionCards[idx];
+  // sessionCards is a frozen session-start snapshot — doesn't pick up a
+  // learning aid saved mid-session. Read the live version for cache lookups.
+  const liveCard=card?(cardStates[card._deckId]||[]).find(c=>c.id===card.id)||card:card;
 
   // Results screen
   if(mode==="done"){
@@ -8271,7 +8293,7 @@ Return ONLY valid JSON: {"sentence":"...","translation":"...","imagePrompt":"...
                     const isWeak=(card.weakForms||[]).includes(key);
                     const canFlag=INFLECTIONAL_FORMS.has(key);
                     return (
-                    <button key={key} className={`chip ${selForm===key?"chip-on":""}`} onClick={()=>{setSelForm(key);setGen(card.aidByForm?.[key]||null);}} style={{padding:"8px 14px"}}>
+                    <button key={key} className={`chip ${selForm===key?"chip-on":""}`} onClick={()=>{setSelForm(key);setGen(liveCard.aidByForm?.[key]||null);}} style={{padding:"8px 14px"}}>
                       {canFlag&&<span onClick={(e)=>{e.stopPropagation();onToggleWeakForm?.(card._deckId,card.id,key);}}
                         title={isWeak?"Marked weak — tap to clear":"Tap to flag this form weak"}
                         style={{color:isWeak?(selForm===key?"rgba(255,200,200,.9)":"var(--weak)"):(selForm===key?"rgba(255,255,255,.4)":"var(--border)"),fontSize:13,marginRight:1,cursor:"pointer"}}>{isWeak?"●":"○"}</span>}
@@ -11038,7 +11060,11 @@ export default function App() {
         imageUrl=null;
       }
     }
-    setCardStates(p=>({...p,[deckId]:(p[deckId]||[]).map(c=>c.id===cardId?{...c,aidByForm:{...(c.aidByForm||{}),[formKey]:{...rest,imageUrl}}}:c)}));
+    // lastAidForm drives the default-selected form next time this card comes
+    // up (see MasterReviewScreen/StudyScreen's card-change effects) — "leave
+    // it at whatever I generated last" rather than always defaulting to the
+    // first grammatical form in the list.
+    setCardStates(p=>({...p,[deckId]:(p[deckId]||[]).map(c=>c.id===cardId?{...c,lastAidForm:formKey,aidByForm:{...(c.aidByForm||{}),[formKey]:{...rest,imageUrl}}}:c)}));
   };
 
   const logStudy=(entry)=>setStudyLog(prev=>addStudyEntry(prev,entry));
@@ -11093,7 +11119,7 @@ export default function App() {
     addCards:activeDeck&&<AddCardsScreen deck={activeDeck} onBack={()=>go("deck")} onSave={saveCards} trackUsage={trackUsage}/>,
     deck:activeDeck&&<DeckScreen deck={activeDeck} cards={cardStates[activeDeck.id]||[]} onStartStudy={startStudy} onBack={()=>go("home")} onAddCards={()=>{if(activeDeck.deckType==="grammar"){setGrammarTarget(activeDeck);go("grammarImport");}else go("addCards");}} onImportMore={()=>{setVocabTarget(activeDeck);go("vocabImport");}} onEditCard={c=>{if(c.wordType==="grammar"){showToast("Grammar cards can't be edited yet — remove it and re-import that section.","info");return;}setActiveCard(c);go("editCard");}} onDeleteCard={deleteCard} onRenameDeck={renameDeck} onDeleteDeck={deleteDeck} onSetDeckUnit={setDeckUnit} onSetDeckLastStudied={setDeckLastStudied} onTogglePinnedNew={togglePinnedNew} onGraduateNow={graduateNow} poolThresholdDays={getPoolThresholdDays(settings)} savedIdx={{all:savedIdx.current[activeDeck.id+"_all"]||0,new:savedIdx.current[activeDeck.id+"_new"]||0,weak:savedIdx.current[activeDeck.id+"_weak"]||0,known:savedIdx.current[activeDeck.id+"_known"]||0,due:savedIdx.current[activeDeck.id+"_due"]||0}}/>,
     editCard:activeCard&&activeDeck&&<EditCardScreen card={activeCard} onBack={()=>go("deck")} onSave={saveEditedCard} trackUsage={trackUsage}/>,
-    study:activeDeck&&sessionCards.length>0&&<StudyScreen cards={sessionCards} currentIndex={currentIdx} onSwipe={handleSwipe} onBack={undoStudy} canUndo={studyHistory.current.length>0} onExit={()=>go("deck")} trackUsage={trackUsage} decks={decks} cardStates={cardStates} onAddToFlashcard={addToFlashcard} onToggleWeakForm={(cardId,formKey)=>toggleWeakForm(activeDeck.id,cardId,formKey)} onSaveAid={(cardId,formKey,aid)=>saveCardAid(activeDeck.id,cardId,formKey,aid)}/>,
+    study:activeDeck&&sessionCards.length>0&&<StudyScreen cards={sessionCards} currentIndex={currentIdx} onSwipe={handleSwipe} onBack={undoStudy} canUndo={studyHistory.current.length>0} onExit={()=>go("deck")} trackUsage={trackUsage} decks={decks} cardStates={cardStates} onAddToFlashcard={addToFlashcard} onToggleWeakForm={(cardId,formKey)=>toggleWeakForm(activeDeck.id,cardId,formKey)} onSaveAid={(cardId,formKey,aid)=>saveCardAid(activeDeck.id,cardId,formKey,aid)} deckId={activeDeck.id}/>,
     complete:<CompleteScreen known={sessionRes.current.known} weak={sessionRes.current.weak} onBack={()=>go("deck")}/>,
     reading:<ReadingScreen {...commonProps} onBack={()=>go("home")} onFinish={()=>{saveScreen("reading",null);saveSession(null);go("home");setSessionRating({module:"reading"});}} onAddToFlashcard={addToFlashcard} onLogStudy={logStudy}/>,
     listening:<ListeningScreen {...commonProps} onBack={()=>go("home")} onFinish={()=>{saveScreen("listening",null);saveSession(null);go("home");setSessionRating({module:"listening"});}} onAddToFlashcard={addToFlashcard} onLogStudy={logStudy}/>,
