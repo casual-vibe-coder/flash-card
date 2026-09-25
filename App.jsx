@@ -2581,23 +2581,29 @@ function SettingsScreen({settings,setSettings,onBack,usage,user,onSignOut,onRepl
         </div>
 
         {/* Backlog Recovery — mirrors Anki's own fix for a buried queue:
-            pause new-card intake and cap the daily review count so a huge
+            throttle new-card intake and cap the daily review count so a huge
             backlog never has to be faced all at once. Applies to Smart/Due/
             Weak/New/All in Master Review only — Rotation/Review New have
             their own separate pacing (deck cycling + Cards Per Session). */}
         <div style={{background:"var(--surface)",border:"1.5px solid var(--border)",borderRadius:"var(--r)",padding:"15px 17px"}}>
           <div className="sec">Backlog Recovery</div>
           <div style={{fontSize:12,color:"var(--text3)",lineHeight:1.6,marginBottom:12}}>
-            Buried under due cards? Pause new cards and cap your daily reviews so it never looks like more than you can actually do.
+            Buried under due cards? Throttle new cards and cap your daily reviews so it never looks like more than you can actually do.
           </div>
           <div style={{display:"flex",flexDirection:"column",gap:14}}>
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:10}}>
               <div style={{flex:1}}>
-                <div style={{fontSize:13,fontWeight:700,color:"var(--text)"}}>Pause New Cards</div>
-                <div style={{fontSize:11.5,color:"var(--text3)",marginTop:2,lineHeight:1.5}}>Smart Review and New Cards Only stop showing never-reviewed cards — Due and Weak are untouched. Turn back off once you're caught up.</div>
+                <div style={{fontSize:13,fontWeight:700,color:"var(--text)"}}>Throttle New Cards</div>
+                <div style={{fontSize:11.5,color:"var(--text3)",marginTop:2,lineHeight:1.5}}>Add as many cards as you want, whenever — only this many never-before-reviewed cards actually enter Smart Review/New Cards Only per day. The rest release automatically on later days, so a big batch doesn't all graduate to "due again tomorrow" at once. Off = no limit.</div>
               </div>
-              <div className={`chk ${local.pauseNewCards?"on":""}`} onClick={()=>set("pauseNewCards",!local.pauseNewCards)}>{local.pauseNewCards&&<Check size={11} color="white"/>}</div>
+              <div className={`chk ${local.newCardsPerDayEnabled!==false?"on":""}`} onClick={()=>set("newCardsPerDayEnabled",local.newCardsPerDayEnabled===false)}>{local.newCardsPerDayEnabled!==false&&<Check size={11} color="white"/>}</div>
             </div>
+            {local.newCardsPerDayEnabled!==false&&(
+              <input type="number" min="0" inputMode="numeric" className="input" placeholder="e.g. 20"
+                value={local.newCardsPerDayLimit??20}
+                onChange={e=>{const n=parseInt(e.target.value,10);set("newCardsPerDayLimit",n>=0?n:0);}}
+                style={{fontSize:13,padding:"9px 10px"}}/>
+            )}
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:10,paddingTop:10,borderTop:"1px solid var(--border)"}}>
               <div style={{flex:1}}>
                 <div style={{fontSize:13,fontWeight:700,color:"var(--text)"}}>Cap Reviews Per Day</div>
@@ -7877,10 +7883,10 @@ CRITICAL: Every Arabic phrase must have full tashkeel.`,
 // ─────────────────────────────────────────────────────────────
 // Modes governed by the real per-card SRS due-date engine (as opposed to
 // Rotation/Review New, which cycle whole decks on a calendar regardless of
-// due date) — these are the ones "Pause New Cards" and "Max Reviews Per Day"
-// (Settings → Backlog Recovery) apply to.
+// due date) — these are the ones "Throttle New Cards" and "Max Reviews Per
+// Day" (Settings → Backlog Recovery) apply to.
 const SRS_MODES=["smart","due","weak","new","all"];
-function MasterReviewScreen({decks,cardStates,onBack,onSwipeCard,onUndoSwipe,onDeckTouched,onToggleWeakForm,trackUsage,onAddToFlashcard,studyLog,onLogStudy,onMasterReading,onMasterListening,onMasterSpeaking,poolThresholdDays,newPoolDaily,onNewPoolDeckDone,pauseNewCards,maxReviewsPerDayEnabled,maxReviewsPerDay,reviewsDoneToday,onReviewLogged,onSaveAid}) {
+function MasterReviewScreen({decks,cardStates,onBack,onSwipeCard,onUndoSwipe,onDeckTouched,onToggleWeakForm,trackUsage,onAddToFlashcard,studyLog,onLogStudy,onMasterReading,onMasterListening,onMasterSpeaking,poolThresholdDays,newPoolDaily,onNewPoolDeckDone,newCardsPerDayEnabled,newCardsPerDayLimit,newCardsIntroducedToday,maxReviewsPerDayEnabled,maxReviewsPerDay,reviewsDoneToday,onReviewLogged,onSaveAid}) {
   const SCREEN_NAME="masterReview";
   const saved=useRef(loadScreen(SCREEN_NAME)||{}).current;
   const [started,setStarted]=useState(saved.started||false);
@@ -7946,6 +7952,13 @@ function MasterReviewScreen({decks,cardStates,onBack,onSwipeCard,onUndoSwipe,onD
   const dueCards=allCards.filter(c=>c.srsLastReview&&c.srsNextReview&&c.srsNextReview<=now);
   const weakCards=allCards.filter(c=>c.status==="weak");
   const newCards=allCards.filter(c=>c.status==="new"||!c.status);
+  // New-card release throttle: only this many never-reviewed cards are
+  // actually ELIGIBLE to enter a session today (id sort is a stable FIFO-ish
+  // proxy for creation order — card ids embed a creation timestamp). The
+  // rest of `newCards` still exist and will release on a later day; nothing
+  // is hidden or lost, just paced.
+  const newCardsRemainingToday=newCardsPerDayEnabled?Math.max(0,newCardsPerDayLimit-newCardsIntroducedToday):Infinity;
+  const eligibleNewCards=[...newCards].sort((a,b)=>a.id<b.id?-1:a.id>b.id?1:0).slice(0,newCardsRemainingToday);
   const knownCards=allCards.filter(c=>c.status==="known");
   const threshold=poolThresholdDays||NEW_POOL_DEFAULT_THRESHOLD_DAYS;
   const oldPoolDecks=decks.filter(d=>d.deckType!=="grammar"&&getDeckPool(d,threshold)==="old");
@@ -7971,13 +7984,14 @@ function MasterReviewScreen({decks,cardStates,onBack,onSwipeCard,onUndoSwipe,onD
     }
     let pool=[];
     if(startMode==="smart"){
-      // Anki-style: due first, then weak, then new. "Pause New Cards"
-      // (Settings → Backlog Recovery) drops the new tier entirely — the
-      // "set new cards to 0" backlog trick — without touching due/weak.
-      pool=[...sortByDueDate(dueCards),...weakCards.filter(c=>!dueCards.includes(c)),...(pauseNewCards?[]:newCards)];
+      // Anki-style: due first, then weak, then new — "new" is only the
+      // throttle-eligible subset (Settings → Backlog Recovery → Throttle New
+      // Cards), so a big batch just-added releases gradually instead of
+      // graduating to "due again tomorrow" all at once. Due/weak untouched.
+      pool=[...sortByDueDate(dueCards),...weakCards.filter(c=>!dueCards.includes(c)),...eligibleNewCards];
     } else if(startMode==="due") pool=[...sortByDueDate(dueCards)];
     else if(startMode==="weak") pool=[...weakCards];
-    else if(startMode==="new") pool=pauseNewCards?[]:[...newCards];
+    else if(startMode==="new") pool=[...eligibleNewCards];
     else if(startMode==="rotation"){
       // Cycle through every OLD-pool deck evenly instead of letting due-dates
       // decide — whole decks pulled stalest-first (never-studied decks
@@ -8007,7 +8021,7 @@ function MasterReviewScreen({decks,cardStates,onBack,onSwipeCard,onUndoSwipe,onD
       :limit;
     pool=pool.slice(0,effectiveLimit);
     if(!pool.length){
-      showToast(pauseNewCards&&startMode==="new"?"New cards are paused — turn them back on in Settings.":"No cards available for this mode","error");
+      showToast(startMode==="new"&&newCards.length&&!eligibleNewCards.length?"Today's new-card throttle is used up — the rest release tomorrow (Settings → Backlog Recovery).":"No cards available for this mode","error");
       return;
     }
     // Tag each card with its deckId for proper state updates
@@ -8449,7 +8463,7 @@ Return ONLY valid JSON: {"sentence":"...","translation":"...","imagePrompt":"...
           <div style={{width:40,height:40,borderRadius:12,background:"var(--accent-bg)",display:"flex",alignItems:"center",justifyContent:"center"}}><Zap size={18} color="var(--accent)"/></div>
           <div style={{flex:1}}>
             <div style={{fontWeight:600,fontSize:14}}>Smart Review</div>
-            <div style={{fontSize:12,color:"var(--text3)",marginTop:2}}>Due ({dueCards.length}) → Weak ({weakCards.length}) → New ({pauseNewCards?"paused":newCards.length})</div>
+            <div style={{fontSize:12,color:"var(--text3)",marginTop:2}}>Due ({dueCards.length}) → Weak ({weakCards.length}) → New ({eligibleNewCards.length} today{newCards.length>eligibleNewCards.length?` of ${newCards.length}`:""})</div>
           </div>
         </div>
         <div className="test-option" onClick={()=>{if(!newPoolDecks.length) return;setMode("newPool");start("newPool");}}
@@ -8484,9 +8498,13 @@ Return ONLY valid JSON: {"sentence":"...","translation":"...","imagePrompt":"...
           </div>
         )}
         {newCards.length>0&&(
-          <div className="test-option" onClick={()=>{if(pauseNewCards) return;setMode("new");start("new");}} style={pauseNewCards?{opacity:.5,cursor:"default"}:{}}>
+          <div className="test-option" onClick={()=>{if(!eligibleNewCards.length) return;setMode("new");start("new");}} style={!eligibleNewCards.length?{opacity:.5,cursor:"default"}:{}}>
             <div style={{width:40,height:40,borderRadius:12,background:"var(--surface2)",display:"flex",alignItems:"center",justifyContent:"center"}}><Plus size={18} color="var(--text3)"/></div>
-            <div style={{flex:1}}><div style={{fontWeight:600,fontSize:14}}>New Cards Only</div><div style={{fontSize:12,color:"var(--text3)",marginTop:2}}>{pauseNewCards?"Paused — turn back on in Settings":`${newCards.length} unreviewed cards`}</div></div>
+            <div style={{flex:1}}><div style={{fontWeight:600,fontSize:14}}>New Cards Only</div><div style={{fontSize:12,color:"var(--text3)",marginTop:2}}>
+              {!eligibleNewCards.length?"Today's throttle used up — more release tomorrow"
+                :eligibleNewCards.length<newCards.length?`${eligibleNewCards.length} of ${newCards.length} unreviewed cards — rest release tomorrow`
+                :`${newCards.length} unreviewed cards`}
+            </div></div>
           </div>
         )}
         <div className="test-option" onClick={()=>{setMode("all");start("all");}}>
@@ -10919,6 +10937,19 @@ export default function App() {
     return {...s,reviewsDoneDaily:{date:today,count:cur.count+1}};
   });
   const reviewsDoneTodayCount=settings.reviewsDoneDaily?.date===localDateKey()?(settings.reviewsDoneDaily.count||0):0;
+  // New-card release throttle (Settings → Backlog Recovery → Throttle New
+  // Cards) — mirrors real Anki's own "New cards/day" deck setting: caps how
+  // many never-before-reviewed cards enter the review cycle per day,
+  // regardless of how many exist. Lets a big teacher-session batch get added
+  // to the app in full right away — the app releases them gradually on its
+  // own instead of every one of them graduating to "due again tomorrow"
+  // simultaneously (see the backlog-math discussion this came out of).
+  const logNewCardIntroduced=()=>setSettings(s=>{
+    const today=localDateKey();
+    const cur=s.newCardsIntroducedDaily?.date===today?s.newCardsIntroducedDaily:{date:today,count:0};
+    return {...s,newCardsIntroducedDaily:{date:today,count:cur.count+1}};
+  });
+  const newCardsIntroducedTodayCount=settings.newCardsIntroducedDaily?.date===localDateKey()?(settings.newCardsIntroducedDaily.count||0):0;
   // Direct per-form weak flag, independent of the swipe/SRS flow — lets you
   // flag a SECOND form weak (e.g. Plural 2) while a different form (e.g.
   // Passive Part) is already the active retest, without that swipe silently
@@ -10964,6 +10995,7 @@ export default function App() {
         prevIdx:currentIdx,
         prevRes:{...sessionRes.current},
       });
+      if(prevCard.status==="new"||!prevCard.status) logNewCardIntroduced();
     }
     sessionRes.current[ns==="known"?"known":"weak"]++;
     if(!deckTouchStampedRef.current&&sessionRes.current.known+sessionRes.current.weak>=deckTouchGoalRef.current&&activeDeck){
@@ -11071,6 +11103,8 @@ export default function App() {
 
   // Master review swipe — updates the correct deck's card
   const handleMasterSwipe=(deckId,cardId,status,activeForm)=>{
+    const prevCard=(cardStates[deckId]||[]).find(c=>c.id===cardId);
+    if(prevCard&&(prevCard.status==="new"||!prevCard.status)) logNewCardIntroduced();
     setCardStates(p=>({...p,[deckId]:(p[deckId]||[]).map(c=>{
       if(c.id!==cardId) return c;
       const srs=calculateSRS(c,status);
@@ -11130,7 +11164,7 @@ export default function App() {
     progress:<ProgressScreen cardStates={cardStates} studyLog={studyLog} onBack={()=>go("home")} onLogManual={(e)=>logStudy(e)}/>,
     masterReview:<MasterReviewScreen decks={decks} cardStates={cardStates} onBack={()=>go("home")} onSwipeCard={handleMasterSwipe} onUndoSwipe={restoreCard} onDeckTouched={touchDeck} onToggleWeakForm={toggleWeakForm} trackUsage={trackUsage} onAddToFlashcard={addToFlashcard} studyLog={studyLog} onLogStudy={logStudy} onSaveAid={saveCardAid}
       poolThresholdDays={getPoolThresholdDays(settings)} newPoolDaily={newPoolDailyToday} onNewPoolDeckDone={markNewPoolDeckDone}
-      pauseNewCards={!!settings.pauseNewCards} maxReviewsPerDayEnabled={!!settings.maxReviewsPerDayEnabled} maxReviewsPerDay={settings.maxReviewsPerDay??100} reviewsDoneToday={reviewsDoneTodayCount} onReviewLogged={logReviewToday}
+      newCardsPerDayEnabled={settings.newCardsPerDayEnabled!==false} newCardsPerDayLimit={settings.newCardsPerDayLimit??20} newCardsIntroducedToday={newCardsIntroducedTodayCount} maxReviewsPerDayEnabled={!!settings.maxReviewsPerDayEnabled} maxReviewsPerDay={settings.maxReviewsPerDay??100} reviewsDoneToday={reviewsDoneTodayCount} onReviewLogged={logReviewToday}
       onMasterReading={(pool)=>{setMasterPool(pool);go("masterReading");}}
       onMasterListening={(pool)=>{setMasterPool(pool);go("masterListening");}}
       onMasterSpeaking={(pool)=>{setMasterPool(pool);go("masterSpeaking");}}/>,
