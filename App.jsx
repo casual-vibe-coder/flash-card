@@ -2878,7 +2878,7 @@ CRITICAL: Every Arabic word MUST have full tashkeel (فَتْحَة ضَمَّة
 // ─────────────────────────────────────────────────────────────
 // DECK SCREEN — with edit/delete deck
 // ─────────────────────────────────────────────────────────────
-function DeckScreen({deck,cards,onStartStudy,onBack,onAddCards,onImportMore,onEditCard,onDeleteCard,onRenameDeck,onDeleteDeck,onSetDeckUnit,onSetDeckLastStudied,onTogglePinnedNew,onGraduateNow,poolThresholdDays,savedIdx}) {
+function DeckScreen({deck,cards,onStartStudy,onBack,onAddCards,onImportMore,onEditCard,onDeleteCard,onRenameDeck,onDeleteDeck,onSetDeckUnit,onSetDeckLastStudied,onTogglePinnedNew,onGraduateNow,poolThresholdDays,newCardsRemainingToday,savedIdx}) {
   const [deckMenu,setDeckMenu]=useState(false);
   const [renaming,setRenaming]=useState(false);
   const [linkingUnit,setLinkingUnit]=useState(false);
@@ -2956,16 +2956,21 @@ function DeckScreen({deck,cards,onStartStudy,onBack,onAddCards,onImportMore,onEd
         </div>
         {cards.length>0&&(()=>{
           const newCount=cards.filter(c=>c.status==="new"||!c.status).length;
+          // Study New pulls from the same daily release throttle as Master
+          // Review — cap the count/session shown here to match, so the chip
+          // never advertises more cards than a tap will actually deliver.
+          const eligibleNewCount=Math.min(newCount,newCardsRemainingToday??Infinity);
           const now=Date.now();
           const dueC=cards.filter(c=>c.srsLastReview&&c.srsNextReview&&c.srsNextReview<=now).length;
-          const studyCounts={all:cards.length,new:newCount,weak,known,due:dueC};
+          const studyCounts={all:cards.length,new:eligibleNewCount,weak,known,due:dueC};
           const studyCount=studyCounts[studyFilter]||cards.length;
           const filterSavedIdx=savedIdx?.[studyFilter]||0;
+          const newLabel=eligibleNewCount<newCount?`New (${eligibleNewCount} of ${newCount})`:`New (${newCount})`;
           return (
             <div style={{display:"flex",flexDirection:"column",gap:8,marginBottom:20}}>
               <div className="sec">Study Filter</div>
               <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:4}}>
-                {[["all",`All (${cards.length})`],["new",`New (${newCount})`],["weak",`Weak (${weak})`],["known",`Known (${known})`],["due",`Due (${dueC})`]].map(([k,label])=>(
+                {[["all",`All (${cards.length})`],["new",newLabel],["weak",`Weak (${weak})`],["known",`Known (${known})`],["due",`Due (${dueC})`]].map(([k,label])=>(
                   <button key={k} className={`chip ${studyFilter===k?"chip-on":""}`} onClick={()=>setStudyFilter(k)} style={{padding:"5px 11px",fontSize:12}}>{label}</button>
                 ))}
               </div>
@@ -10950,6 +10955,7 @@ export default function App() {
     return {...s,newCardsIntroducedDaily:{date:today,count:cur.count+1}};
   });
   const newCardsIntroducedTodayCount=settings.newCardsIntroducedDaily?.date===localDateKey()?(settings.newCardsIntroducedDaily.count||0):0;
+  const newCardsRemainingTodayCount=settings.newCardsPerDayEnabled!==false?Math.max(0,(settings.newCardsPerDayLimit??20)-newCardsIntroducedTodayCount):Infinity;
   // Direct per-form weak flag, independent of the swipe/SRS flow — lets you
   // flag a SECOND form weak (e.g. Plural 2) while a different form (e.g.
   // Passive Part) is already the active retest, without that swipe silently
@@ -10967,9 +10973,14 @@ export default function App() {
   const startStudy=(mode,restart=false)=>{
     const dc=cardStates[activeDeck.id]||[];
     const now=Date.now();
+    // "New" respects the same daily release throttle as Master Review's New
+    // Cards Only/Smart Review — otherwise studying a deck directly would be a
+    // way to bypass it entirely and dump a whole batch into the SRS cycle at
+    // once, defeating the point. "All" is left unthrottled on purpose, same
+    // as Master Review's "All Cards" — an explicit "show me everything" mode.
     const toStudy=mode==="weak"?dc.filter(c=>c.status==="weak")
       :mode==="due"?dc.filter(c=>c.srsLastReview&&c.srsNextReview&&c.srsNextReview<=now)
-      :mode==="new"?dc.filter(c=>c.status==="new"||!c.status)
+      :mode==="new"?[...dc.filter(c=>c.status==="new"||!c.status)].sort((a,b)=>a.id<b.id?-1:a.id>b.id?1:0).slice(0,newCardsRemainingTodayCount)
       :mode==="known"?dc.filter(c=>c.status==="known")
       :sortByDueDate(dc);
     if(!toStudy.length) return;
@@ -11151,7 +11162,7 @@ export default function App() {
     settings:<SettingsScreen settings={settings} setSettings={setSettings} onBack={()=>go("home")} usage={usage} user={user} onSignOut={handleSignOut} onReplayOnboarding={()=>setShowOnboarding(true)} profile={profile} setProfile={setProfile} studyLog={studyLog} onUpdateTargets={(t)=>setStudyLog(sl=>({...sl,targets:t}))} decks={decks} cardStates={cardStates} setCardStates={setCardStates} trackUsage={trackUsage} onResetUsage={resetUsageCounters}/>,
     createDeck:<CreateDeckScreen onBack={()=>go("home")} onCreate={createDeck}/>,
     addCards:activeDeck&&<AddCardsScreen deck={activeDeck} onBack={()=>go("deck")} onSave={saveCards} trackUsage={trackUsage}/>,
-    deck:activeDeck&&<DeckScreen deck={activeDeck} cards={cardStates[activeDeck.id]||[]} onStartStudy={startStudy} onBack={()=>go("home")} onAddCards={()=>{if(activeDeck.deckType==="grammar"){setGrammarTarget(activeDeck);go("grammarImport");}else go("addCards");}} onImportMore={()=>{setVocabTarget(activeDeck);go("vocabImport");}} onEditCard={c=>{if(c.wordType==="grammar"){showToast("Grammar cards can't be edited yet — remove it and re-import that section.","info");return;}setActiveCard(c);go("editCard");}} onDeleteCard={deleteCard} onRenameDeck={renameDeck} onDeleteDeck={deleteDeck} onSetDeckUnit={setDeckUnit} onSetDeckLastStudied={setDeckLastStudied} onTogglePinnedNew={togglePinnedNew} onGraduateNow={graduateNow} poolThresholdDays={getPoolThresholdDays(settings)} savedIdx={{all:savedIdx.current[activeDeck.id+"_all"]||0,new:savedIdx.current[activeDeck.id+"_new"]||0,weak:savedIdx.current[activeDeck.id+"_weak"]||0,known:savedIdx.current[activeDeck.id+"_known"]||0,due:savedIdx.current[activeDeck.id+"_due"]||0}}/>,
+    deck:activeDeck&&<DeckScreen deck={activeDeck} cards={cardStates[activeDeck.id]||[]} onStartStudy={startStudy} onBack={()=>go("home")} onAddCards={()=>{if(activeDeck.deckType==="grammar"){setGrammarTarget(activeDeck);go("grammarImport");}else go("addCards");}} onImportMore={()=>{setVocabTarget(activeDeck);go("vocabImport");}} onEditCard={c=>{if(c.wordType==="grammar"){showToast("Grammar cards can't be edited yet — remove it and re-import that section.","info");return;}setActiveCard(c);go("editCard");}} onDeleteCard={deleteCard} onRenameDeck={renameDeck} onDeleteDeck={deleteDeck} onSetDeckUnit={setDeckUnit} onSetDeckLastStudied={setDeckLastStudied} onTogglePinnedNew={togglePinnedNew} onGraduateNow={graduateNow} poolThresholdDays={getPoolThresholdDays(settings)} newCardsRemainingToday={newCardsRemainingTodayCount} savedIdx={{all:savedIdx.current[activeDeck.id+"_all"]||0,new:savedIdx.current[activeDeck.id+"_new"]||0,weak:savedIdx.current[activeDeck.id+"_weak"]||0,known:savedIdx.current[activeDeck.id+"_known"]||0,due:savedIdx.current[activeDeck.id+"_due"]||0}}/>,
     editCard:activeCard&&activeDeck&&<EditCardScreen card={activeCard} onBack={()=>go("deck")} onSave={saveEditedCard} trackUsage={trackUsage}/>,
     study:activeDeck&&sessionCards.length>0&&<StudyScreen cards={sessionCards} currentIndex={currentIdx} onSwipe={handleSwipe} onBack={undoStudy} canUndo={studyHistory.current.length>0} onExit={()=>go("deck")} trackUsage={trackUsage} decks={decks} cardStates={cardStates} onAddToFlashcard={addToFlashcard} onToggleWeakForm={(cardId,formKey)=>toggleWeakForm(activeDeck.id,cardId,formKey)} onSaveAid={(cardId,formKey,aid)=>saveCardAid(activeDeck.id,cardId,formKey,aid)} deckId={activeDeck.id}/>,
     complete:<CompleteScreen known={sessionRes.current.known} weak={sessionRes.current.weak} onBack={()=>go("deck")}/>,
