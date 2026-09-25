@@ -2647,8 +2647,6 @@ function SettingsScreen({settings,setSettings,onBack,usage,user,onSignOut,onRepl
           </div>
         </div>
 
-        <SRSSettingsPanel srsSettings={local.srs} onChange={srs=>set("srs",srs)}/>
-
         <CardCleanupTool decks={decks} cardStates={cardStates} setCardStates={setCardStates} trackUsage={trackUsage}/>
 
         <DuplicateFinder decks={decks} cardStates={cardStates} setCardStates={setCardStates}/>
@@ -8839,67 +8837,6 @@ function ProgressScreen({cardStates,studyLog,onBack,onLogManual}) {
           </div>
         </div>
       )}
-    </div>
-  );
-}
-
-// ─────────────────────────────────────────────────────────────
-// SRS SETTINGS PANEL (used in Settings screen)
-// ─────────────────────────────────────────────────────────────
-const DEFAULT_SRS_SETTINGS = {
-  dailyLimit: 50,
-  newCardsPerDay: 10,
-  weakPriority: true,
-  overduePriority: true,
-};
-
-function SRSSettingsPanel({srsSettings,onChange}) {
-  const s={...DEFAULT_SRS_SETTINGS,...srsSettings};
-  const set=(k,v)=>onChange({...s,[k]:v});
-  return (
-    <div style={{background:"var(--surface)",border:"1.5px solid var(--border)",borderRadius:"var(--r)",padding:"15px 17px"}}>
-      <div className="sec">Spaced Repetition Settings</div>
-      <div style={{display:"flex",flexDirection:"column",gap:14}}>
-        <div>
-          <label className="lbl">Daily Review Limit</label>
-          <div style={{display:"flex",gap:6}}>
-            {[20,50,100,150,200,300,999].map(n=>(
-              <button key={n} className={`chip ${s.dailyLimit===n?"chip-on":""}`} onClick={()=>set("dailyLimit",n)} style={{flex:1,justifyContent:"center",padding:"8px 0",fontSize:12,minWidth:42}}>
-                {n>=999?"All":n}
-              </button>
-            ))}
-          </div>
-        </div>
-        <div>
-          <label className="lbl">New Cards Per Session</label>
-          <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
-            {[5,10,20,50,100,999].map(n=>(
-              <button key={n} className={`chip ${s.newCardsPerDay===n?"chip-on":""}`} onClick={()=>set("newCardsPerDay",n)} style={{flex:1,justifyContent:"center",padding:"8px 0",fontSize:12,minWidth:48}}>
-                {n>=999?"All":n}
-              </button>
-            ))}
-          </div>
-        </div>
-        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-          <div><span style={{fontSize:13.5,color:"var(--text2)"}}>Prioritize weak cards</span><div style={{fontSize:11,color:"var(--text3)"}}>Weak cards appear before new ones</div></div>
-          <div className={`chk ${s.weakPriority?"on":""}`} onClick={()=>set("weakPriority",!s.weakPriority)}>{s.weakPriority&&<Check size={11} color="white"/>}</div>
-        </div>
-        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-          <div><span style={{fontSize:13.5,color:"var(--text2)"}}>Prioritize overdue cards</span><div style={{fontSize:11,color:"var(--text3)"}}>Most overdue cards first in queue</div></div>
-          <div className={`chk ${s.overduePriority?"on":""}`} onClick={()=>set("overduePriority",!s.overduePriority)}>{s.overduePriority&&<Check size={11} color="white"/>}</div>
-        </div>
-      </div>
-      <div className="divider"/>
-      <div style={{background:"var(--info-bg)",border:"1px solid var(--info-border)",borderRadius:"var(--rxs)",padding:"12px 14px"}}>
-        <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:8}}><HelpCircle size={13} color="var(--info)"/><span style={{fontSize:12,fontWeight:700,color:"var(--info)"}}>How Review Works</span></div>
-        <div style={{fontSize:12,color:"var(--text2)",lineHeight:1.7}}>
-          <strong>New</strong> — Cards you haven't reviewed yet. Shown after due cards.<br/>
-          <strong>Weak</strong> — You marked "Needs Practice." Comes back in the same or next session.<br/>
-          <strong>Known</strong> — You marked "Know It." Interval increases each time (1d → 3d → 7d → …).<br/>
-          <strong>Due</strong> — Known cards whose review interval has passed. Prioritized first.<br/><br/>
-          Each correct recall increases the interval. Each "weak" mark resets it. This is SM-2 spaced repetition — the more you know a card, the less often you see it.
-        </div>
-      </div>
     </div>
   );
 }
