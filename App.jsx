@@ -403,6 +403,10 @@ function getDeckPool(deck,thresholdDays){
 function localDateKey(d=new Date()){
   return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
 }
+// Curated list for Settings → Immersion Mode's native-language picker — kept
+// short so prompts stay reliable; "Other" (falls through to a free-text
+// input) covers anything not listed here, e.g. Bengali.
+const NATIVE_LANGUAGE_OPTIONS = ["English","Spanish","French","Bengali","Urdu","Hindi","Turkish","Indonesian","Other"];
 const OR_MODELS = [
   // OpenAI
   {id:"openai/gpt-4o-mini",        label:"GPT-4o Mini  · Fast · Cheap"},
@@ -1202,6 +1206,65 @@ async function generateImage(prompt, trackFn=null) {
 }
 
 // ─────────────────────────────────────────────────────────────
+// IMMERSION MODE — monolingual Arabic definition, generated once per card
+// (not per form: one grasp of the root meaning is enough to extrapolate to
+// its conjugations) and cached via saveCardImmersionDef, same pattern as
+// the learning-aid sentence cache. Shared by StudyScreen and
+// MasterReviewScreen so the prompt only lives in one place.
+// ─────────────────────────────────────────────────────────────
+async function generateImmersionDefinition(card, cardStates, trackFn) {
+  // Same "pull from what the learner already knows" pool as the sentence
+  // generator (generate()/generateAid()) — the whole point of immersion mode
+  // is explaining something new using words that are already familiar.
+  const learnedPool = Object.values(cardStates).flat().filter(c => c.status === "known" || c.status === "weak");
+  const learnedSample = [...learnedPool].sort(() => Math.random() - 0.5).slice(0, 60).map(c => c.arabicBase).join("، ");
+  const isGrammar = card.wordType === "grammar";
+  let prompt;
+  if (isGrammar) {
+    // Grammar cards are text-heavier (a whole rule, not one word) — reuses
+    // the exact same cache field/mechanism as vocab, just a different
+    // prompt: paraphrase the existing (native-language) explanation into
+    // simple Arabic instead of defining a single word.
+    const explanation = card.grammar?.explanation || "";
+    if (!explanation) return null;
+    prompt = `${BAYNA_YADAYK_STYLE}
+
+You are rewriting a grammar-rule explanation in simple Arabic for a language learner — NO translation, explain the rule using Arabic itself.
+
+Grammar concept: "${card.english || ""}"${card.arabicBase ? ` (Arabic term: "${card.arabicBase}")` : ""}
+Existing explanation, for YOUR context only, never to appear verbatim in the output: "${explanation}"
+
+Write a short, simple Arabic explanation (roughly 2-4 sentences) of this SAME grammar rule, built PRIMARILY from this pool of words the learner already knows: ${learnedSample || "(none yet — use only the simplest, most basic vocabulary)"}
+Grammar is more abstract than vocabulary, so a few common grammatical terms outside that pool are fine when truly needed — but keep the explanation itself as simple and concrete as possible, with an example if that helps.
+
+CRITICAL: Every Arabic word MUST have full tashkeel.
+Return ONLY valid JSON: {"definition":"..."}`;
+  } else {
+    const arabicForm = card.arabicBase || Object.values(card.forms || {}).find(Boolean) || "";
+    if (!arabicForm) return null;
+    prompt = `${BAYNA_YADAYK_STYLE}
+
+You are writing a monolingual Arabic dictionary-style definition for a language learner — NO translation, explain the word using Arabic itself.
+
+Arabic word: "${arabicForm}"${card.english ? ` (its meaning, for YOUR context only, never to appear in the output: "${card.english}")` : ""}
+
+Write ONE short, simple Arabic sentence or phrase (roughly 5-12 words) that explains what this word means, built PRIMARILY from this pool of words the learner already knows: ${learnedSample || "(none yet — use only the simplest, most basic vocabulary)"}
+Only reach for a word outside that pool when there is truly no way to explain the meaning without it, and even then keep it basic/common.
+
+QUALITY RULES:
+- This is a DEFINITION, not an example sentence using the word — do not just use the word in a sentence, actually explain what it means.
+- Simple enough for a learner who knows roughly this vocabulary pool to understand every word in your definition.
+- Grammatically correct, natural Modern Standard Arabic.
+
+CRITICAL: Every Arabic word MUST have full tashkeel.
+Return ONLY valid JSON: {"definition":"..."}`;
+  }
+  const raw = await callClaudeWithTashkeel(prompt, isGrammar ? 400 : 250, "sentence", trackFn);
+  const parsed = extractJSON(raw);
+  return parsed?.definition || null;
+}
+
+// ─────────────────────────────────────────────────────────────
 // SHARED COMPONENTS
 // ─────────────────────────────────────────────────────────────
 function Hdr({title,sub,onBack,right}) {
@@ -1649,7 +1712,7 @@ function renderDeckCard(deck,cardStates,onOpenDeck,isGrammar=false,poolThreshold
   );
 }
 
-function HomeScreen({decks,cardStates,onOpenDeck,onSettings,onCreateDeck,onReading,onListening,onConversation,onDictation,onCapsules,onSearch,onProgress,onMasterReview,onGuide,onPresets,onGrammarImport,onVocabImport,darkMode,onToggleDark,studyLog,poolThresholdDays}) {
+function HomeScreen({decks,cardStates,onOpenDeck,onSettings,onCreateDeck,onReading,onListening,onConversation,onDictation,onCapsules,onSearch,onProgress,onMasterReview,onGuide,onPresets,onGrammarImport,onVocabImport,darkMode,onToggleDark,studyLog,poolThresholdDays,immersionMode,immersionNudgeShown,onImmersionNudgeAction}) {
   const [deckSort,setDeckSort]=useState(()=>localStorage.getItem("arabic_fc_deck_sort")||"newest");
   useEffect(()=>{localStorage.setItem("arabic_fc_deck_sort",deckSort);},[deckSort]);
   const sortDecks=(arr)=>{
@@ -1717,6 +1780,22 @@ function HomeScreen({decks,cardStates,onOpenDeck,onSettings,onCreateDeck,onReadi
         <TipBanner id="home-welcome" title="New here? Start with the basics">
           Create a deck and add words, then tap <b>Master Review</b> to study. The practice modules and <b>Immersion Capsules</b> use your own vocabulary. Tap the <b>?</b> up top anytime for a full guide.
         </TipBanner>
+        {/* One-time nudge at ~3,000 known words — never auto-switches the
+            app's mode on its own, just surfaces the option once and never
+            shows again either way (acted on or dismissed). */}
+        {!immersionMode&&!immersionNudgeShown&&knownCount>=3000&&(
+          <div style={{background:"var(--accent-bg)",border:"1px solid var(--accent-border)",borderRadius:"var(--rs)",padding:"11px 13px",display:"flex",gap:10,alignItems:"flex-start",marginBottom:12}}>
+            <Sparkles size={15} color="var(--accent)" style={{flexShrink:0,marginTop:1}}/>
+            <div style={{flex:1,fontSize:12.5,color:"var(--text2)",lineHeight:1.55}}>
+              <div style={{fontWeight:700,color:"var(--accent)",marginBottom:2}}>{knownCount} words known — ready for Immersion Mode?</div>
+              You're past beginner level. Immersion Mode switches vocab cards to Arabic-only — the card shows the Arabic word, and the meaning is explained in simple Arabic instead of translated. Turn it on anytime in Settings.
+              <div style={{display:"flex",gap:8,marginTop:8}}>
+                <button className="btn btn-sm" onClick={()=>onImmersionNudgeAction?.("enable")} style={{background:"var(--accent)",color:"white",padding:"6px 12px",borderRadius:"var(--rxs)",fontSize:12,fontWeight:600}}>Turn On</button>
+                <button className="btn btn-sm" onClick={()=>onImmersionNudgeAction?.("dismiss")} style={{background:"var(--surface2)",color:"var(--text2)",padding:"6px 12px",borderRadius:"var(--rxs)",fontSize:12}}>Not Yet</button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Dashboard Stats */}
@@ -2580,6 +2659,45 @@ function SettingsScreen({settings,setSettings,onBack,usage,user,onSignOut,onRepl
           <div style={{fontSize:11,color:"var(--text3)",marginTop:2}}>{NEW_POOL_MIN_THRESHOLD_DAYS}–{NEW_POOL_MAX_THRESHOLD_DAYS} days · default {NEW_POOL_DEFAULT_THRESHOLD_DAYS}. Pin an individual deck (Deck Options → Keep in Daily Review) to hold it past this regardless.</div>
         </div>
 
+        {/* Immersion Mode — Arabic-first cards instead of translation cards,
+            once you're past beginner level. Native language stays configurable
+            so the translation side (used below this threshold, and always for
+            grammar unless separately opted in) isn't hardcoded to English. */}
+        <div style={{background:"var(--surface)",border:"1.5px solid var(--border)",borderRadius:"var(--r)",padding:"15px 17px"}}>
+          <div className="sec">Immersion Mode</div>
+          <div style={{fontSize:12,color:"var(--text3)",lineHeight:1.6,marginBottom:12}}>
+            Once you're past beginner level (~3,000 words), switch vocab cards from translation to Arabic-only: the card shows the Arabic word, and flipping it explains the meaning in simple Arabic built from words you already know — instead of just giving you the {settings.nativeLanguage||"English"} translation.
+          </div>
+          <div style={{marginBottom:14}}>
+            <label className="lbl">Your Native Language</label>
+            <select className="input" value={NATIVE_LANGUAGE_OPTIONS.includes(local.nativeLanguage)?local.nativeLanguage:(local.nativeLanguage?"Other":"English")}
+              onChange={e=>set("nativeLanguage",e.target.value==="Other"?"":e.target.value)} style={{fontSize:13}}>
+              {NATIVE_LANGUAGE_OPTIONS.map(l=><option key={l} value={l}>{l}</option>)}
+            </select>
+            {(!NATIVE_LANGUAGE_OPTIONS.includes(local.nativeLanguage))&&(
+              <input className="input" placeholder="Type your language" value={local.nativeLanguage||""}
+                onChange={e=>set("nativeLanguage",e.target.value)} style={{marginTop:6,fontSize:13}}/>
+            )}
+            <div style={{fontSize:11,color:"var(--text3)",marginTop:4}}>This is what new cards' translation side is generated in — not fixed to English.</div>
+          </div>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:10}}>
+            <div style={{flex:1}}>
+              <div style={{fontSize:13,fontWeight:700,color:"var(--text)"}}>Immersion Mode (Vocab)</div>
+              <div style={{fontSize:11.5,color:"var(--text3)",marginTop:2,lineHeight:1.5}}>Applies everywhere — Study and Master Review. Existing cards generate their Arabic explanation the first time you view them in this mode; nothing is lost, {settings.nativeLanguage||"English"} content stays on the card either way.</div>
+            </div>
+            <div className={`chk ${local.immersionMode?"on":""}`} onClick={()=>set("immersionMode",!local.immersionMode)}>{local.immersionMode&&<Check size={11} color="white"/>}</div>
+          </div>
+          {local.immersionMode&&(
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:10,paddingTop:10,marginTop:10,borderTop:"1px solid var(--border)"}}>
+              <div style={{flex:1}}>
+                <div style={{fontSize:13,fontWeight:700,color:"var(--text)"}}>Also Immerse Grammar Cards</div>
+                <div style={{fontSize:11.5,color:"var(--text3)",marginTop:2,lineHeight:1.5}}>Off by default — grammar is higher-abstraction, usually easier to learn in your own language even once vocab is fully Arabic.</div>
+              </div>
+              <div className={`chk ${local.grammarImmersionMode?"on":""}`} onClick={()=>set("grammarImmersionMode",!local.grammarImmersionMode)}>{local.grammarImmersionMode&&<Check size={11} color="white"/>}</div>
+            </div>
+          )}
+        </div>
+
         {/* Backlog Recovery — mirrors Anki's own fix for a buried queue:
             throttle new-card intake and cap the daily review count so a huge
             backlog never has to be faced all at once. Applies to Smart/Due/
@@ -2698,7 +2816,8 @@ function CreateDeckScreen({onBack,onCreate}) {
 // ─────────────────────────────────────────────────────────────
 // ADD CARDS — with per-card delete in preview
 // ─────────────────────────────────────────────────────────────
-function AddCardsScreen({deck,onBack,onSave,trackUsage}) {
+function AddCardsScreen({deck,onBack,onSave,trackUsage,nativeLanguage}) {
+  const lang=nativeLanguage||"English";
   const [inputLang,setInputLang]=useState("english");
   const [wordType,setWordType]=useState("noun");
   const [selForms,setSelForms]=useState(["singular","plural","harf"]);
@@ -2729,17 +2848,18 @@ function AddCardsScreen({deck,onBack,onSave,trackUsage}) {
       try {
         const raw=await callClaudeWithTashkeel(
           `Expert Arabic linguist creating flashcards.
-Input: ${isEn?"English":"Arabic"} | Type: ${wordType} | Words: ${chunk.join(", ")}
+Input: ${isEn?lang:"Arabic"} | Type: ${wordType} | Words: ${chunk.join(", ")}
 Required forms: ${formsDesc}
 
 Notes on special fields:
+- "english": the word's meaning, written in ${lang} (not necessarily literal English — use ${lang}).
 - "plural2": a second plural form if the word has one (e.g. جمع تكسير vs جمع مؤنث سالم). Use "" if only one plural exists.
 - "harf": the single most common Arabic preposition/particle used with this word (e.g. فِي / إِلَى / مَعَ / عَنْ / مِنْ)
 - "synonymPlural": plural of the synonym if provided
 - "antonymPlural": plural of the antonym if provided
 
 Return ONLY valid JSON array, no markdown:
-[{"english":"...","arabicBase":"Arabic with diacritics","wordType":"${wordType}","forms":{${selForms.map(f=>`"${f}":"Arabic with diacritics or empty string"`).join(",")}}}]
+[{"english":"... (meaning in ${lang})","arabicBase":"Arabic with diacritics","wordType":"${wordType}","forms":{${selForms.map(f=>`"${f}":"Arabic with diacritics or empty string"`).join(",")}}}]
 
 Rules: exactly ${chunk.length} objects in same order.
 - The "forms" object MUST contain ONLY these keys: ${selForms.map(f=>`"${f}"`).join(", ")}. Do NOT add any other keys (e.g. no extra forms, conjugations, particles, or variants the user did not request).
@@ -2781,7 +2901,7 @@ CRITICAL: Every Arabic word MUST have full tashkeel (فَتْحَة ضَمَّة
         <div>
           <div className="sec">Input Language</div>
           <div style={{display:"flex",gap:8}}>
-            {[["english","🇬🇧 English"],["arabic","🇸🇦 Arabic"]].map(([v,label])=>(
+            {[["english",`🌐 ${lang}`],["arabic","🇸🇦 Arabic"]].map(([v,label])=>(
               <button key={v} className={`chip ${inputLang===v?"chip-on":""}`} style={{flex:1,justifyContent:"center",padding:"10px 0"}} onClick={()=>{setInputLang(v);setPreview(null);}}>{label}</button>
             ))}
           </div>
@@ -3267,7 +3387,7 @@ CRITICAL: Every Arabic word MUST have full tashkeel (فَتْحَة ضَمَّة
 // ─────────────────────────────────────────────────────────────
 // STUDY SCREEN
 // ─────────────────────────────────────────────────────────────
-function StudyScreen({cards,currentIndex,onSwipe,onBack,canUndo,onExit,trackUsage,decks,cardStates,onAddToFlashcard,activeFormOverride,onToggleWeakForm,onSaveAid,deckId}) {
+function StudyScreen({cards,currentIndex,onSwipe,onBack,canUndo,onExit,trackUsage,decks,cardStates,onAddToFlashcard,activeFormOverride,onToggleWeakForm,onSaveAid,deckId,immersionMode,grammarImmersionMode,onSaveImmersionDef}) {
   const [flipped,setFlipped]=useState(false);
   const [selForm,setSelForm]=useState(null);
   const [gen,setGen]=useState(null);
@@ -3290,6 +3410,26 @@ function StudyScreen({cards,currentIndex,onSwipe,onBack,canUndo,onExit,trackUsag
   // `card` directly always misses what was just cached; look it up in the
   // live cardStates prop instead, which DOES get fresh data on every save.
   const liveCard=(cardStates[deckId]||[]).find(c=>c.id===card.id)||card;
+  // Immersion Mode applies to vocab always when on; grammar only follows it
+  // when grammarImmersionMode is ALSO explicitly on (grammar stays in the
+  // learner's native language by default — higher abstraction, per the plan).
+  const useImmersion=!!immersionMode&&(!isGrammar||!!grammarImmersionMode);
+  const [immersionDefLoading,setImmersionDefLoading]=useState(false);
+
+  // On-demand generation — same shape as the aidByForm cache-check effect
+  // below: check the live card for a cached definition, generate+persist
+  // once if absent, never touch it again after that.
+  useEffect(()=>{
+    if(!useImmersion||liveCard.immersionDef) return;
+    let cancelled=false;
+    setImmersionDefLoading(true);
+    generateImmersionDefinition(liveCard,cardStates,trackUsage).then(def=>{
+      if(cancelled) return;
+      setImmersionDefLoading(false);
+      if(def) onSaveImmersionDef?.(liveCard.id,def);
+    }).catch(()=>{ if(!cancelled) setImmersionDefLoading(false); });
+    return ()=>{cancelled=true;};
+  },[currentIndex,useImmersion,liveCard.immersionDef]);
 
   useEffect(()=>{
     genRef.current++;
@@ -3402,28 +3542,51 @@ Return ONLY valid JSON: {"sentence":"...","translation":"...","imagePrompt":"...
         {/* True 2-faced flip card — click anywhere on the card to toggle */}
         <div key={`flip${currentIndex}`} className={`flip-card ${flipped?'is-flipped':''}`} onClick={()=>setFlipped(f=>!f)}>
           <div className="flip-card-inner">
-            {/* Front face — English (or grammar concept) */}
+            {/* Front face — English/native (or grammar concept); Arabic-first when Immersion Mode is on */}
             <div className="flip-card-face">
-              <div className="sec" style={{marginBottom:16}}>{isGrammar?<>Grammar · <span className="ar">قَوَاعِد</span></>:testForm?`English · Give the ${FORM_LABELS[testForm]||testForm}`:"English"}</div>
-              <div style={{fontFamily:"Lora,serif",fontSize:isGrammar?(card.english.length>40?22:28):38,fontWeight:600,lineHeight:1.25}}>{card.english}</div>
-              {isGrammar&&card.arabicBase&&<div className="ar" style={{fontSize:24,color:"var(--harf)",marginTop:10}}>{card.arabicBase}</div>}
-              <div style={{fontSize:12,color:"var(--text3)",marginTop:20,fontWeight:500}}>{isGrammar?"Recall the rule, then tap to check ↓":testForm?`Tap to reveal the ${FORM_LABELS[testForm]||testForm} ↓`:"Tap to reveal Arabic ↓"}</div>
-            </div>
-            {/* Back face — Arabic (or grammar rule) */}
-            <div className="flip-card-face flip-card-back">
-              <div className="sec" style={{marginBottom:5}}>{isGrammar?"The Rule":testForm?<>Arabic · <span style={{color:"var(--weak)"}}>{FORM_LABELS[testForm]||testForm} (retest)</span></>:<>Arabic · <span style={{textTransform:"capitalize"}}>{card.wordType}</span></>}</div>
-              {isGrammar?(
+              {useImmersion?(
                 <>
+                  <div className="sec" style={{marginBottom:16}}>{isGrammar?<>Grammar · <span className="ar">قَوَاعِد</span></>:"Arabic"}</div>
+                  <div className="ar" style={{fontSize:isGrammar?30:38,color:"var(--text)"}}>{testForm?card.forms[testForm]:card.arabicBase}</div>
+                  <div style={{fontSize:12,color:"var(--text3)",marginTop:20,fontWeight:500}}>Tap to reveal the Arabic explanation ↓</div>
+                </>
+              ):(
+                <>
+                  <div className="sec" style={{marginBottom:16}}>{isGrammar?<>Grammar · <span className="ar">قَوَاعِد</span></>:testForm?`English · Give the ${FORM_LABELS[testForm]||testForm}`:"English"}</div>
+                  <div style={{fontFamily:"Lora,serif",fontSize:isGrammar?(card.english.length>40?22:28):38,fontWeight:600,lineHeight:1.25}}>{card.english}</div>
+                  {isGrammar&&card.arabicBase&&<div className="ar" style={{fontSize:24,color:"var(--harf)",marginTop:10}}>{card.arabicBase}</div>}
+                  <div style={{fontSize:12,color:"var(--text3)",marginTop:20,fontWeight:500}}>{isGrammar?"Recall the rule, then tap to check ↓":testForm?`Tap to reveal the ${FORM_LABELS[testForm]||testForm} ↓`:"Tap to reveal Arabic ↓"}</div>
+                </>
+              )}
+            </div>
+            {/* Back face — Arabic (or grammar rule); Arabic-only definition when Immersion Mode is on */}
+            <div className="flip-card-face flip-card-back">
+              {useImmersion?(
+                <>
+                  <div className="sec" style={{marginBottom:5}}>Arabic Explanation</div>
+                  {immersionDefLoading?(
+                    <div style={{fontSize:13,color:"var(--text3)",display:"flex",alignItems:"center",gap:8}}><RefreshCw size={14} className="spin"/>Generating…</div>
+                  ):liveCard.immersionDef?(
+                    <div className="ar" style={{fontSize:22,color:"var(--text)",lineHeight:1.7,maxHeight:160,overflowY:"auto",padding:"0 4px"}}>{liveCard.immersionDef.text}</div>
+                  ):(
+                    <div style={{fontSize:13,color:"var(--text3)"}}>Couldn't generate an explanation — check your API key in Settings.</div>
+                  )}
+                </>
+              ):isGrammar?(
+                <>
+                  <div className="sec" style={{marginBottom:5}}>The Rule</div>
                   {card.arabicBase&&<div className="ar" style={{fontSize:30,color:"var(--text)"}}>{card.arabicBase}</div>}
                   <div style={{fontSize:14,color:"var(--text2)",lineHeight:1.55,maxHeight:120,overflowY:"auto",padding:"0 4px"}}>{grammar.explanation}</div>
                 </>
               ):testForm?(
                 <>
+                  <div className="sec" style={{marginBottom:5}}>Arabic · <span style={{color:"var(--weak)"}}>{FORM_LABELS[testForm]||testForm} (retest)</span></div>
                   <div className="ar" style={{fontSize:42,color:"var(--text)"}}>{card.forms[testForm]}</div>
                   <div style={{fontSize:13,color:"var(--text3)"}}>{card.english} · {FORM_LABELS[testForm]||testForm}</div>
                 </>
               ):(
                 <>
+                  <div className="sec" style={{marginBottom:5}}>Arabic · <span style={{textTransform:"capitalize"}}>{card.wordType}</span></div>
                   <div className="ar" style={{fontSize:42,color:"var(--text)"}}>{card.arabicBase}</div>
                   <div style={{fontSize:13,color:"var(--text3)"}}>{card.english}</div>
                 </>
@@ -7889,7 +8052,7 @@ CRITICAL: Every Arabic phrase must have full tashkeel.`,
 // due date) — these are the ones "Throttle New Cards" and "Max Reviews Per
 // Day" (Settings → Backlog Recovery) apply to.
 const SRS_MODES=["smart","due","weak","new","all"];
-function MasterReviewScreen({decks,cardStates,onBack,onSwipeCard,onUndoSwipe,onDeckTouched,onToggleWeakForm,trackUsage,onAddToFlashcard,studyLog,onLogStudy,onMasterReading,onMasterListening,onMasterSpeaking,poolThresholdDays,newPoolDaily,onNewPoolDeckDone,newCardsPerDayEnabled,newCardsPerDayLimit,newCardsIntroducedToday,maxReviewsPerDayEnabled,maxReviewsPerDay,reviewsDoneToday,onReviewLogged,onSaveAid}) {
+function MasterReviewScreen({decks,cardStates,onBack,onSwipeCard,onUndoSwipe,onDeckTouched,onToggleWeakForm,trackUsage,onAddToFlashcard,studyLog,onLogStudy,onMasterReading,onMasterListening,onMasterSpeaking,poolThresholdDays,newPoolDaily,onNewPoolDeckDone,newCardsPerDayEnabled,newCardsPerDayLimit,newCardsIntroducedToday,maxReviewsPerDayEnabled,maxReviewsPerDay,reviewsDoneToday,onReviewLogged,onSaveAid,immersionMode,onSaveImmersionDef}) {
   const SCREEN_NAME="masterReview";
   const saved=useRef(loadScreen(SCREEN_NAME)||{}).current;
   const [started,setStarted]=useState(saved.started||false);
@@ -7916,6 +8079,7 @@ function MasterReviewScreen({decks,cardStates,onBack,onSwipeCard,onUndoSwipe,onD
   const [imgLoading,setImgLoading]=useState(false);
   const [mPlaying,setMPlaying]=useState(false);
   const [wordPopup,setWordPopup]=useState(null);
+  const [immersionDefLoading,setImmersionDefLoading]=useState(false);
   const genRef=useRef(0);
   const [selForm,setSelForm]=useState(null);
   const startRef=useRef(null);
@@ -8158,6 +8322,22 @@ function MasterReviewScreen({decks,cardStates,onBack,onSwipeCard,onUndoSwipe,onD
   // sessionCards is a frozen session-start snapshot — doesn't pick up a
   // learning aid saved mid-session. Read the live version for cache lookups.
   const liveCard=card?(cardStates[card._deckId]||[]).find(c=>c.id===card.id)||card:card;
+  // Grammar cards never reach Master Review's pools today (see allCards
+  // below), so this only ever applies to vocab — no grammarImmersionMode
+  // check needed here.
+  const useImmersion=!!immersionMode&&!!card;
+
+  useEffect(()=>{
+    if(!useImmersion||!liveCard||liveCard.immersionDef) return;
+    let cancelled=false;
+    setImmersionDefLoading(true);
+    generateImmersionDefinition(liveCard,cardStates,trackUsage).then(def=>{
+      if(cancelled) return;
+      setImmersionDefLoading(false);
+      if(def) onSaveImmersionDef?.(liveCard._deckId,liveCard.id,def);
+    }).catch(()=>{ if(!cancelled) setImmersionDefLoading(false); });
+    return ()=>{cancelled=true;};
+  },[idx,useImmersion,liveCard?.immersionDef]);
 
   // Results screen
   if(mode==="done"){
@@ -8282,17 +8462,43 @@ Return ONLY valid JSON: {"sentence":"...","translation":"...","imagePrompt":"...
           <div key={`flip${idx}`} className={`flip-card ${flipped?'is-flipped':''}`} onClick={()=>setFlipped(f=>!f)}>
             <div className="flip-card-inner">
               <div className="flip-card-face">
-                <div className="sec" style={{marginBottom:16}}>{testForm?`English · Give the ${FORM_LABELS[testForm]||testForm}`:"English"}</div>
-                <div style={{fontFamily:"Lora,serif",fontSize:36,fontWeight:600,lineHeight:1.2}}>{card.english}</div>
-                <div style={{fontSize:12,color:"var(--text3)",marginTop:20}}>Tap to reveal · <span className="kbd">Space</span></div>
+                {useImmersion?(
+                  <>
+                    <div className="sec" style={{marginBottom:16}}>Arabic</div>
+                    <div className="ar" style={{fontSize:36,color:"var(--text)"}}>{testForm?card.forms[testForm]:card.arabicBase}</div>
+                    <div style={{fontSize:12,color:"var(--text3)",marginTop:20}}>Tap to reveal the Arabic explanation · <span className="kbd">Space</span></div>
+                  </>
+                ):(
+                  <>
+                    <div className="sec" style={{marginBottom:16}}>{testForm?`English · Give the ${FORM_LABELS[testForm]||testForm}`:"English"}</div>
+                    <div style={{fontFamily:"Lora,serif",fontSize:36,fontWeight:600,lineHeight:1.2}}>{card.english}</div>
+                    <div style={{fontSize:12,color:"var(--text3)",marginTop:20}}>Tap to reveal · <span className="kbd">Space</span></div>
+                  </>
+                )}
               </div>
               <div className="flip-card-face flip-card-back">
-                <div className="sec" style={{marginBottom:5}}>{testForm?<>Arabic · <span style={{color:"var(--weak)"}}>{FORM_LABELS[testForm]||testForm} (retest)</span></>:<>Arabic · <span style={{textTransform:"capitalize"}}>{card.wordType}</span></>}</div>
-                <div className="ar" style={{fontSize:40,color:"var(--text)"}}>{testForm?card.forms[testForm]:card.arabicBase}</div>
-                <div style={{fontSize:13,color:"var(--text3)"}}>{card.english}{testForm?` · ${FORM_LABELS[testForm]||testForm}`:""}</div>
-                {card.srsStreak>0&&<div style={{display:"inline-flex",alignItems:"center",gap:4,marginTop:6,fontSize:11,color:"var(--know)"}}>{"🔥".repeat(Math.min(card.srsStreak,5))} {card.srsStreak} streak</div>}
-                {card.forms?.harf&&<div style={{display:"inline-flex",alignItems:"center",gap:5,marginTop:7,background:"var(--harf-bg)",border:"1px solid var(--harf-border)",borderRadius:100,padding:"3px 11px"}}><span className="ar" style={{fontSize:17,color:"var(--harf)",fontWeight:600}}>{card.forms.harf}</span></div>}
-                <div style={{fontSize:11,color:"var(--text3)",marginTop:14,fontWeight:500}}>↻ Tap to flip back</div>
+                {useImmersion?(
+                  <>
+                    <div className="sec" style={{marginBottom:5}}>Arabic Explanation</div>
+                    {immersionDefLoading?(
+                      <div style={{fontSize:13,color:"var(--text3)",display:"flex",alignItems:"center",gap:8}}><RefreshCw size={14} className="spin"/>Generating…</div>
+                    ):liveCard.immersionDef?(
+                      <div className="ar" style={{fontSize:20,color:"var(--text)",lineHeight:1.7,maxHeight:140,overflowY:"auto",padding:"0 4px"}}>{liveCard.immersionDef.text}</div>
+                    ):(
+                      <div style={{fontSize:13,color:"var(--text3)"}}>Couldn't generate an explanation — check your API key in Settings.</div>
+                    )}
+                    <div style={{fontSize:11,color:"var(--text3)",marginTop:14,fontWeight:500}}>↻ Tap to flip back</div>
+                  </>
+                ):(
+                  <>
+                    <div className="sec" style={{marginBottom:5}}>{testForm?<>Arabic · <span style={{color:"var(--weak)"}}>{FORM_LABELS[testForm]||testForm} (retest)</span></>:<>Arabic · <span style={{textTransform:"capitalize"}}>{card.wordType}</span></>}</div>
+                    <div className="ar" style={{fontSize:40,color:"var(--text)"}}>{testForm?card.forms[testForm]:card.arabicBase}</div>
+                    <div style={{fontSize:13,color:"var(--text3)"}}>{card.english}{testForm?` · ${FORM_LABELS[testForm]||testForm}`:""}</div>
+                    {card.srsStreak>0&&<div style={{display:"inline-flex",alignItems:"center",gap:4,marginTop:6,fontSize:11,color:"var(--know)"}}>{"🔥".repeat(Math.min(card.srsStreak,5))} {card.srsStreak} streak</div>}
+                    {card.forms?.harf&&<div style={{display:"inline-flex",alignItems:"center",gap:5,marginTop:7,background:"var(--harf-bg)",border:"1px solid var(--harf-border)",borderRadius:100,padding:"3px 11px"}}><span className="ar" style={{fontSize:17,color:"var(--harf)",fontWeight:600}}>{card.forms.harf}</span></div>}
+                    <div style={{fontSize:11,color:"var(--text3)",marginTop:14,fontWeight:500}}>↻ Tap to flip back</div>
+                  </>
+                )}
               </div>
             </div>
           </div>
@@ -9385,7 +9591,7 @@ const VOCAB_IMPORT_FIELDS = {
   adjective: ["masculine","feminine","plural"],
   verb:      ["past","present","future","imperative","masdar","activePart","passivePart","harf"],
 };
-const VOCAB_PROMPT=`You are extracting Arabic VOCABULARY flashcards from a learner's textbook page or screenshot (curriculum register: Al-ʿArabiyyah Bayna Yadayk / Arabic Between Your Hands). The input may be a headword list, a vocab table, a glossary, or prose/example sentences — in English, Arabic, or both. Some input may be photographed/scanned pages.
+const vocabPrompt=(nativeLanguage)=>`You are extracting Arabic VOCABULARY flashcards from a learner's textbook page or screenshot (curriculum register: Al-ʿArabiyyah Bayna Yadayk / Arabic Between Your Hands). The input may be a headword list, a vocab table, a glossary, or prose/example sentences — in English, Arabic, or both. Some input may be photographed/scanned pages.
 
 Extract only words that are clearly being TAUGHT: headword lists, bolded/defined terms, vocab-table entries, and genuinely new content words that appear in example sentences on the same topic. SKIP common function words and particles (prepositions, pronouns, demonstratives, relative pronouns) unless the page is specifically teaching one of them as a vocabulary item. Use judgment — the goal is the deliberate teaching vocabulary of the page, not every Arabic word that appears on it.
 
@@ -9395,7 +9601,7 @@ For each word, classify it as "noun", "verb", or "adjective". Normalize it to it
 
 For each word return:
 - "wordType": "noun" | "verb" | "adjective"
-- "english": short English gloss
+- "english": short gloss, written in ${nativeLanguage||"English"} (not necessarily literal English — use ${nativeLanguage||"English"})
 - "arabicBase": the base/dictionary form, fully voweled (see normalization above)
 - "forms": an object — see field rules below
 
@@ -9480,10 +9686,11 @@ async function generateConceptsForBatch(b,trackUsage){
   if(!Array.isArray(arr)) throw new Error("Response was not a list");
   return arr;
 }
-async function generateVocabForBatch(b,trackUsage){
+async function generateVocabForBatch(b,trackUsage,nativeLanguage){
+  const prompt=vocabPrompt(nativeLanguage);
   const raw=b.type==="text"
-    ?await callClaudeWithTashkeel(`${VOCAB_PROMPT}\n\nTHE LEARNER'S PAGE:\n\n${b.text}`,4500,"vocab",trackUsage)
-    :await callClaudeVision([{type:"text",text:VOCAB_PROMPT+"\n\nThe learner's page is in the attached image(s)."},...b.images.map(u=>({type:"image_url",image_url:{url:u}}))],4500,"vocab",trackUsage);
+    ?await callClaudeWithTashkeel(`${prompt}\n\nTHE LEARNER'S PAGE:\n\n${b.text}`,4500,"vocab",trackUsage)
+    :await callClaudeVision([{type:"text",text:prompt+"\n\nThe learner's page is in the attached image(s)."},...b.images.map(u=>({type:"image_url",image_url:{url:u}}))],4500,"vocab",trackUsage);
   const arr=extractJSON(raw);
   if(!Array.isArray(arr)) throw new Error("Response was not a list");
   return arr;
@@ -9746,7 +9953,7 @@ function GrammarImportScreen({onBack,trackUsage,onSave,targetDeck}){
   );
 }
 
-function VocabImportScreen({onBack,trackUsage,onSave,targetDeck}){
+function VocabImportScreen({onBack,trackUsage,onSave,targetDeck,nativeLanguage}){
   const [stage,setStage]=useState("input"); // input | working | preview
   const [pasted,setPasted]=useState("");
   const [files,setFiles]=useState([]);
@@ -9826,7 +10033,7 @@ function VocabImportScreen({onBack,trackUsage,onSave,targetDeck}){
         const b=batches[i];
         setProgress(`Analyzing ${b.type==="images"?"screenshot":"notes"} batch ${i+1}/${batches.length} (${labelForBatch(b)}) — ${seen.size} words so far…`);
         try{
-          const arr=await generateVocabForBatch(b,trackUsage);
+          const arr=await generateVocabForBatch(b,trackUsage,nativeLanguage);
           for(const rawC of arr){
             const c=normalizeCard(rawC);
             if(!c.english||!c.arabicBase) continue;
@@ -9862,7 +10069,7 @@ function VocabImportScreen({onBack,trackUsage,onSave,targetDeck}){
     if(!w.batch||w.retrying) return;
     setWarnings(p=>p.map(x=>x.id===w.id?{...x,retrying:true}:x));
     try{
-      const arr=await generateVocabForBatch(w.batch,trackUsage);
+      const arr=await generateVocabForBatch(w.batch,trackUsage,nativeLanguage);
       const fresh=arr.map(normalizeCard).filter(c=>c.english&&c.arabicBase);
       setCards(prev=>{
         const seen=new Map(prev.map(c=>[c.wordType+"|"+stripTashkeel(c.arabicBase).replace(/\s+/g,""),c]));
@@ -11046,6 +11253,71 @@ export default function App() {
     // first grammatical form in the list.
     setCardStates(p=>({...p,[deckId]:(p[deckId]||[]).map(c=>c.id===cardId?{...c,lastAidForm:formKey,aidByForm:{...(c.aidByForm||{}),[formKey]:{...rest,imageUrl}}}:c)}));
   };
+  // Immersion Mode's monolingual Arabic definition — pure text, no Storage
+  // concerns at all (unlike aidByForm's images), so this just writes straight
+  // into Firestore via the normal cardStates autosave pipeline.
+  const saveCardImmersionDef=(deckId,cardId,text)=>{
+    if(!deckId||!cardId||!text) return;
+    setCardStates(p=>({...p,[deckId]:(p[deckId]||[]).map(c=>c.id===cardId?{...c,immersionDef:{text,generatedAt:Date.now()}}:c)}));
+  };
+  // Bulk pre-generation — only ever fires for these two accounts, confirmed
+  // explicitly with the user. Not a different pipeline: same
+  // generateImmersionDefinition/saveCardImmersionDef path used for on-demand
+  // generation, just called for every existing card up front instead of
+  // waiting for a view. Every other user (including future ones, and anyone
+  // using the shared preset decks) only ever gets lazy on-demand generation.
+  const IMMERSION_BULK_ALLOWLIST=["mdrahman.bfd@gmail.com","muhammed.rahman101@gmail.com"];
+  const bulkGenerateImmersionDefs=async()=>{
+    if(!user?.email||!IMMERSION_BULK_ALLOWLIST.includes(user.email)) return;
+    const targets=[];
+    for(const deck of decks){
+      if(deck.deckType==="grammar") continue;
+      for(const c of cardStates[deck.id]||[]){
+        if(!c.immersionDef) targets.push({deckId:deck.id,card:c});
+      }
+    }
+    if(!targets.length) return;
+    showToast(`Generating Arabic definitions for ${targets.length} cards — this'll take a while, keep the app open.`,"info",6000);
+    const BATCH=5;
+    let done=0;
+    for(let i=0;i<targets.length;i+=BATCH){
+      const batch=targets.slice(i,i+BATCH);
+      await Promise.all(batch.map(async({deckId,card})=>{
+        try {
+          const def=await generateImmersionDefinition(card,cardStates,trackUsage);
+          if(def) saveCardImmersionDef(deckId,card.id,def);
+        } catch(e){ console.error("Immersion def generation failed:",e); }
+      }));
+      done+=batch.length;
+    }
+    showToast(`Done — generated ${done} Arabic definitions.`,"success");
+  };
+  // Fires the bulk pass exactly once, only on a genuine false→true toggle
+  // (not on initial load, even for an account that already had it on from a
+  // previous session — the init guard below records that as the baseline
+  // instead of treating a normal data load as "just turned on").
+  const immersionModeInitRef=useRef(false);
+  const prevImmersionModeRef=useRef(false);
+  useEffect(()=>{
+    if(!dataLoaded) return;
+    if(!immersionModeInitRef.current){
+      immersionModeInitRef.current=true;
+      prevImmersionModeRef.current=settings.immersionMode;
+      return;
+    }
+    const was=prevImmersionModeRef.current;
+    const now=settings.immersionMode;
+    prevImmersionModeRef.current=now;
+    if(!was&&now) bulkGenerateImmersionDefs();
+  },[dataLoaded,settings.immersionMode]);
+  // Home screen's one-time 3,000-word nudge — "enable" flips the real
+  // toggle (which itself triggers the bulk pass above via the effect, for
+  // the two allowlisted accounts); either action marks the nudge seen so it
+  // never shows again regardless of choice.
+  const handleImmersionNudge=(action)=>{
+    setSettings(s=>({...s,immersionNudgeShown:true,...(action==="enable"?{immersionMode:true}:{})}));
+    if(action==="enable") showToast("Immersion Mode on — Arabic explanations will generate as you study.","success");
+  };
 
   const logStudy=(entry)=>setStudyLog(prev=>addStudyEntry(prev,entry));
 
@@ -11088,9 +11360,9 @@ export default function App() {
   const commonProps={decks,cardStates,trackUsage};
 
   const screens={
-    home:<HomeScreen {...commonProps} onOpenDeck={openDeck} onSettings={()=>go("settings")} onCreateDeck={()=>go("createDeck")} onReading={()=>go("reading")} onListening={()=>go("listening")} onConversation={()=>go("conversation")} onDictation={()=>go("dictation")} onCapsules={()=>go("capsules")} onSearch={()=>setShowSearch(true)} onProgress={()=>go("progress")} onMasterReview={()=>go("masterReview")} onGuide={()=>go("guide")} onPresets={()=>go("preset")} onGrammarImport={()=>{setGrammarTarget(null);go("grammarImport");}} onVocabImport={()=>{setVocabTarget(null);go("vocabImport");}} darkMode={darkMode} onToggleDark={()=>setDarkMode(d=>!d)} studyLog={studyLog} poolThresholdDays={getPoolThresholdDays(settings)}/>,
+    home:<HomeScreen {...commonProps} onOpenDeck={openDeck} onSettings={()=>go("settings")} onCreateDeck={()=>go("createDeck")} onReading={()=>go("reading")} onListening={()=>go("listening")} onConversation={()=>go("conversation")} onDictation={()=>go("dictation")} onCapsules={()=>go("capsules")} onSearch={()=>setShowSearch(true)} onProgress={()=>go("progress")} onMasterReview={()=>go("masterReview")} onGuide={()=>go("guide")} onPresets={()=>go("preset")} onGrammarImport={()=>{setGrammarTarget(null);go("grammarImport");}} onVocabImport={()=>{setVocabTarget(null);go("vocabImport");}} darkMode={darkMode} onToggleDark={()=>setDarkMode(d=>!d)} studyLog={studyLog} poolThresholdDays={getPoolThresholdDays(settings)} immersionMode={!!settings.immersionMode} immersionNudgeShown={!!settings.immersionNudgeShown} onImmersionNudgeAction={handleImmersionNudge}/>,
     grammarImport:<GrammarImportScreen key={grammarTarget?.id||"new"} onBack={()=>{setGrammarTarget(null);go("home");}} trackUsage={trackUsage} onSave={saveGrammarDeck} targetDeck={grammarTarget}/>,
-    vocabImport:<VocabImportScreen key={vocabTarget?.id||"new"} onBack={()=>{setVocabTarget(null);go("home");}} trackUsage={trackUsage} onSave={saveVocabDeck} targetDeck={vocabTarget}/>,
+    vocabImport:<VocabImportScreen key={vocabTarget?.id||"new"} onBack={()=>{setVocabTarget(null);go("home");}} trackUsage={trackUsage} onSave={saveVocabDeck} targetDeck={vocabTarget} nativeLanguage={settings.nativeLanguage}/>,
     capsules:<CapsulesScreen profile={profile} onOpen={(s)=>go(s)} onBack={()=>go("home")}/>,
     preset:<PresetLibraryScreen profile={profile} decks={decks} onBack={()=>go("home")}/>,
     guide:<GuideScreen onBack={()=>go("home")} onReplayOnboarding={()=>{setShowOnboarding(true);go("home");}} onResetTips={()=>{resetTips();showToast("Tips reset — they'll show again as you explore.","success");}}/>,
@@ -11098,10 +11370,10 @@ export default function App() {
     dictation:<DictationScreen decks={decks} cardStates={cardStates} profile={profile} trackUsage={trackUsage} onBack={()=>go("home")} onLogStudy={logStudy} onFinish={()=>{go("home");setSessionRating({module:"writing"});}}/>,
     settings:<SettingsScreen settings={settings} setSettings={setSettings} onBack={()=>go("home")} usage={usage} user={user} onSignOut={handleSignOut} onReplayOnboarding={()=>setShowOnboarding(true)} profile={profile} setProfile={setProfile} studyLog={studyLog} onUpdateTargets={(t)=>setStudyLog(sl=>({...sl,targets:t}))} decks={decks} cardStates={cardStates} setCardStates={setCardStates} trackUsage={trackUsage} onResetUsage={resetUsageCounters}/>,
     createDeck:<CreateDeckScreen onBack={()=>go("home")} onCreate={createDeck}/>,
-    addCards:activeDeck&&<AddCardsScreen deck={activeDeck} onBack={()=>go("deck")} onSave={saveCards} trackUsage={trackUsage}/>,
+    addCards:activeDeck&&<AddCardsScreen deck={activeDeck} onBack={()=>go("deck")} onSave={saveCards} trackUsage={trackUsage} nativeLanguage={settings.nativeLanguage}/>,
     deck:activeDeck&&<DeckScreen deck={activeDeck} cards={cardStates[activeDeck.id]||[]} onStartStudy={startStudy} onBack={()=>go("home")} onAddCards={()=>{if(activeDeck.deckType==="grammar"){setGrammarTarget(activeDeck);go("grammarImport");}else go("addCards");}} onImportMore={()=>{setVocabTarget(activeDeck);go("vocabImport");}} onEditCard={c=>{if(c.wordType==="grammar"){showToast("Grammar cards can't be edited yet — remove it and re-import that section.","info");return;}setActiveCard(c);go("editCard");}} onDeleteCard={deleteCard} onRenameDeck={renameDeck} onDeleteDeck={deleteDeck} onSetDeckUnit={setDeckUnit} onSetDeckLastStudied={setDeckLastStudied} onTogglePinnedNew={togglePinnedNew} onGraduateNow={graduateNow} poolThresholdDays={getPoolThresholdDays(settings)} newCardsRemainingToday={newCardsRemainingTodayCount} savedIdx={{all:savedIdx.current[activeDeck.id+"_all"]||0,new:savedIdx.current[activeDeck.id+"_new"]||0,weak:savedIdx.current[activeDeck.id+"_weak"]||0,known:savedIdx.current[activeDeck.id+"_known"]||0,due:savedIdx.current[activeDeck.id+"_due"]||0}}/>,
     editCard:activeCard&&activeDeck&&<EditCardScreen card={activeCard} onBack={()=>go("deck")} onSave={saveEditedCard} trackUsage={trackUsage}/>,
-    study:activeDeck&&sessionCards.length>0&&<StudyScreen cards={sessionCards} currentIndex={currentIdx} onSwipe={handleSwipe} onBack={undoStudy} canUndo={studyHistory.current.length>0} onExit={()=>go("deck")} trackUsage={trackUsage} decks={decks} cardStates={cardStates} onAddToFlashcard={addToFlashcard} onToggleWeakForm={(cardId,formKey)=>toggleWeakForm(activeDeck.id,cardId,formKey)} onSaveAid={(cardId,formKey,aid)=>saveCardAid(activeDeck.id,cardId,formKey,aid)} deckId={activeDeck.id}/>,
+    study:activeDeck&&sessionCards.length>0&&<StudyScreen cards={sessionCards} currentIndex={currentIdx} onSwipe={handleSwipe} onBack={undoStudy} canUndo={studyHistory.current.length>0} onExit={()=>go("deck")} trackUsage={trackUsage} decks={decks} cardStates={cardStates} onAddToFlashcard={addToFlashcard} onToggleWeakForm={(cardId,formKey)=>toggleWeakForm(activeDeck.id,cardId,formKey)} onSaveAid={(cardId,formKey,aid)=>saveCardAid(activeDeck.id,cardId,formKey,aid)} deckId={activeDeck.id} immersionMode={!!settings.immersionMode} grammarImmersionMode={!!settings.grammarImmersionMode} onSaveImmersionDef={(cardId,text)=>saveCardImmersionDef(activeDeck.id,cardId,text)}/>,
     complete:<CompleteScreen known={sessionRes.current.known} weak={sessionRes.current.weak} onBack={()=>go("deck")}/>,
     reading:<ReadingScreen {...commonProps} onBack={()=>go("home")} onFinish={()=>{saveScreen("reading",null);saveSession(null);go("home");setSessionRating({module:"reading"});}} onAddToFlashcard={addToFlashcard} onLogStudy={logStudy}/>,
     listening:<ListeningScreen {...commonProps} onBack={()=>go("home")} onFinish={()=>{saveScreen("listening",null);saveSession(null);go("home");setSessionRating({module:"listening"});}} onAddToFlashcard={addToFlashcard} onLogStudy={logStudy}/>,
@@ -11113,6 +11385,7 @@ export default function App() {
     masterReview:<MasterReviewScreen decks={decks} cardStates={cardStates} onBack={()=>go("home")} onSwipeCard={handleMasterSwipe} onUndoSwipe={restoreCard} onDeckTouched={touchDeck} onToggleWeakForm={toggleWeakForm} trackUsage={trackUsage} onAddToFlashcard={addToFlashcard} studyLog={studyLog} onLogStudy={logStudy} onSaveAid={saveCardAid}
       poolThresholdDays={getPoolThresholdDays(settings)} newPoolDaily={newPoolDailyToday} onNewPoolDeckDone={markNewPoolDeckDone}
       newCardsPerDayEnabled={settings.newCardsPerDayEnabled!==false} newCardsPerDayLimit={settings.newCardsPerDayLimit??20} newCardsIntroducedToday={newCardsIntroducedTodayCount} maxReviewsPerDayEnabled={!!settings.maxReviewsPerDayEnabled} maxReviewsPerDay={settings.maxReviewsPerDay??100} reviewsDoneToday={reviewsDoneTodayCount} onReviewLogged={logReviewToday}
+      immersionMode={!!settings.immersionMode} onSaveImmersionDef={saveCardImmersionDef}
       onMasterReading={(pool)=>{setMasterPool(pool);go("masterReading");}}
       onMasterListening={(pool)=>{setMasterPool(pool);go("masterListening");}}
       onMasterSpeaking={(pool)=>{setMasterPool(pool);go("masterSpeaking");}}/>,
