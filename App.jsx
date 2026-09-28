@@ -2667,8 +2667,25 @@ function SettingsScreen({settings,setSettings,onBack,usage,user,onSignOut,onRepl
         <div style={{background:"var(--surface)",border:"1.5px solid var(--border)",borderRadius:"var(--r)",padding:"15px 17px"}}>
           <div className="sec">Immersion Mode</div>
           <div style={{fontSize:12,color:"var(--text3)",lineHeight:1.6,marginBottom:12}}>
-            Once you're past beginner level (~3,000 words), switch vocab cards from translation to Arabic-only: the card shows the Arabic word, and flipping it explains the meaning in simple Arabic built from words you already know — instead of just giving you the {settings.nativeLanguage||"English"} translation.
+            Once you're past beginner level (~3,000 words), switch vocab cards from translation to Arabic-only: the card shows the Arabic word, and flipping it explains the meaning in simple Arabic built from words you already know — instead of just giving you the {settings.nativeLanguage||"English"} translation. New cards generate their Arabic explanation automatically now, the moment they're created — no waiting either way.
           </div>
+          {(()=>{
+            const allVocabCards=Object.values(cardStates||{}).flat().filter(c=>c.wordType!=="grammar");
+            const readyCount=allVocabCards.filter(c=>c.immersionDef).length;
+            const totalCount=allVocabCards.length;
+            if(!totalCount) return null;
+            const pct=Math.round((readyCount/totalCount)*100);
+            return (
+              <div style={{background:"var(--surface2)",borderRadius:"var(--rxs)",padding:"10px 12px",marginBottom:14}}>
+                <div style={{display:"flex",justifyContent:"space-between",fontSize:12,marginBottom:5}}>
+                  <span style={{color:"var(--text2)",fontWeight:600}}>Arabic explanations ready</span>
+                  <span style={{color:"var(--text3)"}}>{readyCount} / {totalCount} ({pct}%)</span>
+                </div>
+                <div className="progress-track" style={{height:5}}><div className="progress-fill" style={{width:`${pct}%`,background:"var(--accent)"}}/></div>
+                {readyCount<totalCount&&<div style={{fontSize:11,color:"var(--text3)",marginTop:5}}>The rest fill in as you view them in Immersion Mode — or automatically, if you're on the retroactive bulk-fill.</div>}
+              </div>
+            );
+          })()}
           <div style={{marginBottom:14}}>
             <label className="lbl">Your Native Language</label>
             <select className="input" value={NATIVE_LANGUAGE_OPTIONS.includes(local.nativeLanguage)?local.nativeLanguage:(local.nativeLanguage?"Other":"English")}
@@ -2817,7 +2834,7 @@ function CreateDeckScreen({onBack,onCreate}) {
 // ─────────────────────────────────────────────────────────────
 // ADD CARDS — with per-card delete in preview
 // ─────────────────────────────────────────────────────────────
-function AddCardsScreen({deck,onBack,onSave,trackUsage,nativeLanguage}) {
+function AddCardsScreen({deck,onBack,onSave,trackUsage,nativeLanguage,cardStates}) {
   const lang=nativeLanguage||"English";
   const [inputLang,setInputLang]=useState("english");
   const [wordType,setWordType]=useState("noun");
@@ -2871,6 +2888,27 @@ CRITICAL: Every Arabic word MUST have full tashkeel (فَتْحَة ضَمَّة
         const parsed=extractJSON(raw);
         allCards.push(...(Array.isArray(parsed)?parsed:[parsed]));
       } catch(e){ console.error(`Batch ${ci+1} failed:`,e); failed++; }
+    }
+    // Generate each card's Immersion Mode Arabic explanation right now, at
+    // creation time, instead of waiting for a lazy on-demand generation the
+    // first time it's viewed in Immersion Mode — so every card is
+    // immersion-ready immediately, whether or not the toggle is on yet.
+    // Same generateImmersionDefinition function the on-demand path uses,
+    // just called proactively here; a handful in flight at once, not all at
+    // once. A failure here just leaves that one card without a cached
+    // definition — the on-demand path still covers it later as a fallback.
+    if(allCards.length>0){
+      setGenProgress(`Generating Arabic explanations for ${allCards.length} cards…`);
+      const IMM_BATCH=5;
+      for(let i=0;i<allCards.length;i+=IMM_BATCH){
+        const batch=allCards.slice(i,i+IMM_BATCH);
+        await Promise.all(batch.map(async(c)=>{
+          try {
+            const def=await generateImmersionDefinition(c,cardStates||{},trackUsage);
+            if(def) c.immersionDef={text:def,generatedAt:Date.now()};
+          } catch(e){ console.error("Immersion def generation failed:",e); }
+        }));
+      }
     }
     if(allCards.length>0){
       setPreview(allCards);
@@ -10206,7 +10244,7 @@ function GrammarImportScreen({onBack,trackUsage,onSave,targetDeck,nativeLanguage
   );
 }
 
-function VocabImportScreen({onBack,trackUsage,onSave,targetDeck,nativeLanguage}){
+function VocabImportScreen({onBack,trackUsage,onSave,targetDeck,nativeLanguage,cardStates}){
   const [stage,setStage]=useState("input"); // input | working | preview
   const [pasted,setPasted]=useState("");
   const [files,setFiles]=useState([]);
@@ -10307,6 +10345,23 @@ function VocabImportScreen({onBack,trackUsage,onSave,targetDeck,nativeLanguage})
       // SOMETHING to show — otherwise a fully-failed import just bounces back
       // to input with a single toast, discarding every other batch's error.
       if(found.length===0&&warns.length===0) throw new Error("No vocabulary could be extracted — try clearer pages or paste the text directly.");
+      // Generate each card's Immersion Mode Arabic explanation now, at
+      // import time, instead of waiting for it to be viewed later — same
+      // reasoning/function as AddCardsScreen. A failure here just leaves
+      // that one card to fall back on the on-demand path.
+      if(found.length&&!cancelRef.current){
+        setProgress(`Generating Arabic explanations for ${found.length} cards…`);
+        const IMM_BATCH=5;
+        for(let i=0;i<found.length&&!cancelRef.current;i+=IMM_BATCH){
+          const batch=found.slice(i,i+IMM_BATCH);
+          await Promise.all(batch.map(async(c)=>{
+            try {
+              const def=await generateImmersionDefinition(c,cardStates||{},trackUsage);
+              if(def) c.immersionDef={text:def,generatedAt:Date.now()};
+            } catch(e){ console.error("Immersion def generation failed:",e); }
+          }));
+        }
+      }
       setCards(found);setWarnings(warns);setStage("preview");
     }catch(err){
       if(cancelRef.current) return;
@@ -10346,7 +10401,7 @@ function VocabImportScreen({onBack,trackUsage,onSave,targetDeck,nativeLanguage})
     const ts=Date.now();
     const built=cards.map((c,i)=>({
       id:`c${ts}-${i}`, wordType:c.wordType, english:c.english, arabicBase:c.arabicBase,
-      forms:c.forms, status:"new",
+      forms:c.forms, status:"new", ...(c.immersionDef?{immersionDef:c.immersionDef}:{}),
     }));
     onSave(deckTitle.trim()||"Vocabulary",built,targetDeck||null);
   };
@@ -11616,7 +11671,7 @@ export default function App() {
     home:<HomeScreen {...commonProps} onOpenDeck={openDeck} onSettings={()=>go("settings")} onCreateDeck={()=>go("createDeck")} onReading={()=>go("reading")} onListening={()=>go("listening")} onConversation={()=>go("conversation")} onDictation={()=>go("dictation")} onCapsules={()=>go("capsules")} onSearch={()=>setShowSearch(true)} onTranslate={()=>go("translate")} onProgress={()=>go("progress")} onMasterReview={()=>go("masterReview")} onGuide={()=>go("guide")} onPresets={()=>go("preset")} onGrammarImport={()=>{setGrammarTarget(null);go("grammarImport");}} onVocabImport={()=>{setVocabTarget(null);go("vocabImport");}} darkMode={darkMode} onToggleDark={()=>setDarkMode(d=>!d)} studyLog={studyLog} poolThresholdDays={getPoolThresholdDays(settings)} immersionMode={!!settings.immersionMode} immersionNudgeShown={!!settings.immersionNudgeShown} onImmersionNudgeAction={handleImmersionNudge}/>,
     translate:<TranslateScreen onBack={()=>go("home")} onAddToFlashcard={addToFlashcard} decks={decks} trackUsage={trackUsage} nativeLanguage={settings.nativeLanguage}/>,
     grammarImport:<GrammarImportScreen key={grammarTarget?.id||"new"} onBack={()=>{setGrammarTarget(null);go("home");}} trackUsage={trackUsage} onSave={saveGrammarDeck} targetDeck={grammarTarget} nativeLanguage={settings.nativeLanguage}/>,
-    vocabImport:<VocabImportScreen key={vocabTarget?.id||"new"} onBack={()=>{setVocabTarget(null);go("home");}} trackUsage={trackUsage} onSave={saveVocabDeck} targetDeck={vocabTarget} nativeLanguage={settings.nativeLanguage}/>,
+    vocabImport:<VocabImportScreen key={vocabTarget?.id||"new"} onBack={()=>{setVocabTarget(null);go("home");}} trackUsage={trackUsage} onSave={saveVocabDeck} targetDeck={vocabTarget} nativeLanguage={settings.nativeLanguage} cardStates={cardStates}/>,
     capsules:<CapsulesScreen profile={profile} onOpen={(s)=>go(s)} onBack={()=>go("home")}/>,
     preset:<PresetLibraryScreen profile={profile} decks={decks} onBack={()=>go("home")}/>,
     guide:<GuideScreen onBack={()=>go("home")} onReplayOnboarding={()=>{setShowOnboarding(true);go("home");}} onResetTips={()=>{resetTips();showToast("Tips reset — they'll show again as you explore.","success");}}/>,
@@ -11624,7 +11679,7 @@ export default function App() {
     dictation:<DictationScreen decks={decks} cardStates={cardStates} profile={profile} trackUsage={trackUsage} onBack={()=>go("home")} onLogStudy={logStudy} onFinish={()=>{go("home");setSessionRating({module:"writing"});}}/>,
     settings:<SettingsScreen settings={settings} setSettings={setSettings} onBack={()=>go("home")} usage={usage} user={user} onSignOut={handleSignOut} onReplayOnboarding={()=>setShowOnboarding(true)} profile={profile} setProfile={setProfile} studyLog={studyLog} onUpdateTargets={(t)=>setStudyLog(sl=>({...sl,targets:t}))} decks={decks} cardStates={cardStates} setCardStates={setCardStates} trackUsage={trackUsage} onResetUsage={resetUsageCounters}/>,
     createDeck:<CreateDeckScreen onBack={()=>go("home")} onCreate={createDeck}/>,
-    addCards:activeDeck&&<AddCardsScreen deck={activeDeck} onBack={()=>go("deck")} onSave={saveCards} trackUsage={trackUsage} nativeLanguage={settings.nativeLanguage}/>,
+    addCards:activeDeck&&<AddCardsScreen deck={activeDeck} onBack={()=>go("deck")} onSave={saveCards} trackUsage={trackUsage} nativeLanguage={settings.nativeLanguage} cardStates={cardStates}/>,
     deck:activeDeck&&<DeckScreen deck={activeDeck} cards={cardStates[activeDeck.id]||[]} onStartStudy={startStudy} onBack={()=>go("home")} onAddCards={()=>{if(activeDeck.deckType==="grammar"){setGrammarTarget(activeDeck);go("grammarImport");}else go("addCards");}} onImportMore={()=>{setVocabTarget(activeDeck);go("vocabImport");}} onEditCard={c=>{if(c.wordType==="grammar"){showToast("Grammar cards can't be edited yet — remove it and re-import that section.","info");return;}setActiveCard(c);go("editCard");}} onDeleteCard={deleteCard} onRenameDeck={renameDeck} onDeleteDeck={deleteDeck} onSetDeckUnit={setDeckUnit} onSetDeckLastStudied={setDeckLastStudied} onTogglePinnedNew={togglePinnedNew} onGraduateNow={graduateNow} poolThresholdDays={getPoolThresholdDays(settings)} newCardsRemainingToday={newCardsRemainingTodayCount} savedIdx={{all:savedIdx.current[activeDeck.id+"_all"]||0,new:savedIdx.current[activeDeck.id+"_new"]||0,weak:savedIdx.current[activeDeck.id+"_weak"]||0,known:savedIdx.current[activeDeck.id+"_known"]||0,due:savedIdx.current[activeDeck.id+"_due"]||0}}/>,
     editCard:activeCard&&activeDeck&&<EditCardScreen card={activeCard} onBack={()=>go("deck")} onSave={saveEditedCard} trackUsage={trackUsage}/>,
     study:activeDeck&&sessionCards.length>0&&<StudyScreen cards={sessionCards} currentIndex={currentIdx} onSwipe={handleSwipe} onBack={undoStudy} canUndo={studyHistory.current.length>0} onExit={()=>go("deck")} trackUsage={trackUsage} decks={decks} cardStates={cardStates} onAddToFlashcard={addToFlashcard} onToggleWeakForm={(cardId,formKey)=>toggleWeakForm(activeDeck.id,cardId,formKey)} onSaveAid={(cardId,formKey,aid)=>saveCardAid(activeDeck.id,cardId,formKey,aid)} deckId={activeDeck.id} immersionMode={!!settings.immersionMode} grammarImmersionMode={!!settings.grammarImmersionMode} onSaveImmersionDef={(cardId,text)=>saveCardImmersionDef(activeDeck.id,cardId,text)}/>,
