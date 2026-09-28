@@ -8602,7 +8602,7 @@ function MasterReviewScreen({decks,cardStates,onBack,onSwipeCard,onUndoSwipe,onD
     generateImmersionDefinition(liveCard,cardStates,trackUsage).then(def=>{
       if(cancelled) return;
       setImmersionDefLoading(false);
-      if(def) onSaveImmersionDef?.(liveCard._deckId,liveCard.id,def);
+      if(def) onSaveImmersionDef?.(card._deckId,liveCard.id,def);
       else { console.error("Immersion def: model returned no usable definition for",liveCard.arabicBase||liveCard.english); setImmersionDefError("The model's response couldn't be read as a definition — try again."); }
     }).catch(e=>{ if(!cancelled){ setImmersionDefLoading(false); const msg=e?.message||"unknown error"; console.error("Immersion def generation failed for",liveCard.arabicBase||liveCard.english,"—",msg); setImmersionDefError(msg); } });
     return ()=>{cancelled=true;};
@@ -11635,7 +11635,10 @@ export default function App() {
   // concerns at all (unlike aidByForm's images), so this just writes straight
   // into Firestore via the normal cardStates autosave pipeline.
   const saveCardImmersionDef=(deckId,cardId,text)=>{
-    if(!deckId||!cardId||!text) return;
+    if(!deckId||!cardId||!text){
+      console.error("saveCardImmersionDef: dropped a generated definition — missing",!deckId?"deckId":!cardId?"cardId":"text",{deckId,cardId});
+      return;
+    }
     setCardStates(p=>({...p,[deckId]:(p[deckId]||[]).map(c=>c.id===cardId?{...c,immersionDef:{text,generatedAt:Date.now()}}:c)}));
   };
   // Bulk pre-generation — only ever fires for these two accounts, confirmed
