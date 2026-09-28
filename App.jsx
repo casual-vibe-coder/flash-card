@@ -3536,6 +3536,7 @@ function StudyScreen({cards,currentIndex,onSwipe,onBack,canUndo,onExit,trackUsag
   // learner's native language by default — higher abstraction, per the plan).
   const useImmersion=!!immersionMode&&(!isGrammar||!!grammarImmersionMode);
   const [immersionDefLoading,setImmersionDefLoading]=useState(false);
+  const [immersionDefError,setImmersionDefError]=useState("");
   const [diagramImgLoading,setDiagramImgLoading]=useState(false);
 
   // On-demand generation — same shape as the aidByForm cache-check effect
@@ -3545,11 +3546,13 @@ function StudyScreen({cards,currentIndex,onSwipe,onBack,canUndo,onExit,trackUsag
     if(!useImmersion||liveCard.immersionDef) return;
     let cancelled=false;
     setImmersionDefLoading(true);
+    setImmersionDefError("");
     generateImmersionDefinition(liveCard,cardStates,trackUsage).then(def=>{
       if(cancelled) return;
       setImmersionDefLoading(false);
       if(def) onSaveImmersionDef?.(liveCard.id,def);
-    }).catch(()=>{ if(!cancelled) setImmersionDefLoading(false); });
+      else { console.error("Immersion def: model returned no usable definition for",liveCard.arabicBase||liveCard.english); setImmersionDefError("The model's response couldn't be read as a definition — try again."); }
+    }).catch(e=>{ if(!cancelled){ setImmersionDefLoading(false); const msg=e?.message||"unknown error"; console.error("Immersion def generation failed for",liveCard.arabicBase||liveCard.english,"—",msg); setImmersionDefError(msg); } });
     return ()=>{cancelled=true;};
   },[currentIndex,useImmersion,liveCard.immersionDef]);
 
@@ -3691,7 +3694,7 @@ Return ONLY valid JSON: {"sentence":"...","translation":"...","imagePrompt":"...
                   ):liveCard.immersionDef?(
                     <div className="ar" style={{fontSize:22,color:"var(--text)",lineHeight:1.7,maxHeight:160,overflowY:"auto",padding:"0 4px"}}>{liveCard.immersionDef.text}</div>
                   ):(
-                    <div style={{fontSize:13,color:"var(--text3)"}}>Couldn't generate an explanation — check your API key in Settings.</div>
+                    <div style={{fontSize:13,color:"var(--text3)"}}>Couldn't generate an explanation{immersionDefError?`: ${immersionDefError}`:" — check your API key in Settings."}</div>
                   )}
                 </>
               ):isGrammar?(
@@ -8337,6 +8340,7 @@ function MasterReviewScreen({decks,cardStates,onBack,onSwipeCard,onUndoSwipe,onD
   const [mPlaying,setMPlaying]=useState(false);
   const [wordPopup,setWordPopup]=useState(null);
   const [immersionDefLoading,setImmersionDefLoading]=useState(false);
+  const [immersionDefError,setImmersionDefError]=useState("");
   const [diagramImgLoading,setDiagramImgLoading]=useState(false);
   const genRef=useRef(0);
   const [selForm,setSelForm]=useState(null);
@@ -8594,11 +8598,13 @@ function MasterReviewScreen({decks,cardStates,onBack,onSwipeCard,onUndoSwipe,onD
     if(!useImmersion||!liveCard||liveCard.immersionDef) return;
     let cancelled=false;
     setImmersionDefLoading(true);
+    setImmersionDefError("");
     generateImmersionDefinition(liveCard,cardStates,trackUsage).then(def=>{
       if(cancelled) return;
       setImmersionDefLoading(false);
       if(def) onSaveImmersionDef?.(liveCard._deckId,liveCard.id,def);
-    }).catch(()=>{ if(!cancelled) setImmersionDefLoading(false); });
+      else { console.error("Immersion def: model returned no usable definition for",liveCard.arabicBase||liveCard.english); setImmersionDefError("The model's response couldn't be read as a definition — try again."); }
+    }).catch(e=>{ if(!cancelled){ setImmersionDefLoading(false); const msg=e?.message||"unknown error"; console.error("Immersion def generation failed for",liveCard.arabicBase||liveCard.english,"—",msg); setImmersionDefError(msg); } });
     return ()=>{cancelled=true;};
   },[idx,useImmersion,liveCard?.immersionDef]);
 
@@ -8757,7 +8763,7 @@ Return ONLY valid JSON: {"sentence":"...","translation":"...","imagePrompt":"...
                     ):liveCard.immersionDef?(
                       <div className="ar" style={{fontSize:20,color:"var(--text)",lineHeight:1.7,maxHeight:140,overflowY:"auto",padding:"0 4px"}}>{liveCard.immersionDef.text}</div>
                     ):(
-                      <div style={{fontSize:13,color:"var(--text3)"}}>Couldn't generate an explanation — check your API key in Settings.</div>
+                      <div style={{fontSize:13,color:"var(--text3)"}}>Couldn't generate an explanation{immersionDefError?`: ${immersionDefError}`:" — check your API key in Settings."}</div>
                     )}
                     <div style={{fontSize:11,color:"var(--text3)",marginTop:14,fontWeight:500}}>↻ Tap to flip back</div>
                   </>
