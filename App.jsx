@@ -1712,7 +1712,7 @@ function renderDeckCard(deck,cardStates,onOpenDeck,isGrammar=false,poolThreshold
   );
 }
 
-function HomeScreen({decks,cardStates,onOpenDeck,onSettings,onCreateDeck,onReading,onListening,onConversation,onDictation,onCapsules,onSearch,onProgress,onMasterReview,onGuide,onPresets,onGrammarImport,onVocabImport,darkMode,onToggleDark,studyLog,poolThresholdDays,immersionMode,immersionNudgeShown,onImmersionNudgeAction}) {
+function HomeScreen({decks,cardStates,onOpenDeck,onSettings,onCreateDeck,onReading,onListening,onConversation,onDictation,onCapsules,onSearch,onTranslate,onProgress,onMasterReview,onGuide,onPresets,onGrammarImport,onVocabImport,darkMode,onToggleDark,studyLog,poolThresholdDays,immersionMode,immersionNudgeShown,onImmersionNudgeAction}) {
   const [deckSort,setDeckSort]=useState(()=>localStorage.getItem("arabic_fc_deck_sort")||"newest");
   useEffect(()=>{localStorage.setItem("arabic_fc_deck_sort",deckSort);},[deckSort]);
   const sortDecks=(arr)=>{
@@ -1770,6 +1770,7 @@ function HomeScreen({decks,cardStates,onOpenDeck,onSettings,onCreateDeck,onReadi
         </div>
         <div style={{display:"flex",gap:6}}>
           <button className="btn btn-ghost" onClick={onSearch} style={{width:36,height:36}} title="Search all cards"><Search size={16}/></button>
+          <button className="btn btn-ghost" onClick={onTranslate} style={{width:36,height:36}} title="Translate"><Globe size={16}/></button>
           <button className="btn btn-ghost" onClick={onGuide} style={{width:36,height:36}} title="Help & tips"><HelpCircle size={17}/></button>
           <button className="btn btn-ghost" onClick={onToggleDark} style={{width:36,height:36}} title={darkMode?"Light mode":"Dark mode"}>{darkMode?<Sun size={16}/>:<Moon size={16}/>}</button>
           <button className="btn btn-ghost" onClick={onSettings} style={{width:36,height:36}}><Settings size={17}/></button>
@@ -3011,15 +3012,19 @@ function DeckScreen({deck,cards,onStartStudy,onBack,onAddCards,onImportMore,onEd
   const [search,setSearch]=useState("");
   const [statusFilter,setStatusFilter]=useState("all");
   const [studyFilter,setStudyFilter]=useState("all");
+  const [scienceFilter,setScienceFilter]=useState("all");
 
   const weak=cards.filter(c=>c.status==="weak").length;
   const known=cards.filter(c=>c.status==="known").length;
   const dueCount=getDueCount(cards);
   const pct=cards.length>0?Math.round((known/cards.length)*100):0;
+  const nahwCount=cards.filter(c=>c.grammarScience==="nahw").length;
+  const sarfCount=cards.filter(c=>c.grammarScience==="sarf").length;
 
   const filteredCards=cards.filter(c=>{
     if(statusFilter==="due"&&c.srsNextReview&&c.srsNextReview>Date.now()) return false;
     if(statusFilter!=="all"&&statusFilter!=="due"&&c.status!==statusFilter) return false;
+    if(scienceFilter!=="all"&&c.grammarScience!==scienceFilter) return false;
     if(!search.trim()) return true;
     const q=search.toLowerCase();
     return c.english.toLowerCase().includes(q)||c.arabicBase.includes(search)||
@@ -3120,6 +3125,13 @@ function DeckScreen({deck,cards,onStartStudy,onBack,onAddCards,onImportMore,onEd
                 <button key={k} className={`chip ${statusFilter===k?"chip-on":""}`} onClick={()=>setStatusFilter(k)} style={{padding:"5px 11px",fontSize:12}}>{label}</button>
               ))}
             </div>
+            {deck.deckType==="grammar"&&(nahwCount>0||sarfCount>0)&&(
+              <div style={{display:"flex",gap:6,flexWrap:"wrap",marginTop:6}}>
+                {[["all","All Sciences"],["nahw",`نحو Nahw (${nahwCount})`],["sarf",`صرف Sarf (${sarfCount})`]].map(([k,label])=>(
+                  <button key={k} className={`chip ${scienceFilter===k?"chip-on":""}`} onClick={()=>setScienceFilter(k)} style={{padding:"5px 11px",fontSize:12}}>{label}</button>
+                ))}
+              </div>
+            )}
           </div>
         )}
         <div className="sec">{cards.length>0?`${filteredCards.length===cards.length?"All Cards":filteredCards.length+" matching"} (${cards.length} total)`:"No cards yet"}</div>
@@ -3131,6 +3143,13 @@ function DeckScreen({deck,cards,onStartStudy,onBack,onAddCards,onImportMore,onEd
                 <div style={{display:"flex",alignItems:"center",gap:7,marginBottom:3}}>
                   <span style={{fontWeight:600,fontSize:14}}>{c.english}</span>
                   <span className={`tag tag-${c.status}`}>{c.status}</span>
+                  {c.grammarScience&&c.grammarScience!=="other"&&(
+                    <span style={{fontSize:10,fontWeight:700,padding:"1px 7px",borderRadius:100,
+                      background:c.grammarScience==="nahw"?"var(--info-bg)":"var(--accent-bg)",
+                      color:c.grammarScience==="nahw"?"var(--info)":"var(--accent)"}}>
+                      {c.grammarScience==="nahw"?"نحو":"صرف"}
+                    </span>
+                  )}
                   {c.srsNextReview&&(
                     <span style={{fontSize:10,color:c.srsNextReview<=Date.now()?"var(--info)":"var(--text3)"}}>
                       {c.srsNextReview<=Date.now()?"Due now":
@@ -3415,6 +3434,7 @@ function StudyScreen({cards,currentIndex,onSwipe,onBack,canUndo,onExit,trackUsag
   // learner's native language by default — higher abstraction, per the plan).
   const useImmersion=!!immersionMode&&(!isGrammar||!!grammarImmersionMode);
   const [immersionDefLoading,setImmersionDefLoading]=useState(false);
+  const [diagramImgLoading,setDiagramImgLoading]=useState(false);
 
   // On-demand generation — same shape as the aidByForm cache-check effect
   // below: check the live card for a cached definition, generate+persist
@@ -3637,6 +3657,47 @@ Return ONLY valid JSON: {"sentence":"...","translation":"...","imagePrompt":"...
                 ))}
                 <div style={{fontSize:11,color:"var(--text3)"}}>💡 Tap any Arabic word to look it up</div>
               </div>
+            )}
+            {/* Mnemonic image — reuses the exact same aidByForm/Storage cache
+                as vocab cards, keyed under a fixed pseudo-form "_diagram"
+                since grammar cards have no real forms. Same infra, same cost,
+                same quality bar as vocab's mnemonic images — not a separate
+                labeled-diagram pipeline (image models render Arabic text too
+                unreliably to trust for anything requiring accurate labels). */}
+            {diagramImgLoading?(
+              <div style={{position:"relative",width:"100%",aspectRatio:"1",background:"linear-gradient(110deg,var(--surface2) 30%,var(--border) 50%,var(--surface2) 70%)",backgroundSize:"200% 100%",animation:"shimmer 2s linear infinite",border:"1px solid var(--border)",borderRadius:"var(--rs)",display:"flex",alignItems:"center",justifyContent:"center",flexDirection:"column",gap:8}}>
+                <RefreshCw size={20} className="spin" color="var(--text3)"/>
+                <div style={{fontSize:12,color:"var(--text3)",fontWeight:500}}>Drawing with Nano Banana…</div>
+              </div>
+            ):liveCard.aidByForm?.["_diagram"]?.imageUrl?(
+              <div style={{position:"relative"}}>
+                <img src={liveCard.aidByForm["_diagram"].imageUrl} alt={`Mnemonic for ${card.english}`} style={{width:"100%",display:"block",borderRadius:"var(--rs)",border:"1px solid var(--border)"}}/>
+                <button
+                  onClick={async()=>{
+                    setDiagramImgLoading(true);
+                    const prompt=`A simple memorable image representing the grammar concept "${card.english}": ${grammar.explanation}`;
+                    const url=await generateImage(prompt,trackUsage);
+                    setDiagramImgLoading(false);
+                    if(url) onSaveAid?.(card.id,"_diagram",{sentence:"",translation:"",imagePrompt:prompt,imageUrl:url});
+                  }}
+                  title={`Regenerate · costs ~$${(IMAGE_PRICES[_imageModel]||0.039).toFixed(3)}`}
+                  style={{position:"absolute",top:8,right:8,width:32,height:32,borderRadius:"50%",background:"rgba(0,0,0,.55)",color:"white",border:"none",cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",backdropFilter:"blur(4px)"}}>
+                  <RefreshCw size={14}/>
+                </button>
+              </div>
+            ):(
+              <button
+                onClick={async()=>{
+                  setDiagramImgLoading(true);
+                  const prompt=`A simple memorable image representing the grammar concept "${card.english}": ${grammar.explanation}`;
+                  const url=await generateImage(prompt,trackUsage);
+                  setDiagramImgLoading(false);
+                  if(url) onSaveAid?.(card.id,"_diagram",{sentence:"",translation:"",imagePrompt:prompt,imageUrl:url});
+                }}
+                style={{background:"var(--surface2)",border:"1px dashed var(--border)",borderRadius:"var(--rs)",padding:"14px 16px",cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",gap:8,fontSize:13,color:"var(--text2)",fontWeight:500,width:"100%"}}>
+                <ImageIcon size={15}/> Add a mnemonic image
+                <span style={{fontSize:11,color:"var(--text3)",fontWeight:400,fontFamily:"monospace"}}>~${(IMAGE_PRICES[_imageModel]||0.039).toFixed(3)}</span>
+              </button>
             )}
           </div>
         )}
@@ -4618,6 +4679,100 @@ function TipBanner({id,title,children}){
 
 // Help & Tips — always-available guide. Reuses the feature walkthrough and lets
 // the student replay onboarding or re-enable the in-app tips.
+// Built-in translate tool — so a learner never has to leave the app to
+// Google-translate a word or phrase. Auto-detects direction: Arabic input
+// translates to the user's native language, native-language input translates
+// to Arabic (with tashkeel). Deliberately a plain one-off lookup, not tied to
+// any card — "Add to Flashcards" is offered afterward for anything worth
+// keeping, reusing the same onAddToFlashcard path as WordPopup.
+function TranslateScreen({onBack,onAddToFlashcard,decks,trackUsage,nativeLanguage}){
+  const lang=nativeLanguage||"English";
+  const [input,setInput]=useState("");
+  const [result,setResult]=useState(null);
+  const [loading,setLoading]=useState(false);
+  const [err,setErr]=useState("");
+  const [addOpen,setAddOpen]=useState(false);
+  const [targetDeck,setTargetDeck]=useState(decks.filter(d=>d.deckType!=="grammar")[0]?.id||"");
+  const [added,setAdded]=useState(false);
+
+  const translate=async()=>{
+    const text=input.trim();
+    if(!text||loading) return;
+    setLoading(true);setErr("");setResult(null);setAdded(false);setAddOpen(false);
+    try {
+      const raw=await callClaudeWithTashkeel(
+        `You are a professional Arabic↔${lang} translator. Detect which language this text is in and translate it to the OTHER one (Arabic→${lang}, or ${lang}→Arabic).
+
+Text: "${text}"
+
+RULES:
+- If translating INTO Arabic, every Arabic word MUST have full tashkeel.
+- Give the single best, most natural translation — not a list of options.
+- "sourceLang" must be either "Arabic" or "${lang}".
+
+Return ONLY valid JSON: {"sourceLang":"...","translation":"...","note":"one short usage/grammar note if genuinely useful, else empty"}`,
+        300,"wordLookup",trackUsage
+      );
+      const parsed=extractJSON(raw);
+      if(!parsed?.translation) throw new Error("No translation returned");
+      setResult(parsed);
+    } catch(e){
+      setErr(e?.message||"Translation failed — check your API key in Settings.");
+    } finally { setLoading(false); }
+  };
+
+  const doAdd=()=>{
+    if(!result||!targetDeck) return;
+    const isArabicSource=result.sourceLang==="Arabic";
+    const card={id:`c${Date.now()}`,wordType:"noun",
+      english:isArabicSource?result.translation:input.trim(),
+      arabicBase:isArabicSource?input.trim():result.translation,
+      forms:{singular:isArabicSource?input.trim():result.translation},status:"new"};
+    onAddToFlashcard(targetDeck,card);
+    setAdded(true);
+    setTimeout(()=>setAddOpen(false),1000);
+  };
+
+  return (
+    <div className="screen">
+      <Hdr title="Translate" sub={`Arabic ↔ ${lang}`} onBack={onBack}/>
+      <div style={{padding:"18px 20px 0",display:"flex",flexDirection:"column",gap:14}}>
+        <div style={{fontSize:13,color:"var(--text2)",lineHeight:1.6}}>
+          Type a word or phrase in Arabic or {lang} — direction is detected automatically.
+        </div>
+        <textarea className="input" rows={3} value={input} onChange={e=>setInput(e.target.value)}
+          placeholder={`Type in Arabic or ${lang}…`} style={{fontSize:16,resize:"vertical"}}
+          onKeyDown={e=>{if(e.key==="Enter"&&(e.metaKey||e.ctrlKey)) translate();}}/>
+        <button className="btn btn-primary" onClick={translate} disabled={!input.trim()||loading} style={{width:"100%",padding:"13px",borderRadius:"var(--r)",fontSize:14}}>
+          {loading?<><RefreshCw size={15} className="spin"/>Translating…</>:<><Globe size={15}/>Translate</>}
+        </button>
+        {err&&<div style={{background:"var(--weak-bg)",border:"1px solid var(--weak-border)",borderRadius:"var(--rs)",padding:"11px 13px",color:"var(--weak)",fontSize:13}}>{err}</div>}
+        {result&&(
+          <div className="gen-appear" style={{background:"var(--accent-bg)",border:"1px solid var(--accent-border)",borderRadius:"var(--r)",padding:"16px 17px",display:"flex",flexDirection:"column",gap:10}}>
+            <div style={{fontSize:11,fontWeight:700,color:"var(--accent)",letterSpacing:".08em",textTransform:"uppercase"}}>{result.sourceLang==="Arabic"?`Arabic → ${lang}`:`${lang} → Arabic`}</div>
+            <div className={result.sourceLang==="Arabic"?"":"ar"} style={{fontSize:result.sourceLang==="Arabic"?18:26,color:"var(--text)",lineHeight:1.6}}>{result.translation}</div>
+            {result.note&&<div style={{fontSize:12,color:"var(--text3)",fontStyle:"italic"}}>{result.note}</div>}
+            {!addOpen&&!added&&(
+              <button className="btn" onClick={()=>setAddOpen(true)} style={{background:"var(--surface2)",color:"var(--text2)",padding:"9px",borderRadius:"var(--rs)",fontSize:12.5,alignSelf:"flex-start"}}>
+                <Plus size={13}/> Add to Flashcards
+              </button>
+            )}
+            {addOpen&&!added&&(
+              <div style={{display:"flex",gap:6,alignItems:"center"}}>
+                <select className="input" value={targetDeck} onChange={e=>setTargetDeck(e.target.value)} style={{fontSize:12,flex:1}}>
+                  {decks.filter(d=>d.deckType!=="grammar").map(d=><option key={d.id} value={d.id}>{d.title}</option>)}
+                </select>
+                <button className="btn btn-primary btn-sm" onClick={doAdd} disabled={!targetDeck}>Add</button>
+              </div>
+            )}
+            {added&&<div style={{fontSize:12.5,color:"var(--know)",fontWeight:600}}><Check size={13}/> Added</div>}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function GuideScreen({onBack,onReplayOnboarding,onResetTips}){
   return (
     <div className="screen">
@@ -8052,7 +8207,7 @@ CRITICAL: Every Arabic phrase must have full tashkeel.`,
 // due date) — these are the ones "Throttle New Cards" and "Max Reviews Per
 // Day" (Settings → Backlog Recovery) apply to.
 const SRS_MODES=["smart","due","weak","new","all"];
-function MasterReviewScreen({decks,cardStates,onBack,onSwipeCard,onUndoSwipe,onDeckTouched,onToggleWeakForm,trackUsage,onAddToFlashcard,studyLog,onLogStudy,onMasterReading,onMasterListening,onMasterSpeaking,poolThresholdDays,newPoolDaily,onNewPoolDeckDone,newCardsPerDayEnabled,newCardsPerDayLimit,newCardsIntroducedToday,maxReviewsPerDayEnabled,maxReviewsPerDay,reviewsDoneToday,onReviewLogged,onSaveAid,immersionMode,onSaveImmersionDef}) {
+function MasterReviewScreen({decks,cardStates,onBack,onSwipeCard,onUndoSwipe,onDeckTouched,onToggleWeakForm,trackUsage,onAddToFlashcard,studyLog,onLogStudy,onMasterReading,onMasterListening,onMasterSpeaking,poolThresholdDays,newPoolDaily,onNewPoolDeckDone,newCardsPerDayEnabled,newCardsPerDayLimit,newCardsIntroducedToday,maxReviewsPerDayEnabled,maxReviewsPerDay,reviewsDoneToday,onReviewLogged,onSaveAid,immersionMode,onSaveImmersionDef,grammarImmersionMode}) {
   const SCREEN_NAME="masterReview";
   const saved=useRef(loadScreen(SCREEN_NAME)||{}).current;
   const [started,setStarted]=useState(saved.started||false);
@@ -8080,6 +8235,7 @@ function MasterReviewScreen({decks,cardStates,onBack,onSwipeCard,onUndoSwipe,onD
   const [mPlaying,setMPlaying]=useState(false);
   const [wordPopup,setWordPopup]=useState(null);
   const [immersionDefLoading,setImmersionDefLoading]=useState(false);
+  const [diagramImgLoading,setDiagramImgLoading]=useState(false);
   const genRef=useRef(0);
   const [selForm,setSelForm]=useState(null);
   const startRef=useRef(null);
@@ -8112,9 +8268,13 @@ function MasterReviewScreen({decks,cardStates,onBack,onSwipeCard,onUndoSwipe,onD
     }
   },[started,mode,limit,masterModulePool,sessionCards,idx,results,savedSession]);
 
-  // Grammar-rule cards are studied from their own deck (their study UI lives
-  // in StudyScreen); keep them out of the master-review vocab queue.
-  const allCards=Object.values(cardStates).flat().filter(c=>c.wordType!=="grammar");
+  // Grammar cards now join the real SRS queues here (Due/Weak/New/All) just
+  // like vocab — they still render differently (see isGrammar below) and
+  // skip the sentence/image generation panel, which doesn't apply to them.
+  // Rotation/Review New (the deck-cycling pool system) deliberately stay
+  // vocab-only — that's a different, calendar-based pacing model, unrelated
+  // to this real due-date-driven system.
+  const allCards=Object.values(cardStates).flat();
   const now=Date.now();
   const dueCards=allCards.filter(c=>c.srsLastReview&&c.srsNextReview&&c.srsNextReview<=now);
   const weakCards=allCards.filter(c=>c.status==="weak");
@@ -8322,10 +8482,11 @@ function MasterReviewScreen({decks,cardStates,onBack,onSwipeCard,onUndoSwipe,onD
   // sessionCards is a frozen session-start snapshot — doesn't pick up a
   // learning aid saved mid-session. Read the live version for cache lookups.
   const liveCard=card?(cardStates[card._deckId]||[]).find(c=>c.id===card.id)||card:card;
-  // Grammar cards never reach Master Review's pools today (see allCards
-  // below), so this only ever applies to vocab — no grammarImmersionMode
-  // check needed here.
-  const useImmersion=!!immersionMode&&!!card;
+  // Grammar cards now flow into Master Review too (see allCards below) —
+  // vocab always follows immersionMode; grammar only follows it when
+  // grammarImmersionMode is ALSO explicitly on (grammar stays in the
+  // learner's native language by default), same rule as StudyScreen.
+  const useImmersion=!!immersionMode&&!!card&&(card.wordType!=="grammar"||!!grammarImmersionMode);
 
   useEffect(()=>{
     if(!useImmersion||!liveCard||liveCard.immersionDef) return;
@@ -8425,8 +8586,10 @@ Return ONLY valid JSON: {"sentence":"...","translation":"...","imagePrompt":"...
 
   // Active study
   if(started&&card){
+    const isGrammar=card.wordType==="grammar";
     const availForms=Object.entries(card.forms||{}).filter(([,v])=>v);
     const testForm=pendingTestForm(card);
+    const grammar=card.grammar||{explanation:"",examples:[]};
     // Rotation and Review New both group whole decks together in session
     // order, so "which deck am I in, how far through it" is meaningful here
     // (unlike Smart/Due/Weak, which jumble cards from many decks and would
@@ -8468,6 +8631,13 @@ Return ONLY valid JSON: {"sentence":"...","translation":"...","imagePrompt":"...
                     <div className="ar" style={{fontSize:36,color:"var(--text)"}}>{testForm?card.forms[testForm]:card.arabicBase}</div>
                     <div style={{fontSize:12,color:"var(--text3)",marginTop:20}}>Tap to reveal the Arabic explanation · <span className="kbd">Space</span></div>
                   </>
+                ):isGrammar?(
+                  <>
+                    <div className="sec" style={{marginBottom:16}}>Grammar · <span className="ar">قَوَاعِد</span></div>
+                    <div style={{fontFamily:"Lora,serif",fontSize:card.english.length>40?22:28,fontWeight:600,lineHeight:1.25}}>{card.english}</div>
+                    {card.arabicBase&&<div className="ar" style={{fontSize:24,color:"var(--harf)",marginTop:10}}>{card.arabicBase}</div>}
+                    <div style={{fontSize:12,color:"var(--text3)",marginTop:20,fontWeight:500}}>Recall the rule, then tap to check ↓</div>
+                  </>
                 ):(
                   <>
                     <div className="sec" style={{marginBottom:16}}>{testForm?`English · Give the ${FORM_LABELS[testForm]||testForm}`:"English"}</div>
@@ -8489,6 +8659,13 @@ Return ONLY valid JSON: {"sentence":"...","translation":"...","imagePrompt":"...
                     )}
                     <div style={{fontSize:11,color:"var(--text3)",marginTop:14,fontWeight:500}}>↻ Tap to flip back</div>
                   </>
+                ):isGrammar?(
+                  <>
+                    <div className="sec" style={{marginBottom:5}}>The Rule</div>
+                    {card.arabicBase&&<div className="ar" style={{fontSize:28,color:"var(--text)"}}>{card.arabicBase}</div>}
+                    <div style={{fontSize:13,color:"var(--text2)",lineHeight:1.55,maxHeight:120,overflowY:"auto",padding:"0 4px"}}>{grammar.explanation}</div>
+                    <div style={{fontSize:11,color:"var(--text3)",marginTop:14,fontWeight:500}}>↻ Tap to flip back</div>
+                  </>
                 ):(
                   <>
                     <div className="sec" style={{marginBottom:5}}>{testForm?<>Arabic · <span style={{color:"var(--weak)"}}>{FORM_LABELS[testForm]||testForm} (retest)</span></>:<>Arabic · <span style={{textTransform:"capitalize"}}>{card.wordType}</span></>}</div>
@@ -8502,7 +8679,60 @@ Return ONLY valid JSON: {"sentence":"...","translation":"...","imagePrompt":"...
               </div>
             </div>
           </div>
-          {flipped&&(
+          {flipped&&isGrammar&&(
+            <div className="gen-appear" style={{background:"var(--surface)",border:"1.5px solid var(--border)",borderRadius:"var(--r)",padding:"18px 17px",boxShadow:"0 5px 24px rgba(0,0,0,0.08)",display:"flex",flexDirection:"column",gap:10}}>
+              {(grammar.examples||[]).length>0&&(
+                <div style={{display:"flex",flexDirection:"column",gap:8}}>
+                  <div style={{fontSize:10,fontWeight:700,color:"var(--accent)",letterSpacing:".1em",textTransform:"uppercase"}}>✦ Examples</div>
+                  {grammar.examples.map((ex,i)=>(
+                    <div key={i} style={{background:"var(--accent-bg)",border:"1px solid var(--accent-border)",borderRadius:"var(--rs)",padding:"10px 12px"}}>
+                      <ClickableArabic text={ex.ar} highlightWords={card.arabicBase?[card.arabicBase]:[]} onWordClick={(word,ctx)=>setWordPopup({word,context:ctx})} fontSize={18}/>
+                      <div style={{fontSize:12,color:"var(--text2)",fontStyle:"italic",marginTop:4}}>{ex.en}</div>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {/* Mnemonic image — same aidByForm/Storage cache as vocab, keyed
+                  under a fixed pseudo-form "_diagram" (grammar cards have no
+                  real forms). Same infra/quality bar as vocab's images. */}
+              {diagramImgLoading?(
+                <div style={{position:"relative",width:"100%",aspectRatio:"1",background:"linear-gradient(110deg,var(--surface2) 30%,var(--border) 50%,var(--surface2) 70%)",backgroundSize:"200% 100%",animation:"shimmer 2s linear infinite",border:"1px solid var(--border)",borderRadius:"var(--rs)",display:"flex",alignItems:"center",justifyContent:"center",flexDirection:"column",gap:8}}>
+                  <RefreshCw size={20} className="spin" color="var(--text3)"/>
+                  <div style={{fontSize:12,color:"var(--text3)",fontWeight:500}}>Drawing with Nano Banana…</div>
+                </div>
+              ):liveCard.aidByForm?.["_diagram"]?.imageUrl?(
+                <div style={{position:"relative"}}>
+                  <img src={liveCard.aidByForm["_diagram"].imageUrl} alt={`Mnemonic for ${card.english}`} style={{width:"100%",display:"block",borderRadius:"var(--rs)",border:"1px solid var(--border)"}}/>
+                  <button
+                    onClick={async()=>{
+                      setDiagramImgLoading(true);
+                      const prompt=`A simple memorable image representing the grammar concept "${card.english}": ${grammar.explanation}`;
+                      const url=await generateImage(prompt,trackUsage);
+                      setDiagramImgLoading(false);
+                      if(url) onSaveAid?.(card._deckId,card.id,"_diagram",{sentence:"",translation:"",imagePrompt:prompt,imageUrl:url});
+                    }}
+                    title={`Regenerate · costs ~$${(IMAGE_PRICES[_imageModel]||0.039).toFixed(3)}`}
+                    style={{position:"absolute",top:8,right:8,width:32,height:32,borderRadius:"50%",background:"rgba(0,0,0,.55)",color:"white",border:"none",cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",backdropFilter:"blur(4px)"}}>
+                    <RefreshCw size={14}/>
+                  </button>
+                </div>
+              ):(
+                <button
+                  onClick={async()=>{
+                    setDiagramImgLoading(true);
+                    const prompt=`A simple memorable image representing the grammar concept "${card.english}": ${grammar.explanation}`;
+                    const url=await generateImage(prompt,trackUsage);
+                    setDiagramImgLoading(false);
+                    if(url) onSaveAid?.(card._deckId,card.id,"_diagram",{sentence:"",translation:"",imagePrompt:prompt,imageUrl:url});
+                  }}
+                  style={{background:"var(--surface2)",border:"1px dashed var(--border)",borderRadius:"var(--rs)",padding:"12px 14px",cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",gap:8,fontSize:12.5,color:"var(--text2)",fontWeight:500,width:"100%"}}>
+                  <ImageIcon size={14}/> Add a mnemonic image
+                  <span style={{fontSize:11,color:"var(--text3)",fontWeight:400,fontFamily:"monospace"}}>~${(IMAGE_PRICES[_imageModel]||0.039).toFixed(3)}</span>
+                </button>
+              )}
+            </div>
+          )}
+          {flipped&&!isGrammar&&(
             <div className="gen-appear" style={{background:"var(--surface)",border:"1.5px solid var(--border)",borderRadius:"var(--r)",padding:"18px 17px",boxShadow:"0 5px 24px rgba(0,0,0,0.08)"}}>
               <div className="sec">Select a form</div>
               <div style={{display:"flex",flexWrap:"wrap",gap:7,marginBottom:12}}>
@@ -9559,19 +9789,23 @@ function DictationScreen({decks,cardStates,profile,onBack,onFinish,trackUsage,on
 // passes content arrays through to OpenRouter untouched. pdfjs-dist loads
 // lazily (dynamic import) so it adds nothing to the main bundle.
 // ─────────────────────────────────────────────────────────────
-const GRAMMAR_PROMPT=`You are analyzing a learner's Arabic GRAMMAR notes from the curriculum "Al-ʿArabiyyah Bayna Yadayk" (Arabic Between Your Hands). The notes may contain explanations, tables, lists and example sentences — in English, Arabic, or both. Some input may be photographed/scanned pages.
+const grammarPrompt=(nativeLanguage)=>{
+  const lang=nativeLanguage||"English";
+  return `You are analyzing a learner's Arabic GRAMMAR notes from the curriculum "Al-ʿArabiyyah Bayna Yadayk" (Arabic Between Your Hands). The notes may contain explanations, tables, lists and example sentences — in ${lang}, Arabic, or both. Some input may be photographed/scanned pages.
 
 Extract every DISTINCT grammar concept/rule the notes cover. For each concept return:
-- "title": short English name, with the Arabic grammar term in parentheses when it exists (e.g. "The Nominal Sentence (الجملة الاسمية)")
+- "title": short name in ${lang}, with the Arabic grammar term in parentheses when it exists (e.g. "The Nominal Sentence (الجملة الاسمية)")
 - "arabicTerm": the Arabic name of the concept, fully voweled ("" if none)
-- "explanation": a clear, learner-friendly explanation in English (2–5 sentences). Any Arabic inside it MUST be fully voweled.
-- "examples": 2–4 example sentences as {"ar":"...","en":"..."} — prefer examples taken from the notes themselves (complete/fix them if truncated). Every Arabic word MUST carry full tashkeel — no bare letters.
+- "grammarScience": classify which traditional Arabic grammar science this concept belongs to — "nahw" (نحو, syntax: sentence structure, case endings/إعراب, agreement, particles governing case, word order) or "sarf" (صرف, morphology: word patterns/أوزان, verb conjugation, derivation, root-and-pattern formation). Use "other" only if the concept genuinely doesn't fit either (rare — most grammar concepts are one or the other).
+- "explanation": a clear, learner-friendly explanation in ${lang} (2–5 sentences). Any Arabic inside it MUST be fully voweled.
+- "examples": 2–4 example sentences as {"ar":"...","en":"..."} (the "en" field's translation should also be in ${lang}) — prefer examples taken from the notes themselves (complete/fix them if truncated). Every Arabic word MUST carry full tashkeel — no bare letters.
 
 Rules:
 - ONE card per distinct concept — merge duplicates and repeats.
 - Only concepts actually present in the notes — do NOT invent unrelated material.
 - Modern Standard Arabic, Bayna-Yadayk register.
-Return ONLY valid JSON: [{"title":"...","arabicTerm":"...","explanation":"...","examples":[{"ar":"...","en":"..."}]}]`;
+Return ONLY valid JSON: [{"title":"...","arabicTerm":"...","grammarScience":"nahw|sarf|other","explanation":"...","examples":[{"ar":"...","en":"..."}]}]`;
+};
 
 // ─────────────────────────────────────────────────────────────
 // VOCAB IMPORT — dump a PDF / screenshots of vocabulary (word lists, vocab
@@ -9678,10 +9912,11 @@ function labelForBatch(b){
 // Send one batch to Claude and return its parsed concept/card array. Shared
 // by the initial run() loop and the per-warning retry so both paths fail
 // and succeed identically.
-async function generateConceptsForBatch(b,trackUsage){
+async function generateConceptsForBatch(b,trackUsage,nativeLanguage){
+  const prompt=grammarPrompt(nativeLanguage);
   const raw=b.type==="text"
-    ?await callClaude(`${GRAMMAR_PROMPT}\n\nTHE LEARNER'S NOTES:\n\n${b.text}`,3000,"grammar",trackUsage)
-    :await callClaudeVision([{type:"text",text:GRAMMAR_PROMPT+"\n\nThe learner's notes are in the attached page image(s)."},...b.images.map(u=>({type:"image_url",image_url:{url:u}}))],3000,"grammar",trackUsage);
+    ?await callClaude(`${prompt}\n\nTHE LEARNER'S NOTES:\n\n${b.text}`,3000,"grammar",trackUsage)
+    :await callClaudeVision([{type:"text",text:prompt+"\n\nThe learner's notes are in the attached page image(s)."},...b.images.map(u=>({type:"image_url",image_url:{url:u}}))],3000,"grammar",trackUsage);
   const arr=extractJSON(raw);
   if(!Array.isArray(arr)) throw new Error("Response was not a list");
   return arr;
@@ -9713,7 +9948,7 @@ function fileToDownscaledJpeg(file,maxDim=1400){
   });
 }
 
-function GrammarImportScreen({onBack,trackUsage,onSave,targetDeck}){
+function GrammarImportScreen({onBack,trackUsage,onSave,targetDeck,nativeLanguage}){
   const [stage,setStage]=useState("input"); // input | working | preview
   const [pasted,setPasted]=useState("");
   const [files,setFiles]=useState([]);
@@ -9730,6 +9965,7 @@ function GrammarImportScreen({onBack,trackUsage,onSave,targetDeck}){
   const normalizeConcept=(c)=>({
     title:String(c?.title||"").trim(),
     arabicTerm:String(c?.arabicTerm||"").trim(),
+    grammarScience:["nahw","sarf"].includes(c?.grammarScience)?c.grammarScience:"other",
     explanation:String(c?.explanation||"").trim(),
     examples:Array.isArray(c?.examples)?c.examples.filter(e=>e&&e.ar).map(e=>({ar:String(e.ar).trim(),en:String(e.en||"").trim()})).slice(0,4):[],
   });
@@ -9780,7 +10016,7 @@ function GrammarImportScreen({onBack,trackUsage,onSave,targetDeck}){
         const b=batches[i];
         setProgress(`Analyzing ${b.type==="images"?"screenshot":"notes"} batch ${i+1}/${batches.length} (${labelForBatch(b)}) — ${seen.size} concepts so far…`);
         try{
-          const arr=await generateConceptsForBatch(b,trackUsage);
+          const arr=await generateConceptsForBatch(b,trackUsage,nativeLanguage);
           for(const rawC of arr){
             const c=normalizeConcept(rawC);
             if(!c.title||!c.explanation) continue;
@@ -9814,7 +10050,7 @@ function GrammarImportScreen({onBack,trackUsage,onSave,targetDeck}){
     if(!w.batch||w.retrying) return;
     setWarnings(p=>p.map(x=>x.id===w.id?{...x,retrying:true}:x));
     try{
-      const arr=await generateConceptsForBatch(w.batch,trackUsage);
+      const arr=await generateConceptsForBatch(w.batch,trackUsage,nativeLanguage);
       const fresh=arr.map(normalizeConcept).filter(c=>c.title&&c.explanation);
       setConcepts(prev=>{
         const seen=new Map(prev.map(c=>[c.title.toLowerCase().replace(/[^a-z؀-ۿ]+/g,""),c]));
@@ -9836,6 +10072,7 @@ function GrammarImportScreen({onBack,trackUsage,onSave,targetDeck}){
     const ts=Date.now();
     const cards=concepts.map((c,i)=>({
       id:`c${ts}-${i}`, wordType:"grammar", english:c.title, arabicBase:c.arabicTerm||"",
+      grammarScience:c.grammarScience||"other",
       forms:{}, grammar:{explanation:c.explanation,examples:c.examples}, status:"new",
     }));
     onSave(deckTitle.trim()||"Grammar",cards,targetDeck||null);
@@ -9927,6 +10164,18 @@ function GrammarImportScreen({onBack,trackUsage,onSave,targetDeck}){
                     <span style={{fontWeight:600,fontSize:13.5,flex:1}}>{c.title}</span>
                     {c.arabicTerm&&<span className="ar" style={{fontSize:15,color:"var(--harf)"}}>{c.arabicTerm}</span>}
                   </button>
+                  <span onClick={(e)=>{
+                      e.stopPropagation();
+                      const next={nahw:"sarf",sarf:"other",other:"nahw"}[c.grammarScience||"other"];
+                      setConcepts(p=>p.map((x,j)=>j===i?{...x,grammarScience:next}:x));
+                    }}
+                    title="Tap to change — AI classification, correct it if it's wrong"
+                    style={{fontSize:10,fontWeight:700,padding:"2px 8px",borderRadius:100,cursor:"pointer",flexShrink:0,
+                      background:c.grammarScience==="nahw"?"var(--info-bg)":c.grammarScience==="sarf"?"var(--accent-bg)":"var(--surface2)",
+                      color:c.grammarScience==="nahw"?"var(--info)":c.grammarScience==="sarf"?"var(--accent)":"var(--text3)",
+                      border:`1px solid ${c.grammarScience==="nahw"?"var(--info-border)":c.grammarScience==="sarf"?"var(--accent-border)":"var(--border)"}`}}>
+                    {c.grammarScience==="nahw"?"نحو Nahw":c.grammarScience==="sarf"?"صرف Sarf":"Other"}
+                  </span>
                   <button className="btn btn-ghost" title="Remove" onClick={()=>{setConcepts(p=>p.filter((_,j)=>j!==i));setExpanded(-1);}} style={{width:28,height:28,color:"var(--weak)"}}><Trash2 size={13}/></button>
                 </div>
                 {expanded===i&&(
@@ -11360,8 +11609,9 @@ export default function App() {
   const commonProps={decks,cardStates,trackUsage};
 
   const screens={
-    home:<HomeScreen {...commonProps} onOpenDeck={openDeck} onSettings={()=>go("settings")} onCreateDeck={()=>go("createDeck")} onReading={()=>go("reading")} onListening={()=>go("listening")} onConversation={()=>go("conversation")} onDictation={()=>go("dictation")} onCapsules={()=>go("capsules")} onSearch={()=>setShowSearch(true)} onProgress={()=>go("progress")} onMasterReview={()=>go("masterReview")} onGuide={()=>go("guide")} onPresets={()=>go("preset")} onGrammarImport={()=>{setGrammarTarget(null);go("grammarImport");}} onVocabImport={()=>{setVocabTarget(null);go("vocabImport");}} darkMode={darkMode} onToggleDark={()=>setDarkMode(d=>!d)} studyLog={studyLog} poolThresholdDays={getPoolThresholdDays(settings)} immersionMode={!!settings.immersionMode} immersionNudgeShown={!!settings.immersionNudgeShown} onImmersionNudgeAction={handleImmersionNudge}/>,
-    grammarImport:<GrammarImportScreen key={grammarTarget?.id||"new"} onBack={()=>{setGrammarTarget(null);go("home");}} trackUsage={trackUsage} onSave={saveGrammarDeck} targetDeck={grammarTarget}/>,
+    home:<HomeScreen {...commonProps} onOpenDeck={openDeck} onSettings={()=>go("settings")} onCreateDeck={()=>go("createDeck")} onReading={()=>go("reading")} onListening={()=>go("listening")} onConversation={()=>go("conversation")} onDictation={()=>go("dictation")} onCapsules={()=>go("capsules")} onSearch={()=>setShowSearch(true)} onTranslate={()=>go("translate")} onProgress={()=>go("progress")} onMasterReview={()=>go("masterReview")} onGuide={()=>go("guide")} onPresets={()=>go("preset")} onGrammarImport={()=>{setGrammarTarget(null);go("grammarImport");}} onVocabImport={()=>{setVocabTarget(null);go("vocabImport");}} darkMode={darkMode} onToggleDark={()=>setDarkMode(d=>!d)} studyLog={studyLog} poolThresholdDays={getPoolThresholdDays(settings)} immersionMode={!!settings.immersionMode} immersionNudgeShown={!!settings.immersionNudgeShown} onImmersionNudgeAction={handleImmersionNudge}/>,
+    translate:<TranslateScreen onBack={()=>go("home")} onAddToFlashcard={addToFlashcard} decks={decks} trackUsage={trackUsage} nativeLanguage={settings.nativeLanguage}/>,
+    grammarImport:<GrammarImportScreen key={grammarTarget?.id||"new"} onBack={()=>{setGrammarTarget(null);go("home");}} trackUsage={trackUsage} onSave={saveGrammarDeck} targetDeck={grammarTarget} nativeLanguage={settings.nativeLanguage}/>,
     vocabImport:<VocabImportScreen key={vocabTarget?.id||"new"} onBack={()=>{setVocabTarget(null);go("home");}} trackUsage={trackUsage} onSave={saveVocabDeck} targetDeck={vocabTarget} nativeLanguage={settings.nativeLanguage}/>,
     capsules:<CapsulesScreen profile={profile} onOpen={(s)=>go(s)} onBack={()=>go("home")}/>,
     preset:<PresetLibraryScreen profile={profile} decks={decks} onBack={()=>go("home")}/>,
@@ -11385,7 +11635,7 @@ export default function App() {
     masterReview:<MasterReviewScreen decks={decks} cardStates={cardStates} onBack={()=>go("home")} onSwipeCard={handleMasterSwipe} onUndoSwipe={restoreCard} onDeckTouched={touchDeck} onToggleWeakForm={toggleWeakForm} trackUsage={trackUsage} onAddToFlashcard={addToFlashcard} studyLog={studyLog} onLogStudy={logStudy} onSaveAid={saveCardAid}
       poolThresholdDays={getPoolThresholdDays(settings)} newPoolDaily={newPoolDailyToday} onNewPoolDeckDone={markNewPoolDeckDone}
       newCardsPerDayEnabled={settings.newCardsPerDayEnabled!==false} newCardsPerDayLimit={settings.newCardsPerDayLimit??20} newCardsIntroducedToday={newCardsIntroducedTodayCount} maxReviewsPerDayEnabled={!!settings.maxReviewsPerDayEnabled} maxReviewsPerDay={settings.maxReviewsPerDay??100} reviewsDoneToday={reviewsDoneTodayCount} onReviewLogged={logReviewToday}
-      immersionMode={!!settings.immersionMode} onSaveImmersionDef={saveCardImmersionDef}
+      immersionMode={!!settings.immersionMode} onSaveImmersionDef={saveCardImmersionDef} grammarImmersionMode={!!settings.grammarImmersionMode}
       onMasterReading={(pool)=>{setMasterPool(pool);go("masterReading");}}
       onMasterListening={(pool)=>{setMasterPool(pool);go("masterListening");}}
       onMasterSpeaking={(pool)=>{setMasterPool(pool);go("masterSpeaking");}}/>,
