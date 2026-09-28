@@ -2416,7 +2416,8 @@ function ExportDataPanel({decks,cardStates}) {
   );
 }
 
-function SettingsScreen({settings,setSettings,onBack,usage,user,onSignOut,onReplayOnboarding,profile,setProfile,studyLog,onUpdateTargets,decks,cardStates,setCardStates,trackUsage,onResetUsage}) {
+function SettingsScreen({settings,setSettings,onBack,usage,user,onSignOut,onReplayOnboarding,profile,setProfile,studyLog,onUpdateTargets,decks,cardStates,setCardStates,trackUsage,onResetUsage,onResumeBulkFill,isBulkAllowlisted}) {
+  const [bulkFillRunning,setBulkFillRunning]=useState(false);
   const [local,setLocal]=useState(settings);
   const [saved,setSaved]=useState(false);
   const set=(k,v)=>setLocal(p=>({...p,[k]:v}));
@@ -2682,7 +2683,17 @@ function SettingsScreen({settings,setSettings,onBack,usage,user,onSignOut,onRepl
                   <span style={{color:"var(--text3)"}}>{readyCount} / {totalCount} ({pct}%)</span>
                 </div>
                 <div className="progress-track" style={{height:5}}><div className="progress-fill" style={{width:`${pct}%`,background:"var(--accent)"}}/></div>
-                {readyCount<totalCount&&<div style={{fontSize:11,color:"var(--text3)",marginTop:5}}>The rest fill in as you view them in Immersion Mode — or automatically, if you're on the retroactive bulk-fill.</div>}
+                {readyCount<totalCount&&(
+                  isBulkAllowlisted?(
+                    <button className="btn" disabled={bulkFillRunning}
+                      onClick={async()=>{setBulkFillRunning(true);try{await onResumeBulkFill?.();}finally{setBulkFillRunning(false);}}}
+                      style={{width:"100%",marginTop:8,padding:"9px",borderRadius:"var(--rxs)",fontSize:12,fontWeight:600,background:"var(--accent)",color:"white",opacity:bulkFillRunning?0.6:1}}>
+                      {bulkFillRunning?<><RefreshCw size={13} className="spin"/>Generating remaining {totalCount-readyCount}…</>:<><RefreshCw size={13}/>Generate remaining {totalCount-readyCount} now</>}
+                    </button>
+                  ):(
+                    <div style={{fontSize:11,color:"var(--text3)",marginTop:5}}>The rest fill in as you view them in Immersion Mode.</div>
+                  )
+                )}
               </div>
             );
           })()}
@@ -11677,7 +11688,7 @@ export default function App() {
     guide:<GuideScreen onBack={()=>go("home")} onReplayOnboarding={()=>{setShowOnboarding(true);go("home");}} onResetTips={()=>{resetTips();showToast("Tips reset — they'll show again as you explore.","success");}}/>,
     island:<LanguageIslandScreen decks={decks} cardStates={cardStates} profile={profile} trackUsage={trackUsage} onBack={()=>go("capsules")}/>,
     dictation:<DictationScreen decks={decks} cardStates={cardStates} profile={profile} trackUsage={trackUsage} onBack={()=>go("home")} onLogStudy={logStudy} onFinish={()=>{go("home");setSessionRating({module:"writing"});}}/>,
-    settings:<SettingsScreen settings={settings} setSettings={setSettings} onBack={()=>go("home")} usage={usage} user={user} onSignOut={handleSignOut} onReplayOnboarding={()=>setShowOnboarding(true)} profile={profile} setProfile={setProfile} studyLog={studyLog} onUpdateTargets={(t)=>setStudyLog(sl=>({...sl,targets:t}))} decks={decks} cardStates={cardStates} setCardStates={setCardStates} trackUsage={trackUsage} onResetUsage={resetUsageCounters}/>,
+    settings:<SettingsScreen settings={settings} setSettings={setSettings} onBack={()=>go("home")} usage={usage} user={user} onSignOut={handleSignOut} onReplayOnboarding={()=>setShowOnboarding(true)} profile={profile} setProfile={setProfile} studyLog={studyLog} onUpdateTargets={(t)=>setStudyLog(sl=>({...sl,targets:t}))} decks={decks} cardStates={cardStates} setCardStates={setCardStates} trackUsage={trackUsage} onResetUsage={resetUsageCounters} onResumeBulkFill={bulkGenerateImmersionDefs} isBulkAllowlisted={IMMERSION_BULK_ALLOWLIST.includes(user?.email)}/>,
     createDeck:<CreateDeckScreen onBack={()=>go("home")} onCreate={createDeck}/>,
     addCards:activeDeck&&<AddCardsScreen deck={activeDeck} onBack={()=>go("deck")} onSave={saveCards} trackUsage={trackUsage} nativeLanguage={settings.nativeLanguage} cardStates={cardStates}/>,
     deck:activeDeck&&<DeckScreen deck={activeDeck} cards={cardStates[activeDeck.id]||[]} onStartStudy={startStudy} onBack={()=>go("home")} onAddCards={()=>{if(activeDeck.deckType==="grammar"){setGrammarTarget(activeDeck);go("grammarImport");}else go("addCards");}} onImportMore={()=>{setVocabTarget(activeDeck);go("vocabImport");}} onEditCard={c=>{if(c.wordType==="grammar"){showToast("Grammar cards can't be edited yet — remove it and re-import that section.","info");return;}setActiveCard(c);go("editCard");}} onDeleteCard={deleteCard} onRenameDeck={renameDeck} onDeleteDeck={deleteDeck} onSetDeckUnit={setDeckUnit} onSetDeckLastStudied={setDeckLastStudied} onTogglePinnedNew={togglePinnedNew} onGraduateNow={graduateNow} poolThresholdDays={getPoolThresholdDays(settings)} newCardsRemainingToday={newCardsRemainingTodayCount} savedIdx={{all:savedIdx.current[activeDeck.id+"_all"]||0,new:savedIdx.current[activeDeck.id+"_new"]||0,weak:savedIdx.current[activeDeck.id+"_weak"]||0,known:savedIdx.current[activeDeck.id+"_known"]||0,due:savedIdx.current[activeDeck.id+"_due"]||0}}/>,
