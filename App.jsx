@@ -410,18 +410,64 @@ const NATIVE_LANGUAGE_OPTIONS = ["English","Spanish","French","Bengali","Urdu","
 const OR_MODELS = [
   // OpenAI
   {id:"openai/gpt-4o-mini",        label:"GPT-4o Mini  · Fast · Cheap"},
-  {id:"openai/gpt-4o",             label:"GPT-4o  · Best quality"},
-  {id:"openai/gpt-4.1-mini",       label:"GPT-4.1 Mini  · Latest"},
+  {id:"openai/gpt-5-mini",         label:"GPT-5 Mini  · Cheap · Smart"},
+  {id:"openai/gpt-5.1",            label:"GPT-5.1  · Flagship"},
   // Anthropic via OpenRouter
-  {id:"anthropic/claude-3.5-sonnet",label:"Claude 3.5 Sonnet  · Balanced"},
-  {id:"anthropic/claude-3-haiku",   label:"Claude 3 Haiku  · Very fast"},
-  {id:"anthropic/claude-sonnet-4-5",label:"Claude Sonnet 4.5  · Latest"},
+  {id:"anthropic/claude-haiku-4.5", label:"Claude Haiku 4.5  · Very fast"},
+  {id:"anthropic/claude-sonnet-4.5",label:"Claude Sonnet 4.5  · Balanced"},
+  {id:"anthropic/claude-sonnet-5", label:"Claude Sonnet 5  · Latest"},
+  {id:"anthropic/claude-opus-5",   label:"Claude Opus 5  · Best quality"},
   // Google
-  {id:"google/gemini-flash-1.5",    label:"Gemini Flash 1.5  · Fast"},
-  {id:"google/gemini-pro-1.5",      label:"Gemini Pro 1.5  · Capable"},
+  {id:"google/gemini-3.1-flash-lite",label:"Gemini 3.1 Flash Lite  · Fast · Cheap"},
+  {id:"google/gemini-3.8-flash",   label:"Gemini 3.8 Flash  · Latest, fast"},
+  {id:"google/gemini-3.1-pro-preview",label:"Gemini 3.1 Pro  · Capable"},
+  // Z.ai
+  {id:"z-ai/glm-5.3-flash",        label:"GLM 5.3 Flash  · Near-Sonnet quality, ultra cheap"},
+  {id:"z-ai/glm-4.6",              label:"GLM 4.6  · Strong mid-tier"},
+  // DeepSeek
+  {id:"deepseek/deepseek-v4.1-flash",label:"DeepSeek V4.1 Flash  · Cheap · Capable"},
+  // Qwen
+  {id:"qwen/qwen3.7-plus",         label:"Qwen3.7 Plus  · Cheap · Capable"},
+  // Moonshot AI
+  {id:"moonshotai/kimi-k2.6",      label:"Kimi K2.6  · Agentic, capable"},
   // Meta
   {id:"meta-llama/llama-3.3-70b-instruct",label:"Llama 3.3 70B  · Open source"},
 ];
+
+// Old OpenRouter model IDs this app has stored in user settings that are no
+// longer (or were never correctly) the real OpenRouter slug — remapped on
+// load so stale per-feature overrides keep resolving instead of silently
+// orphaning (see settings-hydration in the App component). Not a general
+// migration framework, just a fix-forward table for known-bad past ids.
+const MODEL_ID_MIGRATIONS = {
+  "anthropic/claude-sonnet-4-5": "anthropic/claude-sonnet-4.5", // wrong separator (hyphen vs dot) from an earlier session
+  "anthropic/claude-3.5-sonnet": "anthropic/claude-sonnet-4.5", // deprecated on OpenRouter
+  "anthropic/claude-3-haiku":    "anthropic/claude-haiku-4.5",  // deprecated on OpenRouter
+  "google/gemini-flash-1.5":     "google/gemini-3.1-flash-lite",// deprecated on OpenRouter
+  "google/gemini-pro-1.5":       "google/gemini-3.1-pro-preview",// deprecated on OpenRouter
+  "openai/gpt-4o":               "openai/gpt-5-mini",
+  "openai/gpt-4.1-mini":         "openai/gpt-5-mini",
+};
+function migrateModelId(id){ return (id && MODEL_ID_MIGRATIONS[id]) || id; }
+// Applies migrateModelId to settings.model and every settings.models[tag]
+// value — used once when settings are hydrated from Firestore.
+function migrateSettingsModelIds(s){
+  if(!s) return s;
+  let changed=false;
+  const model=migrateModelId(s.model);
+  if(model!==s.model) changed=true;
+  let models=s.models;
+  if(models){
+    const next={};
+    for(const [tag,id] of Object.entries(models)){
+      const m=migrateModelId(id);
+      next[tag]=m;
+      if(m!==id) changed=true;
+    }
+    models=next;
+  }
+  return changed ? {...s,model,models} : s;
+}
 
 // Image generation models — Google's Gemini Flash Image family ("Nano Banana")
 const IMAGE_MODELS = [
@@ -434,15 +480,22 @@ const IMAGE_MODELS = [
 // approximate, treat as estimates. Fallback used when the user's chosen
 // model isn't in the table (e.g. they typed in a custom override).
 const MODEL_PRICES = {
-  "openai/gpt-4o-mini":        { in:0.15, out:0.60 },
-  "openai/gpt-4o":             { in:2.50, out:10.0 },
-  "openai/gpt-4.1-mini":       { in:0.40, out:1.60 },
-  "anthropic/claude-3.5-sonnet":{ in:3.0,  out:15.0 },
-  "anthropic/claude-3-haiku":  { in:0.25, out:1.25 },
-  "anthropic/claude-sonnet-4-5":{ in:3.0,  out:15.0 },
-  "google/gemini-flash-1.5":   { in:0.075,out:0.30 },
-  "google/gemini-pro-1.5":     { in:1.25, out:5.0 },
-  "meta-llama/llama-3.3-70b-instruct":{ in:0.40, out:0.40 },
+  "openai/gpt-4o-mini":         { in:0.15, out:0.60 },
+  "openai/gpt-5-mini":          { in:0.25, out:2.0 },
+  "openai/gpt-5.1":             { in:1.25, out:10.0 },
+  "anthropic/claude-haiku-4.5": { in:1.0,  out:5.0 },
+  "anthropic/claude-sonnet-4.5":{ in:3.0,  out:15.0 },
+  "anthropic/claude-sonnet-5":  { in:2.0,  out:10.0 },
+  "anthropic/claude-opus-5":    { in:5.0,  out:25.0 },
+  "google/gemini-3.1-flash-lite":{ in:0.25, out:1.5 },
+  "google/gemini-3.8-flash":    { in:0.75, out:3.75 },
+  "google/gemini-3.1-pro-preview":{ in:2.0, out:12.0 },
+  "z-ai/glm-5.3-flash":         { in:0.15, out:0.50 },
+  "z-ai/glm-4.6":               { in:0.43, out:1.75 },
+  "deepseek/deepseek-v4.1-flash":{ in:0.30, out:1.20 },
+  "qwen/qwen3.7-plus":          { in:0.32, out:1.28 },
+  "moonshotai/kimi-k2.6":       { in:0.65, out:3.41 },
+  "meta-llama/llama-3.3-70b-instruct":{ in:0.10, out:0.32 },
 };
 const PRICE_FALLBACK = { in:0.15, out:0.60 }; // gpt-4o-mini
 
@@ -10869,7 +10922,7 @@ export default function App() {
                   migrateLegacyCardStates(u.uid,d.cardStates,deckIds);
                 }
               }
-              if(d.settings) setSettings(s=>({...s,...d.settings}));
+              if(d.settings) setSettings(s=>({...s,...migrateSettingsModelIds(d.settings)}));
               if(d.profile) setProfile(d.profile);
               if(d.usage?.byTag) setUsage(d.usage);
               if(d.studyLog) setStudyLog(sl=>({...initStudyLog(),...d.studyLog}));
