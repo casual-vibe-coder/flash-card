@@ -8311,7 +8311,7 @@ CRITICAL: Every Arabic phrase must have full tashkeel.`,
 // Rotation/Review New, which cycle whole decks on a calendar regardless of
 // due date) — these are the ones "Throttle New Cards" and "Max Reviews Per
 // Day" (Settings → Backlog Recovery) apply to.
-const SRS_MODES=["smart","due","weak","new","all"];
+const SRS_MODES=["smart","due","weak","new","all","grammar"];
 function MasterReviewScreen({decks,cardStates,onBack,onSwipeCard,onUndoSwipe,onDeckTouched,onToggleWeakForm,trackUsage,onAddToFlashcard,studyLog,onLogStudy,onMasterReading,onMasterListening,onMasterSpeaking,poolThresholdDays,newPoolDaily,onNewPoolDeckDone,newCardsPerDayEnabled,newCardsPerDayLimit,newCardsIntroducedToday,maxReviewsPerDayEnabled,maxReviewsPerDay,reviewsDoneToday,onReviewLogged,onSaveAid,immersionMode,onSaveImmersionDef,grammarImmersionMode}) {
   const SCREEN_NAME="masterReview";
   const saved=useRef(loadScreen(SCREEN_NAME)||{}).current;
@@ -8380,11 +8380,19 @@ function MasterReviewScreen({decks,cardStates,onBack,onSwipeCard,onUndoSwipe,onD
   // Rotation/Review New (the deck-cycling pool system) deliberately stay
   // vocab-only — that's a different, calendar-based pacing model, unrelated
   // to this real due-date-driven system.
+  // Grammar cards get their own separate SRS queue (mode "grammar" below) —
+  // vocabAllCards feeds Smart/Due/Weak/New/All so grammar never mixes into
+  // the main vocab due count on Home or in these queues.
   const allCards=Object.values(cardStates).flat();
+  const vocabAllCards=allCards.filter(c=>c.wordType!=="grammar");
+  const grammarAllCards=allCards.filter(c=>c.wordType==="grammar");
   const now=Date.now();
-  const dueCards=allCards.filter(c=>c.srsLastReview&&c.srsNextReview&&c.srsNextReview<=now);
-  const weakCards=allCards.filter(c=>c.status==="weak");
-  const newCards=allCards.filter(c=>c.status==="new"||!c.status);
+  const dueCards=vocabAllCards.filter(c=>c.srsLastReview&&c.srsNextReview&&c.srsNextReview<=now);
+  const weakCards=vocabAllCards.filter(c=>c.status==="weak");
+  const newCards=vocabAllCards.filter(c=>c.status==="new"||!c.status);
+  const grammarDueCards=grammarAllCards.filter(c=>c.srsLastReview&&c.srsNextReview&&c.srsNextReview<=now);
+  const grammarWeakCards=grammarAllCards.filter(c=>c.status==="weak");
+  const grammarNewCards=grammarAllCards.filter(c=>c.status==="new"||!c.status);
   // New-card release throttle: only this many never-reviewed cards are
   // actually ELIGIBLE to enter a session today (id sort is a stable FIFO-ish
   // proxy for creation order — card ids embed a creation timestamp). The
@@ -8392,7 +8400,7 @@ function MasterReviewScreen({decks,cardStates,onBack,onSwipeCard,onUndoSwipe,onD
   // is hidden or lost, just paced.
   const newCardsRemainingToday=newCardsPerDayEnabled?Math.max(0,newCardsPerDayLimit-newCardsIntroducedToday):Infinity;
   const eligibleNewCards=[...newCards].sort((a,b)=>a.id<b.id?-1:a.id>b.id?1:0).slice(0,newCardsRemainingToday);
-  const knownCards=allCards.filter(c=>c.status==="known");
+  const knownCards=vocabAllCards.filter(c=>c.status==="known");
   const threshold=poolThresholdDays||NEW_POOL_DEFAULT_THRESHOLD_DAYS;
   const oldPoolDecks=decks.filter(d=>d.deckType!=="grammar"&&getDeckPool(d,threshold)==="old");
   const newPoolDecks=decks.filter(d=>d.deckType!=="grammar"&&getDeckPool(d,threshold)==="new");
@@ -8444,7 +8452,8 @@ function MasterReviewScreen({decks,cardStates,onBack,onSwipeCard,onUndoSwipe,onD
       const staleNewDecks=[...newPoolDecks].sort((a,b)=>(a.lastStudiedAt||0)-(b.lastStudiedAt||0));
       for(const deck of staleNewDecks) pool.push(...(cardStates[deck.id]||[]).filter(c=>c.wordType!=="grammar"));
     }
-    else pool=[...sortByDueDate(allCards)];
+    else if(startMode==="grammar") pool=[...sortByDueDate(grammarAllCards)];
+    else pool=[...sortByDueDate(vocabAllCards)];
     // Max Reviews Per Day also bites mid-session-limit: even if you asked
     // for 200 cards, once only 40 of today's budget are left, that's what
     // you get — same "100 cards staring at you, not 2000" psychology as the
@@ -9056,8 +9065,16 @@ Return ONLY valid JSON: {"sentence":"...","translation":"...","imagePrompt":"...
         )}
         <div className="test-option" onClick={()=>{setMode("all");start("all");}}>
           <div style={{width:40,height:40,borderRadius:12,background:"var(--surface2)",display:"flex",alignItems:"center",justifyContent:"center"}}><Layers size={18} color="var(--text2)"/></div>
-          <div style={{flex:1}}><div style={{fontWeight:600,fontSize:14}}>All Cards</div><div style={{fontSize:12,color:"var(--text3)",marginTop:2}}>{allCards.length} total across all decks</div></div>
+          <div style={{flex:1}}><div style={{fontWeight:600,fontSize:14}}>All Cards</div><div style={{fontSize:12,color:"var(--text3)",marginTop:2}}>{vocabAllCards.length} vocab cards across all decks</div></div>
         </div>
+        {/* Grammar has its own separate SRS queue — a dedicated review pass,
+            never mixed into Smart/Due/Weak/New/All above. */}
+        {grammarAllCards.length>0&&(
+          <div className="test-option" onClick={()=>{setMode("grammar");start("grammar");}}>
+            <div style={{width:40,height:40,borderRadius:12,background:"var(--harf-bg)",display:"flex",alignItems:"center",justifyContent:"center"}}><span className="ar" style={{fontSize:17,color:"var(--harf)",fontWeight:700}}>ق</span></div>
+            <div style={{flex:1}}><div style={{fontWeight:600,fontSize:14}}>Grammar Review</div><div style={{fontSize:12,color:"var(--text3)",marginTop:2}}>Due ({grammarDueCards.length}) · Weak ({grammarWeakCards.length}) · New ({grammarNewCards.length}) · {grammarAllCards.length} total</div></div>
+          </div>
+        )}
 
         {/* Queue breakdown */}
         <div style={{background:"var(--surface)",border:"1.5px solid var(--border)",borderRadius:"var(--rs)",padding:"12px 14px"}}>
@@ -9093,7 +9110,7 @@ Return ONLY valid JSON: {"sentence":"...","translation":"...","imagePrompt":"...
         </div>
         {/* Card pool selector for modules */}
         <div style={{display:"flex",gap:6,marginBottom:10,flexWrap:"wrap"}}>
-          {[["all",`All (${allCards.length})`],["weak",`Weak (${weakCards.length})`],["due",`Due (${dueCards.length})`]].map(([k,label])=>(
+          {[["all",`All (${vocabAllCards.length})`],["weak",`Weak (${weakCards.length})`],["due",`Due (${dueCards.length})`]].map(([k,label])=>(
             <button key={k} className={`chip ${masterModulePool===k?"chip-on":""}`} onClick={()=>setMasterModulePool(k)} style={{flex:1,justifyContent:"center",padding:"7px 0",fontSize:12}}>{label}</button>
           ))}
         </div>
