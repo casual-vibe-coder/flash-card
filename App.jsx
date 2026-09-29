@@ -3671,7 +3671,7 @@ Return ONLY valid JSON: {"sentence":"...","translation":"...","imagePrompt":"...
             <div className="flip-card-face">
               {useImmersion?(
                 <>
-                  <div className="sec" style={{marginBottom:16}}>{isGrammar?<>Grammar · <span className="ar">قَوَاعِد</span></>:"Arabic"}</div>
+                  <div className="sec" style={{marginBottom:16}}>{isGrammar?<>Grammar · <span className="ar">قَوَاعِد</span></>:testForm?<>Arabic · <span style={{color:"var(--weak)"}}>{FORM_LABELS[testForm]||testForm} (retest)</span></>:"Arabic"}</div>
                   <div className="ar" style={{fontSize:isGrammar?30:38,color:"var(--text)"}}>{testForm?card.forms[testForm]:card.arabicBase}</div>
                   <div style={{fontSize:12,color:"var(--text3)",marginTop:20,fontWeight:500}}>Tap to reveal the Arabic explanation ↓</div>
                 </>
@@ -3688,7 +3688,7 @@ Return ONLY valid JSON: {"sentence":"...","translation":"...","imagePrompt":"...
             <div className="flip-card-face flip-card-back">
               {useImmersion?(
                 <>
-                  <div className="sec" style={{marginBottom:5}}>Arabic Explanation</div>
+                  <div className="sec" style={{marginBottom:5}}>Arabic Explanation{testForm&&!isGrammar&&<> · <span style={{color:"var(--weak)"}}>{FORM_LABELS[testForm]||testForm} (retest)</span></>}</div>
                   {immersionDefLoading?(
                     <div style={{fontSize:13,color:"var(--text3)",display:"flex",alignItems:"center",gap:8}}><RefreshCw size={14} className="spin"/>Generating…</div>
                   ):liveCard.immersionDef?(
@@ -8735,7 +8735,7 @@ Return ONLY valid JSON: {"sentence":"...","translation":"...","imagePrompt":"...
               <div className="flip-card-face">
                 {useImmersion?(
                   <>
-                    <div className="sec" style={{marginBottom:16}}>Arabic</div>
+                    <div className="sec" style={{marginBottom:16}}>{testForm&&!isGrammar?<>Arabic · <span style={{color:"var(--weak)"}}>{FORM_LABELS[testForm]||testForm} (retest)</span></>:"Arabic"}</div>
                     <div className="ar" style={{fontSize:36,color:"var(--text)"}}>{testForm?card.forms[testForm]:card.arabicBase}</div>
                     <div style={{fontSize:12,color:"var(--text3)",marginTop:20}}>Tap to reveal the Arabic explanation · <span className="kbd">Space</span></div>
                   </>
@@ -8757,7 +8757,7 @@ Return ONLY valid JSON: {"sentence":"...","translation":"...","imagePrompt":"...
               <div className="flip-card-face flip-card-back">
                 {useImmersion?(
                   <>
-                    <div className="sec" style={{marginBottom:5}}>Arabic Explanation</div>
+                    <div className="sec" style={{marginBottom:5}}>Arabic Explanation{testForm&&!isGrammar&&<> · <span style={{color:"var(--weak)"}}>{FORM_LABELS[testForm]||testForm} (retest)</span></>}</div>
                     {immersionDefLoading?(
                       <div style={{fontSize:13,color:"var(--text3)",display:"flex",alignItems:"center",gap:8}}><RefreshCw size={14} className="spin"/>Generating…</div>
                     ):liveCard.immersionDef?(
