@@ -410,28 +410,18 @@ const NATIVE_LANGUAGE_OPTIONS = ["English","Spanish","French","Bengali","Urdu","
 const OR_MODELS = [
   // OpenAI
   {id:"openai/gpt-4o-mini",        label:"GPT-4o Mini  · Fast · Cheap"},
-  {id:"openai/gpt-5-mini",         label:"GPT-5 Mini  · Cheap · Smart"},
-  {id:"openai/gpt-5.1",            label:"GPT-5.1  · Flagship"},
+  {id:"openai/gpt-4o",             label:"GPT-4o  · Flagship"},
   // Anthropic via OpenRouter
-  {id:"anthropic/claude-haiku-4.5", label:"Claude Haiku 4.5  · Very fast"},
-  {id:"anthropic/claude-sonnet-4.5",label:"Claude Sonnet 4.5  · Balanced"},
-  {id:"anthropic/claude-sonnet-5", label:"Claude Sonnet 5  · Latest"},
-  {id:"anthropic/claude-opus-5",   label:"Claude Opus 5  · Best quality"},
+  {id:"anthropic/claude-3-haiku",  label:"Claude 3 Haiku  · Very fast"},
+  {id:"anthropic/claude-3.5-sonnet",label:"Claude 3.5 Sonnet  · Balanced"},
+  {id:"anthropic/claude-3-opus",   label:"Claude 3 Opus  · Best quality"},
   // Google
-  {id:"google/gemini-3.1-flash-lite",label:"Gemini 3.1 Flash Lite  · Fast · Cheap"},
-  {id:"google/gemini-3.8-flash",   label:"Gemini 3.8 Flash  · Latest, fast"},
-  {id:"google/gemini-3.1-pro-preview",label:"Gemini 3.1 Pro  · Capable"},
-  // Z.ai
-  {id:"z-ai/glm-5.3-flash",        label:"GLM 5.3 Flash  · Near-Sonnet quality, ultra cheap"},
-  {id:"z-ai/glm-4.6",              label:"GLM 4.6  · Strong mid-tier"},
+  {id:"google/gemini-flash-1.5",   label:"Gemini 1.5 Flash  · Fast · Cheap"},
+  {id:"google/gemini-pro-1.5",     label:"Gemini 1.5 Pro  · Capable"},
   // DeepSeek
-  {id:"deepseek/deepseek-v4.1-flash",label:"DeepSeek V4.1 Flash  · Cheap · Capable"},
-  // Qwen
-  {id:"qwen/qwen3.7-plus",         label:"Qwen3.7 Plus  · Cheap · Capable"},
-  // Moonshot AI
-  {id:"moonshotai/kimi-k2.6",      label:"Kimi K2.6  · Agentic, capable"},
+  {id:"deepseek/deepseek-chat",    label:"DeepSeek V2.5  · Cheap · Capable"},
   // Meta
-  {id:"meta-llama/llama-3.3-70b-instruct",label:"Llama 3.3 70B  · Open source"},
+  {id:"meta-llama/llama-3.1-70b-instruct",label:"Llama 3.1 70B  · Open source"},
 ];
 
 // Old OpenRouter model IDs this app has stored in user settings that are no
@@ -440,13 +430,23 @@ const OR_MODELS = [
 // orphaning (see settings-hydration in the App component). Not a general
 // migration framework, just a fix-forward table for known-bad past ids.
 const MODEL_ID_MIGRATIONS = {
-  "anthropic/claude-sonnet-4-5": "anthropic/claude-sonnet-4.5", // wrong separator (hyphen vs dot) from an earlier session
-  "anthropic/claude-3.5-sonnet": "anthropic/claude-sonnet-4.5", // deprecated on OpenRouter
-  "anthropic/claude-3-haiku":    "anthropic/claude-haiku-4.5",  // deprecated on OpenRouter
-  "google/gemini-flash-1.5":     "google/gemini-3.1-flash-lite",// deprecated on OpenRouter
-  "google/gemini-pro-1.5":       "google/gemini-3.1-pro-preview",// deprecated on OpenRouter
-  "openai/gpt-4o":               "openai/gpt-5-mini",
-  "openai/gpt-4.1-mini":         "openai/gpt-5-mini",
+  "anthropic/claude-sonnet-4-5": "anthropic/claude-3.5-sonnet",
+  "anthropic/claude-sonnet-4.5": "anthropic/claude-3.5-sonnet",
+  "anthropic/claude-sonnet-5": "anthropic/claude-3.5-sonnet",
+  "anthropic/claude-haiku-4.5": "anthropic/claude-3-haiku",
+  "anthropic/claude-opus-5": "anthropic/claude-3-opus",
+  "google/gemini-3.1-flash-lite": "google/gemini-flash-1.5",
+  "google/gemini-3.8-flash": "google/gemini-flash-1.5",
+  "google/gemini-3.1-pro-preview": "google/gemini-pro-1.5",
+  "openai/gpt-5-mini": "openai/gpt-4o-mini",
+  "openai/gpt-4.1-mini": "openai/gpt-4o-mini",
+  "openai/gpt-5.1": "openai/gpt-4o",
+  "z-ai/glm-5.3-flash": "openai/gpt-4o-mini",
+  "z-ai/glm-4.6": "openai/gpt-4o",
+  "deepseek/deepseek-v4.1-flash": "deepseek/deepseek-chat",
+  "qwen/qwen3.7-plus": "openai/gpt-4o-mini",
+  "moonshotai/kimi-k2.6": "openai/gpt-4o-mini",
+  "meta-llama/llama-3.3-70b-instruct": "meta-llama/llama-3.1-70b-instruct"
 };
 function migrateModelId(id){ return (id && MODEL_ID_MIGRATIONS[id]) || id; }
 // Applies migrateModelId to settings.model and every settings.models[tag]
@@ -1405,7 +1405,7 @@ function WordPopup({word,context,decks,cardStates,onClose,onAddToFlashcard,track
     const buildPrompt=(force)=>`You are an expert Arabic→English lexicographer. A learner tapped a single word and wants its meaning.
 
 Word tapped: "${word}"
-Sentence it appeared in: "${context}"
+Sentence it appeared in: "${context.length > 300 ? context.substring(0, 300) + '...' : context}"
 
 RULES:
 - ALWAYS give your best-effort English meaning. NEVER reply that the word is unavailable, unknown, not found, not a real word, or outside any curriculum/register. Every Arabic string is translatable.
@@ -1425,24 +1425,28 @@ Return ONLY valid JSON, no markdown. Put full tashkeel on Arabic text:
       try {
         let parsed={};
         try {
-          const raw=await callClaude(buildPrompt(false),200,"wordLookup",trackUsage,15000);
+          const raw=await callClaude(buildPrompt(false),800,"wordLookup",trackUsage,15000);
           parsed=extractJSON(raw);
-        } catch(e) { if(e?.message?.includes("timed out")) throw e; }
+        } catch(e) { 
+          throw e; 
+        }
         // One forceful retry if the model refused or returned no meaning.
         if(looksLikeRefusal(parsed?.meaning)){
           try {
-            const raw2=await callClaude(buildPrompt(true),200,"wordLookup",trackUsage,15000);
+            const raw2=await callClaude(buildPrompt(true),800,"wordLookup",trackUsage,15000);
             const p2=extractJSON(raw2);
             if(p2?.meaning && !looksLikeRefusal(p2.meaning)) parsed=p2;
             else if(p2?.meaning) parsed=p2; // still take whatever it gave over nothing
-          } catch {}
+          } catch(e) {
+            console.error("Retry failed:", e);
+          }
         }
         if(cancelled) return;
         // Guard against a parse that succeeded but lacks the meaning field.
         setData({word,root:"",rootMeaning:"",meaning:"",partOfSpeech:"",note:"",...parsed});
       } catch(e) {
         if(cancelled) return;
-        setData({word,root:"",rootMeaning:"",meaning:e?.message?.includes("timed out")?"Lookup timed out — tap again to retry":"Couldn't load — tap the word again",partOfSpeech:"",note:""});
+        setData({word,root:"",rootMeaning:"",meaning:e?.message?.includes("timed out")?"Lookup timed out — tap again to retry":`Couldn't load — ${e?.message || "tap the word again"}`,partOfSpeech:"",note:""});
       } finally { if(!cancelled) setLoading(false); }
     })();
     return ()=>{cancelled=true;};
@@ -2924,6 +2928,7 @@ function AddCardsScreen({deck,onBack,onSave,trackUsage,nativeLanguage,cardStates
     for(let i=0;i<wordList.length;i+=BATCH) chunks.push(wordList.slice(i,i+BATCH));
     const allCards=[];
     let failed=0;
+    let lastError=null;
     for(let ci=0;ci<chunks.length;ci++){
       const chunk=chunks[ci];
       setGenProgress(`Batch ${ci+1}/${chunks.length} (${allCards.length} cards done)…`);
@@ -2951,7 +2956,7 @@ CRITICAL: Every Arabic word MUST have full tashkeel (فَتْحَة ضَمَّة
         );
         const parsed=extractJSON(raw);
         allCards.push(...(Array.isArray(parsed)?parsed:[parsed]));
-      } catch(e){ console.error(`Batch ${ci+1} failed:`,e); failed++; }
+      } catch(e){ console.error(`Batch ${ci+1} failed:`,e); failed++; lastError=e; }
     }
     // Generate each card's Immersion Mode Arabic explanation right now, at
     // creation time, instead of waiting for a lazy on-demand generation the
@@ -2978,7 +2983,7 @@ CRITICAL: Every Arabic word MUST have full tashkeel (فَتْحَة ضَمَّة
       setPreview(allCards);
       if(failed>0) setErr(`${failed} batch${failed>1?"es":""} failed — ${allCards.length} cards generated successfully. You can save these and retry the rest.`);
     } else {
-      setErr("Generation failed — check your OpenRouter API key in Settings and try again.");
+      setErr(`Generation failed: ${lastError?.message || "check your OpenRouter API key in Settings"}`);
     }
     setGenerating(false);setGenProgress("");
   };
