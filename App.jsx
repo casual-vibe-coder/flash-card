@@ -2963,7 +2963,14 @@ CRITICAL: Every Arabic word MUST have full tashkeel (فَتْحَة ضَمَّة
         );
         const parsed=extractJSON(raw);
         allCards.push(...(Array.isArray(parsed)?parsed:[parsed]));
-      } catch(e){ console.error(`Batch ${ci+1} failed:`,e); failed++; lastError=e; }
+      } catch(e){ 
+        console.error(`Batch ${ci+1} failed:`,e); 
+        failed++; 
+        lastError=e; 
+        if (failed >= 3 || e.message.includes("API key") || e.message.includes("Empty response") || e.message.includes("filter") || e.message.includes("HTTP ")) {
+          break;
+        }
+      }
     }
     // Generate each card's Immersion Mode Arabic explanation right now, at
     // creation time, instead of waiting for a lazy on-demand generation the
@@ -10436,6 +10443,9 @@ function VocabImportScreen({onBack,trackUsage,onSave,targetDeck,nativeLanguage,c
           }
         }catch(err){
           warns.push({id:Math.random().toString(36).slice(2),message:`${labelForBatch(b)} failed: ${err?.message||"unknown error"}`,batch:b});
+          if (warns.length >= 3 || err?.message?.includes("API key") || err?.message?.includes("Empty response") || err?.message?.includes("HTTP ")) {
+            break;
+          }
         }
       }
       if(cancelRef.current) return;
