@@ -2972,27 +2972,6 @@ CRITICAL: Every Arabic word MUST have full tashkeel (فَتْحَة ضَمَّة
         }
       }
     }
-    // Generate each card's Immersion Mode Arabic explanation right now, at
-    // creation time, instead of waiting for a lazy on-demand generation the
-    // first time it's viewed in Immersion Mode — so every card is
-    // immersion-ready immediately, whether or not the toggle is on yet.
-    // Same generateImmersionDefinition function the on-demand path uses,
-    // just called proactively here; a handful in flight at once, not all at
-    // once. A failure here just leaves that one card without a cached
-    // definition — the on-demand path still covers it later as a fallback.
-    if(allCards.length>0){
-      setGenProgress(`Generating Arabic explanations for ${allCards.length} cards…`);
-      const IMM_BATCH=5;
-      for(let i=0;i<allCards.length;i+=IMM_BATCH){
-        const batch=allCards.slice(i,i+IMM_BATCH);
-        await Promise.all(batch.map(async(c)=>{
-          try {
-            const def=await generateImmersionDefinition(c,cardStates||{},trackUsage);
-            if(def) c.immersionDef={text:def,generatedAt:Date.now()};
-          } catch(e){ console.error("Immersion def generation failed:",e); }
-        }));
-      }
-    }
     if(allCards.length>0){
       setPreview(allCards);
       if(failed>0) setErr(`${failed} batch${failed>1?"es":""} failed — ${allCards.length} cards generated successfully. You can save these and retry the rest.`);
@@ -10454,23 +10433,6 @@ function VocabImportScreen({onBack,trackUsage,onSave,targetDeck,nativeLanguage,c
       // SOMETHING to show — otherwise a fully-failed import just bounces back
       // to input with a single toast, discarding every other batch's error.
       if(found.length===0&&warns.length===0) throw new Error("No vocabulary could be extracted — try clearer pages or paste the text directly.");
-      // Generate each card's Immersion Mode Arabic explanation now, at
-      // import time, instead of waiting for it to be viewed later — same
-      // reasoning/function as AddCardsScreen. A failure here just leaves
-      // that one card to fall back on the on-demand path.
-      if(found.length&&!cancelRef.current){
-        setProgress(`Generating Arabic explanations for ${found.length} cards…`);
-        const IMM_BATCH=5;
-        for(let i=0;i<found.length&&!cancelRef.current;i+=IMM_BATCH){
-          const batch=found.slice(i,i+IMM_BATCH);
-          await Promise.all(batch.map(async(c)=>{
-            try {
-              const def=await generateImmersionDefinition(c,cardStates||{},trackUsage);
-              if(def) c.immersionDef={text:def,generatedAt:Date.now()};
-            } catch(e){ console.error("Immersion def generation failed:",e); }
-          }));
-        }
-      }
       setCards(found);setWarnings(warns);setStage("preview");
     }catch(err){
       if(cancelRef.current) return;
