@@ -20,6 +20,7 @@ export default async function handler(req, res) {
     return res.status(200).json({
       content: [{ type: 'text', text }],
       usage: { input_tokens: data.usage?.prompt_tokens || 0, output_tokens: data.usage?.completion_tokens || 0 },
+      raw_data: !text ? data : undefined
     });
   } catch (error) {
     return res.status(500).json({ error: 'Failed to reach OpenRouter' });

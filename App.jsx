@@ -862,7 +862,10 @@ async function callClaude(prompt, maxTokens=1500, tag="other", trackFn=null, tim
     if(d.error) throw new Error(typeof d.error==="string"?d.error:(d.error.message||"AI request failed"));
     // api/claude.js normalises OpenRouter response → {content:[{type:"text",text}], usage:{input_tokens, output_tokens}}
     const outputText = d.content?.find(b=>b.type==="text")?.text || "";
-    if(!outputText) throw new Error("Empty response from AI — check your API key in Settings.");
+    if(!outputText) {
+      if(d.raw_data?.choices?.[0]?.finish_reason === "content_filter") throw new Error("AI request was blocked by the model's safety filter.");
+      throw new Error("Empty response from AI — check your API key in Settings.");
+    }
     if (trackFn) {
       trackFn(tag, prompt.length, outputText.length,
         d.usage?.input_tokens  || Math.ceil(prompt.length/4),
@@ -897,7 +900,11 @@ async function callClaudeVision(content, maxTokens=3000, tag="other", trackFn=nu
   const d = await parseAIResponse(res);
   if(d.error) throw new Error(typeof d.error==="string"?d.error:(d.error.message||"AI request failed"));
   const outputText = d.content?.find(b=>b.type==="text")?.text || "";
-  if(!outputText) throw new Error("Empty response from AI — check your API key in Settings.");
+  if(!outputText) {
+    if(d.raw_data?.choices?.[0]?.finish_reason === "content_filter") throw new Error("AI request blocked by safety filter.");
+    if(content.some(c=>c.type==="image_url")) throw new Error(`Empty response from AI. The selected model ("${pickModelForTag(tag)}") might not support processing images. Please select a vision-capable model like gpt-4o-mini for imports.`);
+    throw new Error("Empty response from AI — check your API key in Settings.");
+  }
   if (trackFn) {
     const promptChars = content.filter(p=>p.type==="text").reduce((n,p)=>n+p.text.length,0);
     trackFn(tag, promptChars, outputText.length,
