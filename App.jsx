@@ -864,7 +864,7 @@ async function callClaude(prompt, maxTokens=1500, tag="other", trackFn=null, tim
     const outputText = d.content?.find(b=>b.type==="text")?.text || "";
     if(!outputText) {
       if(d.raw_data?.choices?.[0]?.finish_reason === "content_filter") throw new Error("AI request was blocked by the model's safety filter.");
-      throw new Error("Empty response from AI — check your API key in Settings.");
+      throw new Error(`Empty response from AI. Model returned: ${JSON.stringify(d.raw_data)}`);
     }
     if (trackFn) {
       trackFn(tag, prompt.length, outputText.length,
