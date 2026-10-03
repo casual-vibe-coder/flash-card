@@ -2930,11 +2930,12 @@ function AddCardsScreen({deck,onBack,onSave,trackUsage,nativeLanguage,cardStates
     setErr("");setGenerating(true);setPreview(null);setGenProgress("");
     const isEn=inputLang==="english";
     const formsDesc=selForms.map(f=>`"${f}" (${FORM_LABELS[f]})`).join(", ");
-    const BATCH=3;
+    const BATCH=10;
     const chunks=[];
     for(let i=0;i<wordList.length;i+=BATCH) chunks.push(wordList.slice(i,i+BATCH));
     const allCards=[];
     let failed=0;
+    const failedWords=[];
     let lastError=null;
     for(let ci=0;ci<chunks.length;ci++){
       const chunk=chunks[ci];
@@ -2965,18 +2966,25 @@ CRITICAL: Every Arabic word MUST have full tashkeel (فَتْحَة ضَمَّة
         allCards.push(...(Array.isArray(parsed)?parsed:[parsed]));
       } catch(e){ 
         console.error(`Batch ${ci+1} failed:`,e); 
-        failed++; 
+        failed++;
+        failedWords.push(...chunk);
         lastError=e; 
         if (failed >= 3 || e.message.includes("API key") || e.message.includes("Empty response") || e.message.includes("filter") || e.message.includes("HTTP ")) {
+          // If it's a fatal abort, we also consider all remaining chunks as failed
+          for(let r=ci+1; r<chunks.length; r++) failedWords.push(...chunks[r]);
           break;
         }
       }
     }
     if(allCards.length>0){
       setPreview(allCards);
-      if(failed>0) setErr(`${failed} batch${failed>1?"es":""} failed — ${allCards.length} cards generated successfully. You can save these and retry the rest.`);
+      if(failedWords.length>0) {
+        setErr(`${failedWords.length} words failed. Missing: ${failedWords.join(", ")}. You can save the successful ones and retry the missing ones.`);
+      } else if(allCards.length < wordList.length) {
+        setErr(`Some words were skipped by the AI (${allCards.length}/${wordList.length} generated). You can save these and retry the missing ones.`);
+      }
     } else {
-      setErr(`Generation failed: ${lastError?.message || "check your OpenRouter API key in Settings"}`);
+      setErr(`Generation failed for words: ${failedWords.join(", ")}. Error: ${lastError?.message || "check your OpenRouter API key"}`);
     }
     setGenerating(false);setGenProgress("");
   };
