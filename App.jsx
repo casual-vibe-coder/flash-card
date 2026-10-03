@@ -410,18 +410,26 @@ const NATIVE_LANGUAGE_OPTIONS = ["English","Spanish","French","Bengali","Urdu","
 const OR_MODELS = [
   // OpenAI
   {id:"openai/gpt-4o-mini",        label:"GPT-4o Mini  · Fast · Cheap"},
-  {id:"openai/gpt-4o",             label:"GPT-4o  · Flagship"},
+  {id:"openai/gpt-5.1",            label:"GPT-5.1  · Flagship"},
   // Anthropic via OpenRouter
-  {id:"anthropic/claude-3-haiku",  label:"Claude 3 Haiku  · Very fast"},
-  {id:"anthropic/claude-3.5-sonnet",label:"Claude 3.5 Sonnet  · Balanced"},
-  {id:"anthropic/claude-3-opus",   label:"Claude 3 Opus  · Best quality"},
+  {id:"anthropic/claude-haiku-4.5", label:"Claude Haiku 4.5  · Very fast"},
+  {id:"anthropic/claude-sonnet-4.5",label:"Claude Sonnet 4.5  · Balanced"},
+  {id:"anthropic/claude-opus-5",   label:"Claude Opus 5  · Best quality"},
   // Google
-  {id:"google/gemini-flash-1.5",   label:"Gemini 1.5 Flash  · Fast · Cheap"},
-  {id:"google/gemini-pro-1.5",     label:"Gemini 1.5 Pro  · Capable"},
+  {id:"google/gemini-3.1-flash-lite",label:"Gemini 3.1 Flash Lite  · Fast · Cheap"},
+  {id:"google/gemini-3.8-flash",   label:"Gemini 3.8 Flash  · Latest, fast"},
+  {id:"google/gemini-3.1-pro-preview",label:"Gemini 3.1 Pro  · Capable"},
+  // Z.ai
+  {id:"z-ai/glm-5.3-flash",        label:"GLM 5.3 Flash  · Near-Sonnet quality, ultra cheap"},
+  {id:"z-ai/glm-4.6",              label:"GLM 4.6  · Strong mid-tier"},
   // DeepSeek
-  {id:"deepseek/deepseek-chat",    label:"DeepSeek V2.5  · Cheap · Capable"},
+  {id:"deepseek/deepseek-v4.1-flash",label:"DeepSeek V4.1 Flash  · Cheap · Capable"},
+  // Qwen
+  {id:"qwen/qwen3.7-plus",         label:"Qwen3.7 Plus  · Cheap · Capable"},
+  // Moonshot AI
+  {id:"moonshotai/kimi-k2.6",      label:"Kimi K2.6  · Agentic, capable"},
   // Meta
-  {id:"meta-llama/llama-3.1-70b-instruct",label:"Llama 3.1 70B  · Open source"},
+  {id:"meta-llama/llama-3.3-70b-instruct",label:"Llama 3.3 70B  · Open source"},
 ];
 
 // Old OpenRouter model IDs this app has stored in user settings that are no
@@ -430,23 +438,15 @@ const OR_MODELS = [
 // orphaning (see settings-hydration in the App component). Not a general
 // migration framework, just a fix-forward table for known-bad past ids.
 const MODEL_ID_MIGRATIONS = {
-  "anthropic/claude-sonnet-4-5": "anthropic/claude-3.5-sonnet",
-  "anthropic/claude-sonnet-4.5": "anthropic/claude-3.5-sonnet",
-  "anthropic/claude-sonnet-5": "anthropic/claude-3.5-sonnet",
-  "anthropic/claude-haiku-4.5": "anthropic/claude-3-haiku",
-  "anthropic/claude-opus-5": "anthropic/claude-3-opus",
-  "google/gemini-3.1-flash-lite": "google/gemini-flash-1.5",
-  "google/gemini-3.8-flash": "google/gemini-flash-1.5",
-  "google/gemini-3.1-pro-preview": "google/gemini-pro-1.5",
-  "openai/gpt-5-mini": "openai/gpt-4o-mini",
-  "openai/gpt-4.1-mini": "openai/gpt-4o-mini",
-  "openai/gpt-5.1": "openai/gpt-4o",
-  "z-ai/glm-5.3-flash": "openai/gpt-4o-mini",
-  "z-ai/glm-4.6": "openai/gpt-4o",
-  "deepseek/deepseek-v4.1-flash": "deepseek/deepseek-chat",
-  "qwen/qwen3.7-plus": "openai/gpt-4o-mini",
-  "moonshotai/kimi-k2.6": "openai/gpt-4o-mini",
-  "meta-llama/llama-3.3-70b-instruct": "meta-llama/llama-3.1-70b-instruct"
+  "anthropic/claude-sonnet-4-5": "anthropic/claude-sonnet-4.5", // wrong separator (hyphen vs dot) from an earlier session
+  "anthropic/claude-3.5-sonnet": "anthropic/claude-sonnet-4.5", // deprecated on OpenRouter
+  "anthropic/claude-3-haiku":    "anthropic/claude-haiku-4.5",  // deprecated on OpenRouter
+  "anthropic/claude-sonnet-5":   "anthropic/claude-sonnet-4.5", // hallucinatory model rollback
+  "google/gemini-flash-1.5":     "google/gemini-3.1-flash-lite",// deprecated on OpenRouter
+  "google/gemini-pro-1.5":       "google/gemini-3.1-pro-preview",// deprecated on OpenRouter
+  "openai/gpt-4o":               "openai/gpt-4o-mini",          // formerly mapped to hallucinated gpt-5-mini
+  "openai/gpt-4.1-mini":         "openai/gpt-4o-mini",          // formerly mapped to hallucinated gpt-5-mini
+  "openai/gpt-5-mini":           "openai/gpt-4o-mini",          // hallucinatory model rollback
 };
 function migrateModelId(id){ return (id && MODEL_ID_MIGRATIONS[id]) || id; }
 // Applies migrateModelId to settings.model and every settings.models[tag]
