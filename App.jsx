@@ -1319,7 +1319,7 @@ QUALITY RULES:
 CRITICAL: Every Arabic word MUST have full tashkeel.
 Return ONLY valid JSON: {"definition":"..."}`;
   }
-  const raw = await callClaudeWithTashkeel(prompt, isGrammar ? 400 : 250, "sentence", trackFn);
+  const raw = await callClaudeWithTashkeel(prompt, 2500, "sentence", trackFn);
   const parsed = extractJSON(raw);
   return parsed?.definition || null;
 }
@@ -1432,7 +1432,7 @@ Return ONLY valid JSON, no markdown. Put full tashkeel on Arabic text:
       try {
         let parsed={};
         try {
-          const raw=await callClaude(buildPrompt(false),800,"wordLookup",trackUsage,15000);
+          const raw=await callClaude(buildPrompt(false),2500,"wordLookup",trackUsage,15000);
           parsed=extractJSON(raw);
         } catch(e) { 
           throw e; 
@@ -1440,7 +1440,7 @@ Return ONLY valid JSON, no markdown. Put full tashkeel on Arabic text:
         // One forceful retry if the model refused or returned no meaning.
         if(looksLikeRefusal(parsed?.meaning)){
           try {
-            const raw2=await callClaude(buildPrompt(true),800,"wordLookup",trackUsage,15000);
+            const raw2=await callClaude(buildPrompt(true),2500,"wordLookup",trackUsage,15000);
             const p2=extractJSON(raw2);
             if(p2?.meaning && !looksLikeRefusal(p2.meaning)) parsed=p2;
             else if(p2?.meaning) parsed=p2; // still take whatever it gave over nothing
@@ -4174,7 +4174,7 @@ function ReadingScreen({decks,cardStates,onBack,onFinish,onAddToFlashcard,trackU
     const vocabSample=[...selectedCards].sort(()=>Math.random()-0.5).slice(0,25).map(c=>c.english).join(", ");
     let t;
     try {
-      const raw=await callClaude(`Generate 5 short reading topic titles (5-8 words each, in English) for an Arabic learner. Use themes typical of the Al-Arabiyya Bayna Yadayk curriculum — everyday Arab/Muslim life: family, food, the masjid, the market, neighbors, travel, prayer times, hospitality, school, work, holidays. Topics should naturally use these vocabulary words: ${vocabSample}. Return ONLY a JSON array: ["topic1","topic2","topic3","topic4","topic5"]`,200,"other",trackUsage);
+      const raw=await callClaude(`Generate 5 short reading topic titles (5-8 words each, in English) for an Arabic learner. Use themes typical of the Al-Arabiyya Bayna Yadayk curriculum — everyday Arab/Muslim life: family, food, the masjid, the market, neighbors, travel, prayer times, hospitality, school, work, holidays. Topics should naturally use these vocabulary words: ${vocabSample}. Return ONLY a JSON array: ["topic1","topic2","topic3","topic4","topic5"]`,2000,"other",trackUsage);
       const parsed=extractJSON(raw);
       t=Array.isArray(parsed)?parsed:["Daily life","A trip to the market","School and learning","Family gathering","City exploration"];
     } catch {
@@ -4428,7 +4428,7 @@ function ListeningScreen({decks,cardStates,onBack,onFinish,onAddToFlashcard,trac
     const vocabSample=[...selectedCards].sort(()=>Math.random()-0.5).slice(0,25).map(c=>c.english).join(", ");
     let t;
     try {
-      const raw=await callClaude(`Generate 5 short listening topic titles (5-8 words, English) for an Arabic learner. Use themes typical of the Al-Arabiyya Bayna Yadayk curriculum — everyday Arab/Muslim life: family meals, the masjid, neighbors, the market, hospitality, travel, prayer, daily routines. Topics should naturally use these vocabulary words: ${vocabSample}. Return ONLY JSON: ["t1","t2","t3","t4","t5"]`,200,"other",trackUsage);
+      const raw=await callClaude(`Generate 5 short listening topic titles (5-8 words, English) for an Arabic learner. Use themes typical of the Al-Arabiyya Bayna Yadayk curriculum — everyday Arab/Muslim life: family meals, the masjid, neighbors, the market, hospitality, travel, prayer, daily routines. Topics should naturally use these vocabulary words: ${vocabSample}. Return ONLY JSON: ["t1","t2","t3","t4","t5"]`,2000,"other",trackUsage);
       t=extractJSON(raw);
     } catch {t=["Daily routine","At the market","Weather talk","Neighborhood life","School day"];}
     setTopics(t);setActiveTopic("");setTopicsLoading(false);
@@ -8674,7 +8674,7 @@ QUALITY RULES — non-negotiable:
 
 CRITICAL: Every Arabic word MUST have full tashkeel.
 Return ONLY valid JSON: {"sentence":"...","translation":"...","imagePrompt":"..."}`,
-        350,"sentence",trackUsage
+        3500,"sentence",trackUsage
       );
       if(id!==genRef.current) return;
       const parsed=extractJSON(raw);
