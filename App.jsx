@@ -66,6 +66,10 @@ function hasSufficientTashkeel(obj, threshold = 0.5) {
 let _toastListeners = [];
 let _toastId = 0;
 
+// Firestore rejects `undefined` anywhere in a write, and a single one fails EVERY
+// main-doc save (settings, API keys, decks...). Drop them before writing.
+function stripUndefined(o){ return JSON.parse(JSON.stringify(o)); }
+
 function showToast(message, type = "info", duration = 3000) {
   const toast = { id: ++_toastId, message, type, duration };
   _toastListeners.forEach(fn => fn(toast));
@@ -410,10 +414,12 @@ const NATIVE_LANGUAGE_OPTIONS = ["English","Spanish","French","Bengali","Urdu","
 const OR_MODELS = [
   // OpenAI
   {id:"openai/gpt-4o-mini",        label:"GPT-4o Mini  · Fast · Cheap"},
+  {id:"openai/gpt-5-mini",         label:"GPT-5 Mini  · Cheap · Smart"},
   {id:"openai/gpt-5.1",            label:"GPT-5.1  · Flagship"},
   // Anthropic via OpenRouter
   {id:"anthropic/claude-haiku-4.5", label:"Claude Haiku 4.5  · Very fast"},
   {id:"anthropic/claude-sonnet-4.5",label:"Claude Sonnet 4.5  · Balanced"},
+  {id:"anthropic/claude-sonnet-5", label:"Claude Sonnet 5  · Latest"},
   {id:"anthropic/claude-opus-5",   label:"Claude Opus 5  · Best quality"},
   // Google
   {id:"google/gemini-3.1-flash-lite",label:"Gemini 3.1 Flash Lite  · Fast · Cheap"},
@@ -441,12 +447,10 @@ const MODEL_ID_MIGRATIONS = {
   "anthropic/claude-sonnet-4-5": "anthropic/claude-sonnet-4.5", // wrong separator (hyphen vs dot) from an earlier session
   "anthropic/claude-3.5-sonnet": "anthropic/claude-sonnet-4.5", // deprecated on OpenRouter
   "anthropic/claude-3-haiku":    "anthropic/claude-haiku-4.5",  // deprecated on OpenRouter
-  "anthropic/claude-sonnet-5":   "anthropic/claude-sonnet-4.5", // hallucinatory model rollback
   "google/gemini-flash-1.5":     "google/gemini-3.1-flash-lite",// deprecated on OpenRouter
   "google/gemini-pro-1.5":       "google/gemini-3.1-pro-preview",// deprecated on OpenRouter
-  "openai/gpt-4o":               "openai/gpt-4o-mini",          // formerly mapped to hallucinated gpt-5-mini
-  "openai/gpt-4.1-mini":         "openai/gpt-4o-mini",          // formerly mapped to hallucinated gpt-5-mini
-  "openai/gpt-5-mini":           "openai/gpt-4o-mini",          // hallucinatory model rollback
+  "openai/gpt-4o":               "openai/gpt-5-mini",
+  "openai/gpt-4.1-mini":         "openai/gpt-5-mini",
 };
 function migrateModelId(id){ return (id && MODEL_ID_MIGRATIONS[id]) || id; }
 // Applies migrateModelId to settings.model and every settings.models[tag]
@@ -454,19 +458,24 @@ function migrateModelId(id){ return (id && MODEL_ID_MIGRATIONS[id]) || id; }
 function migrateSettingsModelIds(s){
   if(!s) return s;
   let changed=false;
-  const model=migrateModelId(s.model);
+  // One-time undo of a wrongful rollback (2026-10-03) that rewrote saved
+  // gpt-5-mini choices to gpt-4o-mini. gpt-5-mini is a real OpenRouter model.
+  const undoRollback=!s.gpt5MiniRestored;
+  const fix=id=>undoRollback&&id==="openai/gpt-4o-mini"?"openai/gpt-5-mini":id;
+  if(undoRollback) changed=true;
+  const model=fix(migrateModelId(s.model));
   if(model!==s.model) changed=true;
   let models=s.models;
   if(models){
     const next={};
     for(const [tag,id] of Object.entries(models)){
-      const m=migrateModelId(id);
+      const m=fix(migrateModelId(id));
       next[tag]=m;
       if(m!==id) changed=true;
     }
     models=next;
   }
-  return changed ? {...s,model,models} : s;
+  return changed ? {...s,model,models,gpt5MiniRestored:true} : s;
 }
 
 // Image generation models — Google's Gemini Flash Image family ("Nano Banana")
@@ -840,6 +849,13 @@ async function parseAIResponse(res){
   }
   return d;
 }
+// One short, human-readable reason for an empty AI reply — never the raw payload.
+function emptyAIResponseMessage(d, model){
+  const fr=d?.meta?.finish_reason;
+  if(fr==="content_filter") return "The AI model blocked this request with its safety filter.";
+  if(fr==="length") return `"${model}" ran out of output tokens (it spends them "thinking" first) before writing an answer. Pick a different model for this feature in Settings.`;
+  return `"${model}" returned an empty response. Try again, or pick a different model in Settings.`;
+}
 async function callClaude(prompt, maxTokens=1500, tag="other", trackFn=null, timeoutMs=null) {
   // Optional client-side timeout so a hung request fails fast instead of
   // leaving the UI spinning forever (used by quick interactive calls like
@@ -862,10 +878,7 @@ async function callClaude(prompt, maxTokens=1500, tag="other", trackFn=null, tim
     if(d.error) throw new Error(typeof d.error==="string"?d.error:(d.error.message||"AI request failed"));
     // api/claude.js normalises OpenRouter response → {content:[{type:"text",text}], usage:{input_tokens, output_tokens}}
     const outputText = d.content?.find(b=>b.type==="text")?.text || "";
-    if(!outputText) {
-      if(d.raw_data?.choices?.[0]?.finish_reason === "content_filter") throw new Error("AI request was blocked by the model's safety filter.");
-      throw new Error(`Empty response from AI. Model returned: ${JSON.stringify(d.raw_data)}`);
-    }
+    if(!outputText) throw new Error(`Empty response from AI. ${emptyAIResponseMessage(d,pickModelForTag(tag))}`);
     if (trackFn) {
       trackFn(tag, prompt.length, outputText.length,
         d.usage?.input_tokens  || Math.ceil(prompt.length/4),
@@ -901,9 +914,9 @@ async function callClaudeVision(content, maxTokens=3000, tag="other", trackFn=nu
   if(d.error) throw new Error(typeof d.error==="string"?d.error:(d.error.message||"AI request failed"));
   const outputText = d.content?.find(b=>b.type==="text")?.text || "";
   if(!outputText) {
-    if(d.raw_data?.choices?.[0]?.finish_reason === "content_filter") throw new Error("AI request blocked by safety filter.");
-    if(content.some(c=>c.type==="image_url")) throw new Error(`Empty response from AI. The selected model ("${pickModelForTag(tag)}") might not support processing images. Please select a vision-capable model like gpt-4o-mini for imports.`);
-    throw new Error("Empty response from AI — check your API key in Settings.");
+    const m=pickModelForTag(tag);
+    if(d?.meta?.finish_reason!=="length" && d?.meta?.finish_reason!=="content_filter" && content.some(c=>c.type==="image_url")) throw new Error(`Empty response from AI. "${m}" might not support reading images — pick a vision-capable model like gpt-4o-mini for imports.`);
+    throw new Error(`Empty response from AI. ${emptyAIResponseMessage(d,m)}`);
   }
   if (trackFn) {
     const promptChars = content.filter(p=>p.type==="text").reduce((n,p)=>n+p.text.length,0);
@@ -1254,15 +1267,25 @@ async function generateImage(prompt, trackFn=null) {
         ..._gKey ? {apiKey:_gKey} : {},
       }),
     });
-    const data = await res.json();
-    if (data.noKey) return null;
+    let data;
+    try { data = await res.json(); }
+    catch { showToast(`Image generation failed (HTTP ${res.status}) — try again.`,"error"); return null; }
+    if (data.noKey) { showToast("Add your Google AI Studio API key in Settings to generate images.","error"); return null; }
     const url = data.data?.[0]?.url || null;
-    if (url && trackFn) {
+    if (!url) {
+      // /api/image reports Gemini's real reason in `error` — show it instead of failing silently.
+      showToast(`Image generation failed: ${String(data.error||"no image returned").slice(0,160)}`,"error",5000);
+      return null;
+    }
+    if (trackFn) {
       const tag = model.includes("3.1") ? "imageNB2" : "imageNB1";
       trackFn(tag, 0, 0, 0, 0);
     }
     return url;
-  } catch { return null; }
+  } catch (e) {
+    showToast(`Image generation failed: ${String(e?.message||"network error").slice(0,160)}`,"error",5000);
+    return null;
+  }
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -1319,7 +1342,7 @@ QUALITY RULES:
 CRITICAL: Every Arabic word MUST have full tashkeel.
 Return ONLY valid JSON: {"definition":"..."}`;
   }
-  const raw = await callClaudeWithTashkeel(prompt, 2500, "sentence", trackFn);
+  const raw = await callClaudeWithTashkeel(prompt, isGrammar ? 800 : 500, "sentence", trackFn);
   const parsed = extractJSON(raw);
   return parsed?.definition || null;
 }
@@ -1432,7 +1455,7 @@ Return ONLY valid JSON, no markdown. Put full tashkeel on Arabic text:
       try {
         let parsed={};
         try {
-          const raw=await callClaude(buildPrompt(false),2500,"wordLookup",trackUsage,15000);
+          const raw=await callClaude(buildPrompt(false),400,"wordLookup",trackUsage,25000);
           parsed=extractJSON(raw);
         } catch(e) { 
           throw e; 
@@ -1440,7 +1463,7 @@ Return ONLY valid JSON, no markdown. Put full tashkeel on Arabic text:
         // One forceful retry if the model refused or returned no meaning.
         if(looksLikeRefusal(parsed?.meaning)){
           try {
-            const raw2=await callClaude(buildPrompt(true),2500,"wordLookup",trackUsage,15000);
+            const raw2=await callClaude(buildPrompt(true),400,"wordLookup",trackUsage,25000);
             const p2=extractJSON(raw2);
             if(p2?.meaning && !looksLikeRefusal(p2.meaning)) parsed=p2;
             else if(p2?.meaning) parsed=p2; // still take whatever it gave over nothing
@@ -2534,7 +2557,7 @@ function SettingsScreen({settings,setSettings,onBack,usage,user,onSignOut,onRepl
               return (
                 <div key={f.tag}>
                   <label className="lbl" style={{marginBottom:3}}>{f.label} <span style={{color:"var(--text3)",fontWeight:400,letterSpacing:0,textTransform:"none"}}>· {f.desc}</span></label>
-                  <select className="input" value={cur} onChange={e=>set("models",{...(local.models||{}),[f.tag]:e.target.value||undefined})} style={{fontSize:13}}>
+                  <select className="input" value={cur} onChange={e=>{const m={...(local.models||{})};if(e.target.value) m[f.tag]=e.target.value; else delete m[f.tag]; set("models",m);}} style={{fontSize:13}}>
                     <option value="">(Use default)</option>
                     {OR_MODELS.map(m=><option key={m.id} value={m.id}>{m.label}</option>)}
                   </select>
@@ -2930,7 +2953,7 @@ function AddCardsScreen({deck,onBack,onSave,trackUsage,nativeLanguage,cardStates
     setErr("");setGenerating(true);setPreview(null);setGenProgress("");
     const isEn=inputLang==="english";
     const formsDesc=selForms.map(f=>`"${f}" (${FORM_LABELS[f]})`).join(", ");
-    const BATCH=10;
+    const BATCH=5;
     const chunks=[];
     for(let i=0;i<wordList.length;i+=BATCH) chunks.push(wordList.slice(i,i+BATCH));
     const allCards=[];
@@ -2960,7 +2983,7 @@ Rules: exactly ${chunk.length} objects in same order.
 - The "forms" object MUST contain ONLY these keys: ${selForms.map(f=>`"${f}"`).join(", ")}. Do NOT add any other keys (e.g. no extra forms, conjugations, particles, or variants the user did not request).
 - Use "" for any form that does not naturally exist or is extremely rare/unnatural (e.g. no synonym, no antonym, no plural for an uncountable noun). Do NOT invent or force rare forms — only include commonly used ones.
 CRITICAL: Every Arabic word MUST have full tashkeel (فَتْحَة ضَمَّة كَسْرَة سُكُون شَدَّة تَنْوِين) — no bare letters.`,
-          8000,"flashcard",trackUsage
+          Math.min(6000, chunk.length*900),"flashcard",trackUsage
         );
         const parsed=extractJSON(raw);
         allCards.push(...(Array.isArray(parsed)?parsed:[parsed]));
@@ -4174,7 +4197,7 @@ function ReadingScreen({decks,cardStates,onBack,onFinish,onAddToFlashcard,trackU
     const vocabSample=[...selectedCards].sort(()=>Math.random()-0.5).slice(0,25).map(c=>c.english).join(", ");
     let t;
     try {
-      const raw=await callClaude(`Generate 5 short reading topic titles (5-8 words each, in English) for an Arabic learner. Use themes typical of the Al-Arabiyya Bayna Yadayk curriculum — everyday Arab/Muslim life: family, food, the masjid, the market, neighbors, travel, prayer times, hospitality, school, work, holidays. Topics should naturally use these vocabulary words: ${vocabSample}. Return ONLY a JSON array: ["topic1","topic2","topic3","topic4","topic5"]`,2000,"other",trackUsage);
+      const raw=await callClaude(`Generate 5 short reading topic titles (5-8 words each, in English) for an Arabic learner. Use themes typical of the Al-Arabiyya Bayna Yadayk curriculum — everyday Arab/Muslim life: family, food, the masjid, the market, neighbors, travel, prayer times, hospitality, school, work, holidays. Topics should naturally use these vocabulary words: ${vocabSample}. Return ONLY a JSON array: ["topic1","topic2","topic3","topic4","topic5"]`,400,"other",trackUsage);
       const parsed=extractJSON(raw);
       t=Array.isArray(parsed)?parsed:["Daily life","A trip to the market","School and learning","Family gathering","City exploration"];
     } catch {
@@ -4428,7 +4451,7 @@ function ListeningScreen({decks,cardStates,onBack,onFinish,onAddToFlashcard,trac
     const vocabSample=[...selectedCards].sort(()=>Math.random()-0.5).slice(0,25).map(c=>c.english).join(", ");
     let t;
     try {
-      const raw=await callClaude(`Generate 5 short listening topic titles (5-8 words, English) for an Arabic learner. Use themes typical of the Al-Arabiyya Bayna Yadayk curriculum — everyday Arab/Muslim life: family meals, the masjid, neighbors, the market, hospitality, travel, prayer, daily routines. Topics should naturally use these vocabulary words: ${vocabSample}. Return ONLY JSON: ["t1","t2","t3","t4","t5"]`,2000,"other",trackUsage);
+      const raw=await callClaude(`Generate 5 short listening topic titles (5-8 words, English) for an Arabic learner. Use themes typical of the Al-Arabiyya Bayna Yadayk curriculum — everyday Arab/Muslim life: family meals, the masjid, neighbors, the market, hospitality, travel, prayer, daily routines. Topics should naturally use these vocabulary words: ${vocabSample}. Return ONLY JSON: ["t1","t2","t3","t4","t5"]`,400,"other",trackUsage);
       t=extractJSON(raw);
     } catch {t=["Daily routine","At the market","Weather talk","Neighborhood life","School day"];}
     setTopics(t);setActiveTopic("");setTopicsLoading(false);
@@ -8674,7 +8697,7 @@ QUALITY RULES — non-negotiable:
 
 CRITICAL: Every Arabic word MUST have full tashkeel.
 Return ONLY valid JSON: {"sentence":"...","translation":"...","imagePrompt":"..."}`,
-        3500,"sentence",trackUsage
+        700,"sentence",trackUsage
       );
       if(id!==genRef.current) return;
       const parsed=extractJSON(raw);
@@ -10998,7 +11021,7 @@ export default function App() {
         return;
       }
       const stamp=Date.now();
-      const payload={settings,usage,studyLog,updatedAt:stamp,...(profile?{profile}:{})};
+      const payload={settings:stripUndefined(settings),usage,studyLog,updatedAt:stamp,...(profile?{profile}:{})};
       // `decks` is written per-key (decksById.<id>), never as one whole array
       // field — see prevDecksRef comment: only the deck(s) that actually
       // changed get named here, so a stale copy of this tab's decks can never
@@ -11214,7 +11237,7 @@ export default function App() {
     // — see prevDecksRef comment. Only the deck(s) this specific import
     // touched are named, same reasoning as the main autosave effect.
     const newById={}; for(const dk of newDecks) newById[dk.id]=dk;
-    const payload={settings,usage,studyLog,updatedAt:stamp,...(profile?{profile}:{})};
+    const payload={settings:stripUndefined(settings),usage,studyLog,updatedAt:stamp,...(profile?{profile}:{})};
     for(const id of touchedDeckIds){ if(newById[id]) payload[`decksById.${id}`]=newById[id]; }
     const mainPromise=new Promise((resolve,reject)=>{
       queueFirestoreWrite("main:"+user.uid,mainDocRef(user.uid),payload,{

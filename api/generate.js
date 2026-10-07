@@ -14,8 +14,7 @@
 import crypto from "node:crypto";
 import { buildPrompt, parseQA } from "../language-island/core/generator.js";
 import { getAdmin } from "./_firebase.js";
-
-const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
+import { chatComplete } from "./_openrouter.js";
 
 // Dictation (Phase 4): short fully-voweled sentences the learner transcribes.
 function buildDictationPrompt({ level, count, vocab, topic, stayClose }) {
@@ -119,26 +118,16 @@ export default async function handler(req, res) {
   }
   let text = "", usage = { input_tokens: 0, output_tokens: 0 };
   try {
-    const r = await fetch(OPENROUTER_URL, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`,
-        "X-Title": "Arabic Immersion App",
-      },
-      body: JSON.stringify({
-        model: model || "openai/gpt-4o-mini",
-        max_tokens: maxTokens || 1024,
-        messages: [{ role: "user", content: prompt }],
-      }),
+    const result = await chatComplete({
+      apiKey,
+      model: model || "openai/gpt-4o-mini",
+      max_tokens: maxTokens || 1024,
+      messages: [{ role: "user", content: prompt }],
+      title: "Arabic Immersion App",
     });
-    const data = await r.json();
-    if (!r.ok) return res.status(r.status).json({ error: data.error?.message || "Generation failed" });
-    text = data.choices?.[0]?.message?.content || "";
-    usage = {
-      input_tokens: data.usage?.prompt_tokens || 0,
-      output_tokens: data.usage?.completion_tokens || 0,
-    };
+    if (!result.ok) return res.status(result.status).json({ error: result.data?.error?.message || result.data?.error || "Generation failed" });
+    text = result.text;
+    usage = result.usage;
   } catch (e) {
     return res.status(502).json({ error: "Failed to reach the model provider." });
   }
