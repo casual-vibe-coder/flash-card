@@ -3,6 +3,7 @@ import { auth, googleProvider, db, storage } from "./firebase.js";
 import { signInWithPopup, signOut, onAuthStateChanged } from "firebase/auth";
 import { doc, getDoc, setDoc, updateDoc, deleteDoc, deleteField, collection, getDocs } from "firebase/firestore";
 import { ref as storageRef, uploadString, getDownloadURL } from "firebase/storage";
+import { fsrs, generatorParameters, createEmptyCard, Rating, State } from "ts-fsrs";
 import {
   Settings, ArrowLeft, ChevronRight, X, Volume2, RotateCcw, BookOpen,
   RefreshCw, Check, Sparkles, Plus, Edit3, Trash2, Layers, Save, Eye,
@@ -96,46 +97,91 @@ function ToastContainer() {
 }
 
 // ─────────────────────────────────────────────────────────────
-// SPACED REPETITION (SM-2 Lite)
+// SPACED REPETITION (FSRS — same algorithm family Anki ships)
 // ─────────────────────────────────────────────────────────────
 /**
- * Calculate next review date using simplified SM-2 algorithm.
- * quality: "known" (good recall) or "weak" (poor recall)
- * Returns updated SRS fields to merge into the card.
+ * Four Anki grades: again | hard | good | easy. Legacy "weak"/"known" from
+ * older call sites map to again/good. Each grade is fed to FSRS as a distinct
+ * rating, so Hard/Good/Easy really do space the card out differently, and a
+ * late review (card reviewed well past its due date) earns a larger interval
+ * automatically because FSRS works from the time actually elapsed.
+ * Field names srsNextReview/srsLastReview are kept so every due-count and
+ * sort in the app keeps working unchanged.
  */
-function calculateSRS(card, quality) {
-  const now = Date.now();
-  const prev = {
-    interval: card.srsInterval || 0,     // days
-    ease: card.srsEase || 2.5,           // ease factor
-    streak: card.srsStreak || 0,         // consecutive correct
-    reviews: card.srsReviews || 0,
-  };
+const FSRS_ENGINE = fsrs(generatorParameters({ enable_fuzz: true, request_retention: 0.9 }));
+const GRADE_TO_RATING = { again: Rating.Again, hard: Rating.Hard, good: Rating.Good, easy: Rating.Easy, weak: Rating.Again, known: Rating.Good };
 
-  let interval, ease, streak;
-
-  if (quality === "known") {
-    streak = prev.streak + 1;
-    ease = Math.max(1.3, prev.ease + 0.1);
-    if (streak === 1) interval = 1;
-    else if (streak === 2) interval = 3;
-    else interval = Math.round(prev.interval * ease);
-  } else {
-    // weak — reset streak, reduce ease, review soon
-    streak = 0;
-    ease = Math.max(1.3, prev.ease - 0.2);
-    interval = 0; // review again today/next session
+// Build an FSRS card from a stored app card. Cards from the old SM-2 system
+// (srsInterval/srsEase, no stability yet) are converted on the fly.
+function toFsrsCard(card, nowMs) {
+  if (!card.srsLastReview) return createEmptyCard(new Date(nowMs));
+  let stability = card.srsStability;
+  let difficulty = card.srsDifficulty;
+  if (!(stability > 0)) {
+    stability = Math.max(card.status === "weak" ? 1 : (card.srsInterval || 1), 1);
+    const ease = card.srsEase || 2.5;
+    difficulty = Math.min(10, Math.max(1, 5 + (2.5 - ease) * 3.3));
   }
-
+  const last = new Date(card.srsLastReview);
   return {
-    srsInterval: interval,
-    srsEase: ease,
-    srsStreak: streak,
-    srsReviews: prev.reviews + 1,
-    srsNextReview: now + interval * 86400000, // ms
-    srsLastReview: now,
+    due: new Date(card.srsNextReview || nowMs),
+    stability,
+    difficulty: difficulty || 5,
+    elapsed_days: Math.max(0, Math.round((nowMs - card.srsLastReview) / 86400000)),
+    scheduled_days: Math.max(0, Math.round(((card.srsNextReview || nowMs) - card.srsLastReview) / 86400000)),
+    learning_steps: card.srsLearningSteps || 0,
+    reps: card.srsReps || 1,
+    lapses: card.srsLapses || 0,
+    state: card.srsState ?? State.Review,
+    last_review: last,
   };
 }
+
+/** Returns the SRS fields to merge into the card after answering with `grade`. */
+function calculateSRS(card, grade) {
+  const nowMs = Date.now();
+  const rating = GRADE_TO_RATING[grade] ?? Rating.Good;
+  const { card: n } = FSRS_ENGINE.next(toFsrsCard(card, nowMs), new Date(nowMs), rating);
+  return {
+    srsStability: n.stability,
+    srsDifficulty: n.difficulty,
+    srsState: n.state,
+    srsLearningSteps: n.learning_steps,
+    srsReps: n.reps,
+    srsLapses: n.lapses,
+    srsStreak: rating === Rating.Again ? 0 : (card.srsStreak || 0) + 1,
+    srsNextReview: n.due.getTime(),
+    srsLastReview: nowMs,
+  };
+}
+
+/** Next-interval labels for the four buttons ("10m", "3d"…), like Anki shows. */
+function previewIntervals(card) {
+  const nowMs = Date.now();
+  const rec = FSRS_ENGINE.repeat(toFsrsCard(card, nowMs), new Date(nowMs));
+  const fmt = (due) => {
+    const m = Math.max(1, Math.round((due.getTime() - nowMs) / 60000));
+    if (m < 60) return m + "m";
+    if (m < 1440) return Math.round(m / 60) + "h";
+    const d = m / 1440;
+    return d < 30 ? Math.round(d) + "d" : d < 365 ? (d / 30).toFixed(1).replace(/\.0$/, "") + "mo" : (d / 365).toFixed(1).replace(/\.0$/, "") + "y";
+  };
+  return { again: fmt(rec[Rating.Again].card.due), hard: fmt(rec[Rating.Hard].card.due), good: fmt(rec[Rating.Good].card.due), easy: fmt(rec[Rating.Easy].card.due) };
+}
+
+// Anki-style answer buttons. Each one is a distinct grade fed to FSRS, and
+// shows the interval it would schedule (like Anki). Keys 1-4 also work.
+function GradeButtons({card,onGrade}) {
+  const iv=previewIntervals(card);
+  const defs=[["again","Again","weak"],["hard","Hard","weak"],["good","Good","know"],["easy","Easy","know"]];
+  return (<>{defs.map(([g,label,tone],i)=>(
+    <button key={g} className="btn" onClick={()=>onGrade(g)} style={{flex:1,padding:"10px 4px",borderRadius:"var(--r)",background:`var(--${tone}-bg)`,color:`var(--${tone})`,border:`1.5px solid var(--${tone}-border)`,fontWeight:600,fontSize:13,flexDirection:"column",gap:2,opacity:g==="hard"?.8:1}}>
+      <span>{label}</span><span style={{fontSize:10.5,fontWeight:500,opacity:.75}}>{iv[g]}</span>
+    </button>))}</>);
+}
+
+// Maps a button/swipe/key to an Anki grade. Legacy left/right = again/good.
+const gradeOf = (dir) => dir === "left" ? "again" : dir === "right" ? "good" : dir;
 
 /**
  * Sort cards for study: due cards first (by due date), then new cards.
@@ -2503,6 +2549,68 @@ function ExportDataPanel({decks,cardStates}) {
   );
 }
 
+// One-time backlog spread: gives every overdue card a new due date across the
+// next N days (weakest first, best-known last) so the pile clears at a pace you
+// choose. Only srsNextReview changes — stability/last-review stay, so FSRS
+// still credits you for cards you remember after the long gap. A schedule
+// backup (JSON) downloads first, and nothing is written until you confirm.
+function SpreadBacklogPanel({decks,cardStates,setCardStates}) {
+  const [perDay,setPerDay]=useState(300);
+  const [plan,setPlan]=useState(null);
+  const startOfToday=()=>{const d=new Date();d.setHours(0,0,0,0);return d.getTime();};
+  const build=()=>{
+    const now=Date.now();
+    const overdue=[];
+    for(const d of decks) for(const c of (cardStates[d.id]||[])){
+      if(c.srsLastReview&&c.srsNextReview&&c.srsNextReview<=now) overdue.push({deckId:d.id,card:c});
+    }
+    const strength=(c)=>(c.status==="weak"?-1:0)*1e6+(c.srsStability||c.srsInterval||0);
+    overdue.sort((a,b)=>strength(a.card)-strength(b.card));
+    const per=Math.max(1,perDay|0);
+    const days=Math.ceil(overdue.length/per);
+    const assign=new Map();
+    overdue.forEach((o,i)=>assign.set(o.card.id,Math.floor(i/per)));
+    setPlan({total:overdue.length,days,assign,perDay:per,overdue});
+  };
+  const apply=()=>{
+    if(!plan) return;
+    const backup={exportedAt:new Date().toISOString(),note:"schedule backup before backlog spread",cards:plan.overdue.map(o=>({deckId:o.deckId,id:o.card.id,srsNextReview:o.card.srsNextReview,srsLastReview:o.card.srsLastReview,srsInterval:o.card.srsInterval,srsEase:o.card.srsEase,srsStreak:o.card.srsStreak,srsStability:o.card.srsStability,srsDifficulty:o.card.srsDifficulty,status:o.card.status}))};
+    const blob=new Blob([JSON.stringify(backup)],{type:"application/json"});
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement("a");a.href=url;a.download=`schedule-backup-${new Date().toISOString().slice(0,10)}.json`;
+    document.body.appendChild(a);a.click();document.body.removeChild(a);URL.revokeObjectURL(url);
+    const base=startOfToday();
+    setCardStates(p=>{
+      const next={...p};
+      for(const d of decks){
+        if(!next[d.id]) continue;
+        next[d.id]=next[d.id].map(c=>plan.assign.has(c.id)?{...c,srsNextReview:plan.assign.get(c.id)===0?c.srsNextReview:base+plan.assign.get(c.id)*86400000}:c);
+      }
+      return next;
+    });
+    showToast(`Spread ${plan.total} cards over ${plan.days} days (backup downloaded)`,"success");
+    setPlan(null);
+  };
+  return (
+    <div style={{paddingTop:10,borderTop:"1px solid var(--border)"}}>
+      <div style={{fontSize:13,fontWeight:700,color:"var(--text)"}}>Spread Overdue Cards</div>
+      <div style={{fontSize:11.5,color:"var(--text3)",marginTop:2,lineHeight:1.5}}>Gives every overdue card a due date over the next few days at the pace you pick — weakest first, best-known last. Downloads a schedule backup first.</div>
+      <div style={{display:"flex",gap:8,marginTop:8,alignItems:"center"}}>
+        <input type="number" min="1" inputMode="numeric" className="input" value={perDay} onChange={e=>{setPerDay(parseInt(e.target.value,10)||0);setPlan(null);}} style={{fontSize:13,padding:"9px 10px",width:90}}/>
+        <span style={{fontSize:12,color:"var(--text3)",flex:1}}>cards per day</span>
+        <button className="btn btn-sm" onClick={build}>Preview</button>
+      </div>
+      {plan&&(
+        <div style={{marginTop:8,fontSize:12,color:"var(--text2)",lineHeight:1.6}}>
+          {plan.total===0?"No overdue cards.":<>
+            {plan.total} overdue cards → {plan.days} day{plan.days===1?"":"s"} at {plan.perDay}/day (day 1 = today).
+            <div style={{marginTop:8}}><button className="btn btn-primary btn-sm" onClick={apply}>Download backup &amp; apply</button></div></>}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function SettingsScreen({settings,setSettings,onBack,usage,user,onSignOut,onReplayOnboarding,profile,setProfile,studyLog,onUpdateTargets,decks,cardStates,setCardStates,trackUsage,onResetUsage,onResumeBulkFill,isBulkAllowlisted}) {
   const [bulkFillRunning,setBulkFillRunning]=useState(false);
   const [local,setLocal]=useState(settings);
@@ -2828,16 +2936,18 @@ function SettingsScreen({settings,setSettings,onBack,usage,user,onSignOut,onRepl
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:10}}>
               <div style={{flex:1}}>
                 <div style={{fontSize:13,fontWeight:700,color:"var(--text)"}}>Throttle New Cards</div>
-                <div style={{fontSize:11.5,color:"var(--text3)",marginTop:2,lineHeight:1.5}}>Add as many cards as you want, whenever — only this many never-before-reviewed cards actually enter Smart Review/New Cards Only per day. The rest release automatically on later days, so a big batch doesn't all graduate to "due again tomorrow" at once. Off = no limit.</div>
+                <div style={{fontSize:11.5,color:"var(--text3)",marginTop:2,lineHeight:1.5}}>Add as many cards as you want, whenever — only this many never-before-reviewed cards actually enter Mixed Session/New Cards Only per day. The rest release automatically on later days, so a big batch doesn't all graduate to "due again tomorrow" at once. Off = no limit.</div>
               </div>
               <div className={`chk ${local.newCardsPerDayEnabled!==false?"on":""}`} onClick={()=>set("newCardsPerDayEnabled",local.newCardsPerDayEnabled===false)}>{local.newCardsPerDayEnabled!==false&&<Check size={11} color="white"/>}</div>
             </div>
             {local.newCardsPerDayEnabled!==false&&(
-              <input type="number" min="0" inputMode="numeric" className="input" placeholder="e.g. 20"
+              <input type="number" min="0" inputMode="numeric" className="input" placeholder="0 pauses new cards"
                 value={local.newCardsPerDayLimit??20}
-                onChange={e=>{const n=parseInt(e.target.value,10);set("newCardsPerDayLimit",n>=0?n:0);}}
+                onChange={e=>{const v=e.target.value;set("newCardsPerDayLimit",v===""?"":Math.max(0,parseInt(v,10)||0));}}
+                onBlur={()=>{if(local.newCardsPerDayLimit==="")set("newCardsPerDayLimit",0);}}
                 style={{fontSize:13,padding:"9px 10px"}}/>
             )}
+            <SpreadBacklogPanel decks={decks} cardStates={cardStates} setCardStates={setCardStates}/>
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:10,paddingTop:10,borderTop:"1px solid var(--border)"}}>
               <div style={{flex:1}}>
                 <div style={{fontSize:13,fontWeight:700,color:"var(--text)"}}>Cap Reviews Per Day</div>
@@ -3666,8 +3776,12 @@ Return ONLY valid JSON: {"sentence":"...","translation":"...","imagePrompt":"...
     const handler=(e)=>{
       if(e.target.tagName==="INPUT"||e.target.tagName==="TEXTAREA") return;
       if(e.key===" "||e.key==="Enter"){e.preventDefault();if(!flipped) setFlipped(true);}
-      if(flipped&&e.key==="ArrowLeft"){e.preventDefault();onSwipe("left",card.id,testForm||selForm);}
-      if(flipped&&e.key==="ArrowRight"){e.preventDefault();onSwipe("right",card.id,testForm||selForm);}
+      if(flipped&&e.key==="ArrowLeft"){e.preventDefault();onSwipe("again",card.id,testForm||selForm);}
+      if(flipped&&e.key==="ArrowRight"){e.preventDefault();onSwipe("good",card.id,testForm||selForm);}
+      if(flipped&&e.key==="1"){e.preventDefault();onSwipe("again",card.id,testForm||selForm);}
+      if(flipped&&e.key==="2"){e.preventDefault();onSwipe("hard",card.id,testForm||selForm);}
+      if(flipped&&e.key==="3"){e.preventDefault();onSwipe("good",card.id,testForm||selForm);}
+      if(flipped&&e.key==="4"){e.preventDefault();onSwipe("easy",card.id,testForm||selForm);}
       if(e.key==="ArrowUp"&&canUndo){e.preventDefault();onBack();}
     };
     window.addEventListener("keydown",handler);
@@ -3940,8 +4054,7 @@ Return ONLY valid JSON: {"sentence":"...","translation":"...","imagePrompt":"...
         )}
         {flipped&&(
           <div style={{display:"flex",gap:10}}>
-            <button className="btn" onClick={()=>onSwipe("left",card.id,testForm||selForm)} style={{flex:1,padding:"14px 8px",borderRadius:"var(--r)",background:"var(--weak-bg)",color:"var(--weak)",border:"1.5px solid var(--weak-border)",fontWeight:600,fontSize:13.5}}>← Needs Practice</button>
-            <button className="btn" onClick={()=>onSwipe("right",card.id,testForm||selForm)} style={{flex:1,padding:"14px 8px",borderRadius:"var(--r)",background:"var(--know-bg)",color:"var(--know)",border:"1.5px solid var(--know-border)",fontWeight:600,fontSize:13.5}}>Know It →</button>
+            <GradeButtons card={card} onGrade={(g)=>onSwipe(g,card.id,testForm||selForm)}/>
           </div>
         )}
         {!flipped&&<div style={{textAlign:"center",color:"var(--text3)",fontSize:12.5,marginTop:"auto"}}>Tap the card to reveal Arabic · <span className="kbd">Space</span></div>}
@@ -8522,7 +8635,8 @@ function MasterReviewScreen({decks,cardStates,onBack,onSwipeCard,onUndoSwipe,onD
 
   const handleSwipe=(dir)=>{
     const card=sessionCards[idx];
-    const ns=dir==="right"?"known":"weak";
+    const grade=gradeOf(dir);
+    const ns=grade==="again"?"weak":"known";
     // Snapshot for undo BEFORE mutating
     const prevDeckCards=cardStates[card._deckId]||[];
     const prevCard=prevDeckCards.find(c=>c.id===card.id);
@@ -8539,7 +8653,7 @@ function MasterReviewScreen({decks,cardStates,onBack,onSwipeCard,onUndoSwipe,onD
     // Grade whatever form the card actually ASKED for (testForm), not
     // whichever reference chip the user happened to be peeking at — those
     // are independent (see "Select a form" section below the flip card).
-    onSwipeCard(card._deckId,card.id,ns,pendingTestForm(card)||selForm);
+    onSwipeCard(card._deckId,card.id,ns,pendingTestForm(card)||selForm,grade);
     // Counts toward the Max Reviews Per Day cap — only for the real SRS
     // modes; Rotation/Review New have their own separate pacing controls.
     if(SRS_MODES.includes(mode)&&onReviewLogged) onReviewLogged();
@@ -8615,8 +8729,12 @@ function MasterReviewScreen({decks,cardStates,onBack,onSwipeCard,onUndoSwipe,onD
     const handler=(e)=>{
       if(e.target.tagName==="INPUT"||e.target.tagName==="TEXTAREA") return;
       if((e.key===" "||e.key==="Enter")&&!flipped){e.preventDefault();setFlipped(true);}
-      if(flipped&&e.key==="ArrowLeft"){e.preventDefault();handleSwipe("left");}
-      if(flipped&&e.key==="ArrowRight"){e.preventDefault();handleSwipe("right");}
+      if(flipped&&e.key==="ArrowLeft"){e.preventDefault();handleSwipe("again");}
+      if(flipped&&e.key==="ArrowRight"){e.preventDefault();handleSwipe("good");}
+      if(flipped&&e.key==="1"){e.preventDefault();handleSwipe("again");}
+      if(flipped&&e.key==="2"){e.preventDefault();handleSwipe("hard");}
+      if(flipped&&e.key==="3"){e.preventDefault();handleSwipe("good");}
+      if(flipped&&e.key==="4"){e.preventDefault();handleSwipe("easy");}
     };
     window.addEventListener("keydown",handler);
     return ()=>window.removeEventListener("keydown",handler);
@@ -8979,8 +9097,7 @@ Return ONLY valid JSON: {"sentence":"...","translation":"...","imagePrompt":"...
           )}
           {flipped&&(
             <div style={{display:"flex",gap:10}}>
-              <button className="btn" onClick={()=>handleSwipe("left")} style={{flex:1,padding:"14px 8px",borderRadius:"var(--r)",background:"var(--weak-bg)",color:"var(--weak)",border:"1.5px solid var(--weak-border)",fontWeight:600,fontSize:13.5}}>← Weak</button>
-              <button className="btn" onClick={()=>handleSwipe("right")} style={{flex:1,padding:"14px 8px",borderRadius:"var(--r)",background:"var(--know-bg)",color:"var(--know)",border:"1.5px solid var(--know-border)",fontWeight:600,fontSize:13.5}}>Know It →</button>
+              <GradeButtons card={card} onGrade={(g)=>handleSwipe(g)}/>
             </div>
           )}
           {flipped&&<div style={{textAlign:"center",color:"var(--text3)",fontSize:11,marginTop:4,display:"flex",justifyContent:"center",gap:12}}>
@@ -9047,7 +9164,7 @@ Return ONLY valid JSON: {"sentence":"...","translation":"...","imagePrompt":"...
         <div className="test-option" onClick={()=>{setMode("smart");start("smart");}}>
           <div style={{width:40,height:40,borderRadius:12,background:"var(--accent-bg)",display:"flex",alignItems:"center",justifyContent:"center"}}><Zap size={18} color="var(--accent)"/></div>
           <div style={{flex:1}}>
-            <div style={{fontWeight:600,fontSize:14}}>Smart Review</div>
+            <div style={{fontWeight:600,fontSize:14}}>Mixed Session</div>
             <div style={{fontSize:12,color:"var(--text3)",marginTop:2}}>Due ({dueCards.length}) → Weak ({weakCards.length}) → New ({eligibleNewCards.length} today{newCards.length>eligibleNewCards.length?` of ${newCards.length}`:""})</div>
           </div>
         </div>
@@ -9073,7 +9190,7 @@ Return ONLY valid JSON: {"sentence":"...","translation":"...","imagePrompt":"...
         {dueCards.length>0&&(
           <div className="test-option" onClick={()=>{setMode("due");start("due");}}>
             <div style={{width:40,height:40,borderRadius:12,background:"var(--info-bg)",display:"flex",alignItems:"center",justifyContent:"center"}}><Clock size={18} color="var(--info)"/></div>
-            <div style={{flex:1}}><div style={{fontWeight:600,fontSize:14}}>Due Cards Only</div><div style={{fontSize:12,color:"var(--text3)",marginTop:2}}>{dueCards.length} cards past their review date</div></div>
+            <div style={{flex:1}}><div style={{fontWeight:600,fontSize:14}}>SRS Review</div><div style={{fontSize:12,color:"var(--text3)",marginTop:2}}>{dueCards.length} cards due — the spaced-repetition queue</div></div>
           </div>
         )}
         {weakCards.length>0&&(
@@ -11551,7 +11668,8 @@ export default function App() {
     go("study");
   };
   const handleSwipe=(dir,cardId,activeForm)=>{
-    const ns=dir==="right"?"known":"weak";
+    const grade=gradeOf(dir);
+    const ns=grade==="again"?"weak":"known";
     // Snapshot for undo: previous card object and counters
     const prevCard=(cardStates[activeDeck.id]||[]).find(c=>c.id===cardId);
     if(prevCard){
@@ -11569,7 +11687,7 @@ export default function App() {
     }
     setCardStates(p=>({...p,[activeDeck.id]:p[activeDeck.id].map(c=>{
       if(c.id!==cardId) return c;
-      const srs=calculateSRS(c,ns);
+      const srs=calculateSRS(c,grade);
       // Per-instance weakness tracking — inflectional forms only (see
       // INFLECTIONAL_FORMS); synonym/antonym are different words and must
       // never drive this card's weak-form retest queue.
@@ -11735,12 +11853,12 @@ export default function App() {
   const logStudy=(entry)=>setStudyLog(prev=>addStudyEntry(prev,entry));
 
   // Master review swipe — updates the correct deck's card
-  const handleMasterSwipe=(deckId,cardId,status,activeForm)=>{
+  const handleMasterSwipe=(deckId,cardId,status,activeForm,grade)=>{
     const prevCard=(cardStates[deckId]||[]).find(c=>c.id===cardId);
     if(prevCard&&(prevCard.status==="new"||!prevCard.status)) logNewCardIntroduced();
     setCardStates(p=>({...p,[deckId]:(p[deckId]||[]).map(c=>{
       if(c.id!==cardId) return c;
-      const srs=calculateSRS(c,status);
+      const srs=calculateSRS(c,grade||status);
       let weakForms=c.weakForms?[...c.weakForms]:[];
       if(status==="weak"&&activeForm&&INFLECTIONAL_FORMS.has(activeForm)){if(!weakForms.includes(activeForm)) weakForms.push(activeForm);}
       else if(status==="known"&&activeForm&&INFLECTIONAL_FORMS.has(activeForm)){weakForms=weakForms.filter(f=>f!==activeForm);}
