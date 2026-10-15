@@ -108,7 +108,33 @@ function ToastContainer() {
  * Field names srsNextReview/srsLastReview are kept so every due-count and
  * sort in the app keeps working unchanged.
  */
-const FSRS_ENGINE = fsrs(generatorParameters({ enable_fuzz: true, request_retention: 0.9 }));
+// Anki-style learning controls (Settings → Review Steps). Short repeat steps
+// are OFF by default: a failed card simply returns on its next-day schedule.
+// When on, steps work like Anki's "Learning steps" / "Relearning steps".
+const mkEngine = (steps) => fsrs(generatorParameters({
+  enable_fuzz: true, request_retention: 0.9,
+  enable_short_term: !!steps,
+  learning_steps: steps ? steps.learning : [],
+  relearning_steps: steps ? steps.relearning : [],
+}));
+const parseSteps = (txt, fallback) => {
+  const parts = String(txt ?? "").trim().split(/\s+/).filter(Boolean);
+  return parts.length && parts.every(x => /^\d+[mhd]$/.test(x)) ? parts : fallback;
+};
+let FSRS_ENGINE = mkEngine(null);
+const FSRS_PLAIN = mkEngine(null);
+let LEECH_THRESHOLD = 8;
+let SRS_CFG_KEY = "";
+function configureSrs(st) {
+  const on = !!st.srsShortSteps;
+  const learning = parseSteps(st.srsLearningSteps, ["1m", "10m"]);
+  const relearning = parseSteps(st.srsRelearningSteps, ["10m"]);
+  const key = JSON.stringify([on, learning, relearning, st.srsLeechThreshold]);
+  if (key === SRS_CFG_KEY) return;
+  SRS_CFG_KEY = key;
+  FSRS_ENGINE = on ? mkEngine({ learning, relearning }) : FSRS_PLAIN;
+  LEECH_THRESHOLD = Number.isFinite(+st.srsLeechThreshold) ? Math.max(0, +st.srsLeechThreshold) : 8;
+}
 const GRADE_TO_RATING = { again: Rating.Again, hard: Rating.Hard, good: Rating.Good, easy: Rating.Easy, weak: Rating.Again, known: Rating.Good };
 
 // Build an FSRS card from a stored app card. Cards from the old SM-2 system
@@ -141,7 +167,11 @@ function toFsrsCard(card, nowMs) {
 function calculateSRS(card, grade) {
   const nowMs = Date.now();
   const rating = GRADE_TO_RATING[grade] ?? Rating.Good;
-  const { card: n } = FSRS_ENGINE.next(toFsrsCard(card, nowMs), new Date(nowMs), rating);
+  // Leech: a card that has lapsed LEECH_THRESHOLD times stops using the quick
+  // repeat steps and just goes out on its day-scale schedule (0 = off).
+  const isLeech = rating === Rating.Again && LEECH_THRESHOLD > 0 && (card.srsLapses || 0) + 1 >= LEECH_THRESHOLD;
+  const engine = isLeech ? FSRS_PLAIN : FSRS_ENGINE;
+  const { card: n } = engine.next(toFsrsCard(card, nowMs), new Date(nowMs), rating);
   return {
     srsStability: n.stability,
     srsDifficulty: n.difficulty,
@@ -149,6 +179,7 @@ function calculateSRS(card, grade) {
     srsLearningSteps: n.learning_steps,
     srsReps: n.reps,
     srsLapses: n.lapses,
+    srsLeech: isLeech || !!card.srsLeech,
     srsStreak: rating === Rating.Again ? 0 : (card.srsStreak || 0) + 1,
     srsNextReview: n.due.getTime(),
     srsLastReview: nowMs,
@@ -2961,6 +2992,38 @@ function SettingsScreen({settings,setSettings,onBack,usage,user,onSignOut,onRepl
                 onChange={e=>{const n=parseInt(e.target.value,10);set("maxReviewsPerDay",n>0?n:1);}}
                 style={{fontSize:13,padding:"9px 10px"}}/>
             )}
+          </div>
+        </div>
+
+        <div style={{background:"var(--surface)",border:"1.5px solid var(--border)",borderRadius:"var(--r)",padding:"15px 17px"}}>
+          <div className="sec">Review Steps (Anki-style)</div>
+          <div style={{display:"flex",flexDirection:"column",gap:14}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:10}}>
+              <div style={{flex:1}}>
+                <div style={{fontSize:13,fontWeight:700,color:"var(--text)"}}>Quick repeat steps</div>
+                <div style={{fontSize:11.5,color:"var(--text3)",marginTop:2,lineHeight:1.5}}>On = a missed or brand-new card comes back within minutes (like Anki's learning steps) before moving to day-scale spacing. Off = it just goes out on its next-day schedule — fewer reviews. Recommended off while clearing a backlog.</div>
+              </div>
+              <div className={`chk ${local.srsShortSteps?"on":""}`} onClick={()=>set("srsShortSteps",!local.srsShortSteps)}>{local.srsShortSteps&&<Check size={11} color="white"/>}</div>
+            </div>
+            {local.srsShortSteps&&(<>
+              <div>
+                <div style={{fontSize:12,fontWeight:600,color:"var(--text2)",marginBottom:4}}>Learning steps (new cards)</div>
+                <input type="text" className="input" placeholder="1m 10m" value={local.srsLearningSteps??"1m 10m"} onChange={e=>set("srsLearningSteps",e.target.value)} style={{fontSize:13,padding:"9px 10px"}}/>
+              </div>
+              <div>
+                <div style={{fontSize:12,fontWeight:600,color:"var(--text2)",marginBottom:4}}>Relearning steps (forgotten cards)</div>
+                <input type="text" className="input" placeholder="10m" value={local.srsRelearningSteps??"10m"} onChange={e=>set("srsRelearningSteps",e.target.value)} style={{fontSize:13,padding:"9px 10px"}}/>
+                <div style={{fontSize:11,color:"var(--text3)",marginTop:4}}>Space-separated, e.g. 1m 10m 1h. Units: m, h, d.</div>
+              </div>
+            </>)}
+            <div style={{paddingTop:10,borderTop:"1px solid var(--border)"}}>
+              <div style={{fontSize:13,fontWeight:700,color:"var(--text)"}}>Leech limit</div>
+              <div style={{fontSize:11.5,color:"var(--text3)",marginTop:2,lineHeight:1.5}}>After a card has been forgotten this many times, it stops using the quick repeat steps and goes out on its normal schedule, so one stubborn card can't eat your session. 0 = off. Anki's default is 8.</div>
+              <input type="number" min="0" inputMode="numeric" className="input" value={local.srsLeechThreshold??8}
+                onChange={e=>{const v=e.target.value;set("srsLeechThreshold",v===""?"":Math.max(0,parseInt(v,10)||0));}}
+                onBlur={()=>{if(local.srsLeechThreshold==="")set("srsLeechThreshold",0);}}
+                style={{fontSize:13,padding:"9px 10px",marginTop:8,width:90}}/>
+            </div>
           </div>
         </div>
 
@@ -11626,6 +11689,7 @@ export default function App() {
     return {...s,newCardsIntroducedDaily:{date:today,count:cur.count+1}};
   });
   const newCardsIntroducedTodayCount=settings.newCardsIntroducedDaily?.date===localDateKey()?(settings.newCardsIntroducedDaily.count||0):0;
+  configureSrs(settings);
   const newCardsRemainingTodayCount=settings.newCardsPerDayEnabled!==false?Math.max(0,(settings.newCardsPerDayLimit??20)-newCardsIntroducedTodayCount):Infinity;
   // Direct per-form weak flag, independent of the swipe/SRS flow — lets you
   // flag a SECOND form weak (e.g. Plural 2) while a different form (e.g.
