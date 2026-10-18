@@ -2626,9 +2626,37 @@ function SpreadBacklogPanel({decks,cardStates,setCardStates}) {
     showToast(`Spread ${plan.total} cards over ${plan.days} days (backup downloaded)`,"success");
     setPlan(null);
   };
+  // Progress forecast, straight from each card's real due date: how many are
+  // due now, and how many fall on each of the next 7 days.
+  const forecast=(()=>{
+    const base=startOfToday(),now=Date.now();
+    const days=Array(8).fill(0);let dueNow=0,later=0,scheduled=0;
+    for(const d of decks) for(const c of (cardStates[d.id]||[])){
+      if(!c.srsLastReview||!c.srsNextReview) continue;
+      scheduled++;
+      if(c.srsNextReview<=now){dueNow++;continue;}
+      const k=Math.floor((c.srsNextReview-base)/86400000);
+      if(k<8) days[Math.max(0,k)]++; else later++;
+    }
+    return {days,dueNow,later,scheduled};
+  })();
+  const maxDay=Math.max(1,forecast.dueNow,...forecast.days);
+  const dayLabel=(k)=>k===0?"Today (rest)":k===1?"Tomorrow":new Date(startOfToday()+k*86400000).toLocaleDateString(undefined,{weekday:"short",month:"short",day:"numeric"});
   return (
     <div style={{paddingTop:10,borderTop:"1px solid var(--border)"}}>
-      <div style={{fontSize:13,fontWeight:700,color:"var(--text)"}}>Spread Overdue Cards</div>
+      <div style={{fontSize:13,fontWeight:700,color:"var(--text)"}}>Backlog Progress</div>
+      <div style={{fontSize:11.5,color:"var(--text3)",marginTop:2,lineHeight:1.5}}>Live from your cards' due dates. Due now = what's waiting in SRS Review. The rows below are cards coming due on each later day.</div>
+      <div style={{marginTop:8,display:"flex",flexDirection:"column",gap:4}}>
+        {[["Due now",forecast.dueNow,"var(--weak)"],...forecast.days.map((n,k)=>[dayLabel(k),n,"var(--info)"]).filter((_,k)=>k>0||forecast.days[0]>0),["Later",forecast.later,"var(--text3)"]].map(([label,n,color],i)=>(
+          <div key={i} style={{display:"flex",alignItems:"center",gap:8,fontSize:11.5}}>
+            <div style={{width:92,color:"var(--text2)"}}>{label}</div>
+            <div style={{flex:1,height:8,background:"var(--border)",borderRadius:4,overflow:"hidden"}}><div style={{width:`${Math.min(100,n/maxDay*100)}%`,height:"100%",background:color}}/></div>
+            <div style={{width:36,textAlign:"right",fontWeight:600,color:"var(--text)"}}>{n}</div>
+          </div>
+        ))}
+      </div>
+      <div style={{fontSize:11.5,color:"var(--text3)",marginTop:6}}>{forecast.scheduled} cards have a schedule. {forecast.dueNow===0?"Nothing is overdue — you're at zero.":`${forecast.dueNow} due now.`}</div>
+      <div style={{fontSize:13,fontWeight:700,color:"var(--text)",marginTop:14}}>Spread Overdue Cards</div>
       <div style={{fontSize:11.5,color:"var(--text3)",marginTop:2,lineHeight:1.5}}>Gives every overdue card a due date over the next few days at the pace you pick — weakest first, best-known last. Downloads a schedule backup first.</div>
       <div style={{display:"flex",gap:8,marginTop:8,alignItems:"center"}}>
         <input type="number" min="1" inputMode="numeric" className="input" value={perDay} onChange={e=>{setPerDay(parseInt(e.target.value,10)||0);setPlan(null);}} style={{fontSize:13,padding:"9px 10px",width:90}}/>
