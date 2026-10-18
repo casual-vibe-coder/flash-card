@@ -3,7 +3,7 @@ import { auth, googleProvider, db, storage } from "./firebase.js";
 import { signInWithPopup, signOut, onAuthStateChanged } from "firebase/auth";
 import { doc, getDoc, setDoc, updateDoc, deleteDoc, deleteField, collection, getDocs } from "firebase/firestore";
 import { ref as storageRef, uploadString, getDownloadURL } from "firebase/storage";
-import { fsrs, generatorParameters, createEmptyCard, Rating, State } from "ts-fsrs";
+import { fsrs, generatorParameters, createEmptyCard, Rating, State, StrategyMode, GenSeedStrategyWithCardId } from "ts-fsrs";
 import {
   Settings, ArrowLeft, ChevronRight, X, Volume2, RotateCcw, BookOpen,
   RefreshCw, Check, Sparkles, Plus, Edit3, Trash2, Layers, Save, Eye,
@@ -111,12 +111,15 @@ function ToastContainer() {
 // Anki-style learning controls (Settings → Review Steps). Short repeat steps
 // are OFF by default: a failed card simply returns on its next-day schedule.
 // When on, steps work like Anki's "Learning steps" / "Relearning steps".
+// Fuzz is seeded from the card id + its rep count, so the same card always
+// gets the same "random" offset — the button labels stay stable and match
+// what is actually scheduled when you press.
 const mkEngine = (steps) => fsrs(generatorParameters({
   enable_fuzz: true, request_retention: 0.9,
   enable_short_term: !!steps,
   learning_steps: steps ? steps.learning : [],
   relearning_steps: steps ? steps.relearning : [],
-}));
+})).useStrategy(StrategyMode.SEED, GenSeedStrategyWithCardId("cid"));
 const parseSteps = (txt, fallback) => {
   const parts = String(txt ?? "").trim().split(/\s+/).filter(Boolean);
   return parts.length && parts.every(x => /^\d+[mhd]$/.test(x)) ? parts : fallback;
@@ -140,7 +143,7 @@ const GRADE_TO_RATING = { again: Rating.Again, hard: Rating.Hard, good: Rating.G
 // Build an FSRS card from a stored app card. Cards from the old SM-2 system
 // (srsInterval/srsEase, no stability yet) are converted on the fly.
 function toFsrsCard(card, nowMs) {
-  if (!card.srsLastReview) return createEmptyCard(new Date(nowMs));
+  if (!card.srsLastReview) return { ...createEmptyCard(new Date(nowMs)), cid: card.id };
   let stability = card.srsStability;
   let difficulty = card.srsDifficulty;
   if (!(stability > 0)) {
@@ -150,6 +153,7 @@ function toFsrsCard(card, nowMs) {
   }
   const last = new Date(card.srsLastReview);
   return {
+    cid: card.id,
     due: new Date(card.srsNextReview || nowMs),
     stability,
     difficulty: difficulty || 5,
