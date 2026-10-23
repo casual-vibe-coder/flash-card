@@ -613,6 +613,7 @@ const MODEL_FEATURES = [
   {tag:"dictation", label:"Dictation",              desc:"Dictation sentence generation"},
   {tag:"grammar",   label:"Grammar import",         desc:"Extract grammar cards from notes/PDFs — pick a vision-capable model (e.g. gpt-4o-mini) if you import screenshots"},
   {tag:"vocab",     label:"Vocab import",           desc:"Extract noun/verb flashcards from screenshots/PDFs — pick a vision-capable model (e.g. gpt-4o-mini) if you import photos"},
+  {tag:"watchBreakdown",label:"Watch word breakdown",desc:"Word-by-word translation of video transcripts (long answers — a cheap fast model is ideal)"},
   {tag:"other",     label:"Topics & conversation",  desc:"Topic generation, chat replies, misc"},
 ];
 
