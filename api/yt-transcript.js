@@ -103,7 +103,7 @@ export default async function handler(req, res) {
     const generate = req.query?.generate === '1';
     let out = null;
     if (!generate) { try { out = await fetchTranscript(videoId); } catch (e) { out = { error: 'direct_failed', detail: String(e.message || e) }; } }
-    if (generate || out.error === 'empty_caption_response' || out.error === 'direct_failed') {
+    if (generate || ['empty_caption_response', 'direct_failed', 'unplayable'].includes(out.error)) {
       const viaApi = await fetchViaSupadata(videoId, generate);
       if (viaApi) out = viaApi;
       else out = { error: 'needs_transcript_source', detail: 'YouTube blocked direct caption access and no SUPADATA_API_KEY is set.' };
