@@ -2732,48 +2732,63 @@ function WatchScreen({onBack,onAddToFlashcard,decks,trackUsage,user}) {
     setReady(false);setPrepDone(false);
     let cached=null;
     try{ cached=JSON.parse(localStorage.getItem(watchCacheKey(vid))||"null"); }catch{}
-    const base=preset&&preset.length===ls.length?preset:(cached&&cached.bd&&cached.n===ls.length?cached.bd:Array(ls.length).fill(null));
+    const base=preset&&preset.length===ls.length?[...preset]:(cached&&cached.bd&&cached.n===ls.length?[...cached.bd]:Array(ls.length).fill(null));
+    // Repeated lines (songs, chants, kids' videos) are translated ONCE and shared.
+    const clean=ls.map(l=>cleanCaption(l.text));
+    const uniq=[],uIdx={};
+    clean.forEach((t,i)=>{ if(!t){ if(!base[i]) base[i]={tr:"",w:[]}; return; } if(uIdx[t]==null){ uIdx[t]=uniq.length; uniq.push({t,lines:[i]}); } else uniq[uIdx[t]].lines.push(i); });
+    // anything already translated for a duplicate line fills its twins
+    for(const u of uniq){ const have=u.lines.map(i=>base[i]).find(Boolean); if(have) u.lines.forEach(i=>{ if(!base[i]) base[i]=have; }); }
     setBd(base);setBdErr("");
     const todo=[];
-    for(let i=0;i<ls.length;i+=WATCH_CHUNK){ if(base.slice(i,i+WATCH_CHUNK).some(x=>!x)) todo.push(i); }
-    let done=ls.length-todo.reduce((n,i)=>n+Math.min(WATCH_CHUNK,ls.length-i),0);
-    setBdProgress(done);
+    for(let i=0;i<uniq.length;i+=WATCH_CHUNK){ if(uniq.slice(i,i+WATCH_CHUNK).some(u=>!base[u.lines[0]])) todo.push(i); }
+    const totalU=uniq.length;
+    let doneU=totalU-todo.reduce((n,i)=>n+Math.min(WATCH_CHUNK,totalU-i),0);
+    const alreadyComplete=todo.length===0;
+    setBdProgress(totalU?Math.round(doneU/totalU*ls.length):ls.length);
+    let sinceSave=0;
     const work=async(start)=>{
-      const chunk=ls.slice(start,start+WATCH_CHUNK);
-      const prompt=`You are an Arabic teacher. Below are numbered lines of Modern Standard Arabic spoken in a video. For EACH line return the words in order, fully vowelled (tashkeel), with a SHORT English gloss (1-3 words, the meaning in this context), a part of speech ("noun","verb" or "other"), and the dictionary form (lemma, with tashkeel) — plus a natural English translation of the whole line. Split on spaces only; keep attached particles (و، ب، ل، ال) attached to their word.
+      const chunk=uniq.slice(start,start+WATCH_CHUNK);
+      const prompt=`You are an Arabic teacher. Below are numbered lines of Modern Standard Arabic from a video. For EACH line split it into words (split on spaces; keep attached particles و ب ل ك ف ال attached). Give each word: "a" = the word with full vowel marks (if the line already has vowel marks, copy them exactly), "e" = SHORT English meaning in context (1-3 words), "p" = n (noun) / v (verb) / o (other), "l" = dictionary base form with vowel marks. Also "t" = a natural English translation of the whole line.
 
 Lines:
-${chunk.map((l,k)=>`${k}. ${cleanCaption(l.text)||"—"}`).join("\n")}
+${chunk.map((u,k)=>`${k}. ${u.t}`).join("\n")}
 
-Return ONLY valid JSON, no commentary: [{"i":0,"tr":"English translation","w":[{"ar":"...","en":"...","pos":"noun","lemma":"..."}]}]`;
+Return ONLY valid JSON, no commentary: [{"i":0,"t":"translation","w":[{"a":"..","e":"..","p":"n","l":".."}]}]`;
       for(let attempt=0;attempt<2;attempt++){
         try{
-          const raw=await callClaude(prompt,1800,"watchBreakdown",trackUsage,55000);
+          const raw=await callClaude(prompt,1500,"watchBreakdown",trackUsage,55000);
           const arr=extractJSON(raw);
-          if(!Array.isArray(arr)) throw new Error("bad json");
+          if(!Array.isArray(arr)) throw new Error("the AI didn't return valid JSON");
           setBd(prev=>{
             const next=[...prev];
-            for(const it of arr){ const idx=start+(+it.i); if(idx>=start&&idx<start+chunk.length&&Array.isArray(it.w)) next[idx]={tr:it.tr||"",w:it.w.filter(w=>cleanCaption(w.ar))}; }
-            chunk.forEach((l,k)=>{ if(!cleanCaption(l.text)) next[start+k]={tr:"",w:[]}; });
+            for(const it of arr){
+              const u=chunk[+it.i]; if(!u||!Array.isArray(it.w)) continue;
+              const val={tr:it.t||"",w:it.w.filter(w=>w&&w.a).map(w=>({ar:w.a,en:w.e||"",pos:w.p==="v"?"verb":w.p==="n"?"noun":"other",lemma:w.l||w.a}))};
+              u.lines.forEach(i=>{ next[i]=val; });
+            }
             try{ localStorage.setItem(watchCacheKey(vid),JSON.stringify({n:ls.length,bd:next})); }catch{}
             return next;
           });
-          done+=chunk.length;setBdProgress(done);
+          doneU+=chunk.length;setBdProgress(Math.round(doneU/totalU*ls.length));
+          sinceSave+=chunk.length;
+          if(sinceSave>=12){ sinceSave=0; setTimeout(()=>saveMine(vid,ls,bdRef.current,vidMetaRef.current,titleRef.current),120); }
           return;
-        }catch(e){ if(attempt===1){ done+=chunk.length;setBdProgress(done);setBdErr(e?.message||"AI request failed"); } }
+        }catch(e){ if(attempt===1){ doneU+=chunk.length;setBdProgress(Math.round(doneU/totalU*ls.length));setBdErr(e?.message||"AI request failed"); } }
       }
     };
-    // Work nearest the line you're watching first, so what's on screen fills in first.
+    // Work nearest the line you're watching first; 8 batches in parallel.
     const queue=[...todo];
     const next=()=>{ const a=activeRef.current; let bi=0; for(let i=1;i<queue.length;i++){ if(Math.abs(queue[i]-a)<Math.abs(queue[bi]-a)) bi=i; } return queue.splice(bi,1)[0]; };
-    await Promise.all([0,1,2,3,4].map(async()=>{ while(queue.length) await work(next()); }));
+    await Promise.all(Array.from({length:8},async()=>{ while(queue.length) await work(next()); }));
     await new Promise(r=>setTimeout(r,80));   // let the last setBd commit
     const finalBd=bdRef.current;
     const missing=ls.some((_,i)=>!finalBd[i]);
+    setBdProgress(ls.length);
     setPrepDone(true);
     if(!missing){
       setReady(true);
-      if(src!=="mine") saveMine(vid,ls,finalBd,vidMetaRef.current,titleRef.current);
+      if(!alreadyComplete||src!=="mine") saveMine(vid,ls,finalBd,vidMetaRef.current,titleRef.current);
     }
   };
 
@@ -2781,6 +2796,7 @@ Return ONLY valid JSON, no commentary: [{"i":0,"tr":"English translation","w":[{
     setVideoId(vid);setTitle(ttl||meta?.title||"");setVidMeta(meta||null);setLines(ls);setActive(0);activeRef.current=0;
     setGenOffer(false);setErr("");setLibSaved(false);setSavedMine(src==="mine");
     vidMetaRef.current=meta||null;titleRef.current=ttl||meta?.title||"";
+    if(src!=="mine"&&src!=="shared") saveMine(vid,ls,preset||Array(ls.length).fill(null),meta||null,ttl||meta?.title||"");
     runBreakdown(vid,ls,preset,src);
   };
   const closeVideo=()=>{ setReady(false);setPrepDone(false);setLines([]);setBd([]);setVideoId(null);setErr("");setGenOffer(false);setLoading(false); };
@@ -2791,7 +2807,7 @@ Return ONLY valid JSON, no commentary: [{"i":0,"tr":"English translation","w":[{
     // 1) my saved copy on this device, 2) my saved copy in my account, 3) shared library — all free
     try{
       const loc=JSON.parse(localStorage.getItem(mineKey(vid))||"null");
-      if(loc?.lines?.length&&loc.bd?.length===loc.lines.length&&loc.bd.every(Boolean)){ startWithLines(vid,loc.lines,loc.title,{thumb:loc.thumb,channel:loc.channel,durationSec:loc.durationSec},loc.bd,"mine"); setLoading(false); return; }
+      if(loc?.lines?.length&&loc.bd?.length===loc.lines.length){ startWithLines(vid,loc.lines,loc.title,{thumb:loc.thumb,channel:loc.channel,durationSec:loc.durationSec},loc.bd,"mine"); setLoading(false); return; }
     }catch{}
     if(user){
       try{
