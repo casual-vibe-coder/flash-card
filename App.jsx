@@ -2616,6 +2616,8 @@ function loadYouTubeApi(){
   return _ytApiPromise;
 }
 const WATCH_CHUNK=3;
+// Caption noise (pause markers, music notes, [sound tags]) isn't speech.
+const cleanCaption=(t)=>(t||"").replace(/\*+|♪+|\[[^\]]*\]|\([^)]*\)/g," ").replace(/\s+/g," ").trim();
 const watchCacheKey=(id)=>`watch:v1:${id}`;
 
 const WATCH_CATEGORIES=[
@@ -2713,7 +2715,7 @@ function WatchScreen({onBack,onAddToFlashcard,decks,trackUsage,user}) {
       const prompt=`You are an Arabic teacher. Below are numbered lines of Modern Standard Arabic spoken in a video. For EACH line return the words in order, fully vowelled (tashkeel), with a SHORT English gloss (1-3 words, the meaning in this context), a part of speech ("noun","verb" or "other"), and the dictionary form (lemma, with tashkeel) — plus a natural English translation of the whole line. Split on spaces only; keep attached particles (و، ب، ل، ال) attached to their word.
 
 Lines:
-${chunk.map((l,k)=>`${k}. ${l.text}`).join("\n")}
+${chunk.map((l,k)=>`${k}. ${cleanCaption(l.text)||"—"}`).join("\n")}
 
 Return ONLY valid JSON, no commentary: [{"i":0,"tr":"English translation","w":[{"ar":"...","en":"...","pos":"noun","lemma":"..."}]}]`;
       for(let attempt=0;attempt<2;attempt++){
@@ -2723,7 +2725,8 @@ Return ONLY valid JSON, no commentary: [{"i":0,"tr":"English translation","w":[{
           if(!Array.isArray(arr)) throw new Error("bad json");
           setBd(prev=>{
             const next=[...prev];
-            for(const it of arr){ const idx=start+(+it.i); if(idx>=start&&idx<start+chunk.length&&Array.isArray(it.w)) next[idx]={tr:it.tr||"",w:it.w}; }
+            for(const it of arr){ const idx=start+(+it.i); if(idx>=start&&idx<start+chunk.length&&Array.isArray(it.w)) next[idx]={tr:it.tr||"",w:it.w.filter(w=>cleanCaption(w.ar))}; }
+            chunk.forEach((l,k)=>{ if(!cleanCaption(l.text)) next[start+k]={tr:"",w:[]}; });
             try{ localStorage.setItem(watchCacheKey(vid),JSON.stringify({n:ls.length,bd:next})); }catch{}
             return next;
           });
@@ -2732,8 +2735,10 @@ Return ONLY valid JSON, no commentary: [{"i":0,"tr":"English translation","w":[{
         }catch(e){ if(attempt===1){ done+=chunk.length;setBdProgress(done);setBdErr(e?.message||"AI request failed"); } }
       }
     };
+    // Work nearest the line you're watching first, so what's on screen fills in first.
     const queue=[...todo];
-    await Promise.all([0,1,2].map(async()=>{ while(queue.length) await work(queue.shift()); }));
+    const next=()=>{ const a=activeRef.current; let bi=0; for(let i=1;i<queue.length;i++){ if(Math.abs(queue[i]-a)<Math.abs(queue[bi]-a)) bi=i; } return queue.splice(bi,1)[0]; };
+    await Promise.all([0,1,2,3,4].map(async()=>{ while(queue.length) await work(next()); }));
   };
 
   const startWithLines=(vid,ls,ttl,meta,preset)=>{
