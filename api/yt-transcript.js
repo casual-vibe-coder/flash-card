@@ -69,7 +69,7 @@ const normSupa = (data, videoId) => ({
 });
 
 async function fetchViaSupadata(videoId, generate) {
-  const key = process.env.SUPADATA_API_KEY;
+  const key = (process.env.SUPADATA_API_KEY || process.env.SUPA_API_KEY);
   if (!key) return null;
   const url = SUPA + '?url=' + encodeURIComponent('https://www.youtube.com/watch?v=' + videoId) +
     '&lang=ar&text=false&mode=' + (generate ? 'generate' : 'native');
@@ -83,7 +83,7 @@ async function fetchViaSupadata(videoId, generate) {
 }
 
 async function pollSupadata(jobId, videoId) {
-  const key = process.env.SUPADATA_API_KEY;
+  const key = (process.env.SUPADATA_API_KEY || process.env.SUPA_API_KEY);
   if (!key) return { error: 'no_key' };
   const r = await fetch(SUPA + '/' + encodeURIComponent(jobId), { headers: { 'x-api-key': key } });
   const data = await r.json().catch(() => ({}));
