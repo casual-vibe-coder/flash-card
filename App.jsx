@@ -2615,7 +2615,7 @@ function loadYouTubeApi(){
   });
   return _ytApiPromise;
 }
-const WATCH_CHUNK=8;
+const WATCH_CHUNK=3;
 const watchCacheKey=(id)=>`watch:v1:${id}`;
 
 const WATCH_CATEGORIES=[
@@ -2718,7 +2718,7 @@ ${chunk.map((l,k)=>`${k}. ${l.text}`).join("\n")}
 Return ONLY valid JSON, no commentary: [{"i":0,"tr":"English translation","w":[{"ar":"...","en":"...","pos":"noun","lemma":"..."}]}]`;
       for(let attempt=0;attempt<2;attempt++){
         try{
-          const raw=await callClaude(prompt,3800,"watchBreakdown",trackUsage);
+          const raw=await callClaude(prompt,1800,"watchBreakdown",trackUsage,55000);
           const arr=extractJSON(raw);
           if(!Array.isArray(arr)) throw new Error("bad json");
           setBd(prev=>{
