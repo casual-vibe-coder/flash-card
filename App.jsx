@@ -2593,7 +2593,7 @@ function ExportDataPanel({decks,cardStates}) {
 // WATCH — paste a YouTube link, get the Arabic transcript, and read along
 // with a word-for-word breakdown under every word. Tap a word to add it to a
 // deck (saved with the sentence + timestamp it came from).
-// Transcript: /api/yt-transcript (captions), or paste SRT/VTT/plain text.
+// Transcript: /api/yt-transcript (captions, or speech-to-text if you confirm).
 // Breakdown: one AI call per ~8 lines, cached per video in localStorage.
 // ─────────────────────────────────────────────────────────────
 function ytVideoId(input){
@@ -2601,20 +2601,6 @@ function ytVideoId(input){
   if(/^[A-Za-z0-9_-]{11}$/.test(s)) return s;
   const m=s.match(/(?:youtu\.be\/|[?&]v=|\/shorts\/|\/embed\/|\/live\/)([A-Za-z0-9_-]{11})/);
   return m?m[1]:null;
-}
-function parsePastedTranscript(txt){
-  const ts=/(?:(\d+):)?(\d+):(\d+)[.,](\d+)\s*-->\s*(?:(\d+):)?(\d+):(\d+)[.,](\d+)/;
-  const secs=(h,m,s,f)=>(+(h||0))*3600+(+m)*60+(+s)+(+("0."+f));
-  const out=[];
-  for(const b of txt.replace(/\r/g,"").split(/\n\s*\n/)){
-    const m=b.match(ts);
-    if(!m) continue;
-    const st=secs(m[1],m[2],m[3],m[4]),en=secs(m[5],m[6],m[7],m[8]);
-    const text=b.split("\n").filter(l=>!ts.test(l)&&!/^\d+$/.test(l.trim())&&!/^WEBVTT/.test(l)).join(" ").replace(/<[^>]+>/g,"").trim();
-    if(text) out.push({start:st,dur:Math.max(0,en-st),text});
-  }
-  if(out.length) return out;
-  return txt.split("\n").map(l=>l.trim()).filter(Boolean).map(text=>({start:null,dur:0,text}));
 }
 let _ytApiPromise=null;
 function loadYouTubeApi(){
@@ -2632,44 +2618,92 @@ function loadYouTubeApi(){
 const WATCH_CHUNK=8;
 const watchCacheKey=(id)=>`watch:v1:${id}`;
 
-function WatchScreen({onBack,onAddToFlashcard,decks,trackUsage}) {
+const WATCH_CATEGORIES=[
+  {k:"all",label:"All",ar:""},
+  {k:"cartoons",label:"Cartoons",ar:"كرتون مدبلج بالعربية الفصحى"},
+  {k:"stories",label:"Stories",ar:"قصة بالعربية الفصحى"},
+  {k:"kids",label:"Kids",ar:"أطفال بالعربية الفصحى"},
+  {k:"news",label:"News",ar:"نشرة أخبار"},
+  {k:"documentary",label:"Documentary",ar:"وثائقي"},
+  {k:"lectures",label:"Lectures",ar:"محاضرة بالعربية الفصحى"},
+];
+const fmtDur=(s)=>{ if(!s) return ""; const m=Math.floor(s/60),r=s%60; return m>=60?`${Math.floor(m/60)}:${String(m%60).padStart(2,"0")}:${String(r).padStart(2,"0")}`:`${m}:${String(r).padStart(2,"0")}`; };
+
+function WatchScreen({onBack,onAddToFlashcard,decks,trackUsage,user}) {
+  const [tab,setTab]=useState("explore");
   const [url,setUrl]=useState("");
   const [videoId,setVideoId]=useState(null);
   const [title,setTitle]=useState("");
+  const [vidMeta,setVidMeta]=useState(null);   // {thumb,channel,durationSec}
   const [lines,setLines]=useState([]);
-  const [bd,setBd]=useState([]);          // per-line breakdown {tr,w:[{ar,en,pos,lemma}]} | null
+  const [bd,setBd]=useState([]);
   const [loading,setLoading]=useState(false);
   const [err,setErr]=useState("");
-  const [needPaste,setNeedPaste]=useState(false);
-  const [pasteTxt,setPasteTxt]=useState("");
+  const [genOffer,setGenOffer]=useState(false);
   const [bdProgress,setBdProgress]=useState(0);
   const [active,setActive]=useState(0);
   const [rate,setRate]=useState(1);
   const [loopLine,setLoopLine]=useState(false);
-  const [sel,setSel]=useState(null);       // selected word for the add sheet
+  const [sel,setSel]=useState(null);
   const [deckId,setDeckId]=useState("");
   const [added,setAdded]=useState(false);
-  const playerRef=useRef(null);
-  const playerDiv=useRef(null);
-  const linesRef=useRef([]);
-  const loopRef=useRef(false);
-  const activeRef=useRef(0);
-  const activeEl=useRef(null);
-  linesRef.current=lines;loopRef.current=loopLine;
+  // explore
+  const [query,setQuery]=useState("");
+  const [cat,setCat]=useState("all");
+  const [arQuery,setArQuery]=useState("");
+  const [results,setResults]=useState([]);
+  const [nextTok,setNextTok]=useState(null);
+  const [searching,setSearching]=useState(false);
+  const [searchErr,setSearchErr]=useState("");
+  // shared library
+  const [library,setLibrary]=useState(null);
+  const [libErr,setLibErr]=useState("");
+  const [libSaved,setLibSaved]=useState(false);
+  const playerRef=useRef(null),playerDiv=useRef(null),linesRef=useRef([]),loopRef=useRef(false),activeRef=useRef(0),activeEl=useRef(null),bdRef=useRef([]);
+  linesRef.current=lines;loopRef.current=loopLine;bdRef.current=bd;
 
   const vocabDecks=decks.filter(d=>d.deckType!=="grammar");
   useEffect(()=>{ if(!deckId&&vocabDecks[0]) setDeckId(vocabDecks[0].id); },[decks]);
 
-  // ── Breakdown: chunked AI calls, results saved per video ──────────────
-  const runBreakdown=async(vid,ls)=>{
+  // ── Shared library (Firestore: watchLibrary/{videoId}) ────────────────
+  const loadLibrary=async()=>{
+    setLibErr("");
+    try{
+      const snap=await getDocs(collection(db,"watchLibrary"));
+      const arr=[];snap.forEach(d=>arr.push({id:d.id,...d.data()}));
+      arr.sort((a,b)=>(b.addedAt||0)-(a.addedAt||0));
+      setLibrary(arr);
+    }catch(e){
+      setLibrary([]);
+      setLibErr(/permission/i.test(e?.message||"")?"The shared library needs a Firestore rule before it can be used (see the setup note).":"Couldn't load the library.");
+    }
+  };
+  useEffect(()=>{ if(tab==="library"&&library===null) loadLibrary(); },[tab]);
+
+  const addToLibrary=async(category)=>{
+    if(!videoId||!lines.length) return;
+    try{
+      const complete=bdRef.current.length===lines.length&&bdRef.current.every(Boolean);
+      const payload={id:videoId,title:title||vidMeta?.title||"",channel:vidMeta?.channel||"",thumb:vidMeta?.thumb||`https://i.ytimg.com/vi/${videoId}/mqdefault.jpg`,
+        durationSec:vidMeta?.durationSec||0,category:category||"all",addedBy:user?.uid||null,addedAt:Date.now(),
+        lines,...(complete?{bd:bdRef.current}:{})};
+      if(JSON.stringify(payload).length>900000){ delete payload.bd; }
+      await setDoc(doc(db,"watchLibrary",videoId),payload);
+      setLibSaved(true);setLibrary(null);
+      showToast("Added to the shared library","success");
+    }catch(e){
+      showToast(/permission/i.test(e?.message||"")?"Library needs a Firestore rule first (see setup note)":"Couldn't add to the library","error");
+    }
+  };
+
+  // ── Breakdown (chunked AI calls, cached per video on this device) ─────
+  const runBreakdown=async(vid,ls,preset)=>{
     let cached=null;
     try{ cached=JSON.parse(localStorage.getItem(watchCacheKey(vid))||"null"); }catch{}
-    const have=(cached&&cached.bd&&cached.n===ls.length)?cached.bd:Array(ls.length).fill(null);
-    setBd(have);
+    const base=preset&&preset.length===ls.length?preset:(cached&&cached.bd&&cached.n===ls.length?cached.bd:Array(ls.length).fill(null));
+    setBd(base);
     const todo=[];
-    for(let i=0;i<ls.length;i+=WATCH_CHUNK){
-      if(have.slice(i,i+WATCH_CHUNK).some(x=>!x)) todo.push(i);
-    }
+    for(let i=0;i<ls.length;i+=WATCH_CHUNK){ if(base.slice(i,i+WATCH_CHUNK).some(x=>!x)) todo.push(i); }
     let done=ls.length-todo.reduce((n,i)=>n+Math.min(WATCH_CHUNK,ls.length-i),0);
     setBdProgress(done);
     const work=async(start)=>{
@@ -2696,44 +2730,82 @@ Return ONLY valid JSON, no commentary: [{"i":0,"tr":"English translation","w":[{
         }catch(e){ if(attempt===1){ done+=chunk.length;setBdProgress(done); } }
       }
     };
-    // 3 chunks at a time, in reading order, so the top of the video fills first
     const queue=[...todo];
     await Promise.all([0,1,2].map(async()=>{ while(queue.length) await work(queue.shift()); }));
   };
 
-  const startWithLines=(vid,ls,ttl)=>{
-    setVideoId(vid);setTitle(ttl||"");setLines(ls);setActive(0);activeRef.current=0;
-    setNeedPaste(false);setErr("");
-    runBreakdown(vid,ls);
+  const startWithLines=(vid,ls,ttl,meta,preset)=>{
+    setVideoId(vid);setTitle(ttl||meta?.title||"");setVidMeta(meta||null);setLines(ls);setActive(0);activeRef.current=0;
+    setGenOffer(false);setErr("");setLibSaved(false);
+    runBreakdown(vid,ls,preset);
   };
+  const closeVideo=()=>{ setLines([]);setBd([]);setVideoId(null);setErr("");setGenOffer(false);setLoading(false); };
 
-  const load=async()=>{
-    const vid=ytVideoId(url);
-    if(!vid){ setErr("That doesn't look like a YouTube link."); return; }
-    setLoading(true);setErr("");setNeedPaste(false);
+  // ── Transcript: captions first; speech-to-text only if you confirm ────
+  const openVideo=async(vid,meta)=>{
+    setLoading(true);setErr("");setGenOffer(false);setVideoId(vid);setVidMeta(meta||null);setTitle(meta?.title||"");
+    // shared library first — free, already broken down
+    try{
+      const d=await getDoc(doc(db,"watchLibrary",vid));
+      if(d.exists()&&d.data().lines?.length){ const x=d.data(); startWithLines(vid,x.lines,x.title,{thumb:x.thumb,channel:x.channel,durationSec:x.durationSec},x.bd); setLoading(false); return; }
+    }catch{}
     try{
       const r=await fetch("/api/yt-transcript?v="+vid);
       const d=await r.json().catch(()=>({}));
-      if(!r.ok||!d.lines?.length){
-        setVideoId(vid);
-        setNeedPaste(true);
-        setErr(d.error==="no_arabic_captions"
-          ?"This video has no Arabic captions. Paste a transcript below (SRT/VTT or plain lines)."
-          :"Couldn't fetch captions automatically ("+(d.detail||d.error||"blocked by YouTube")+"). Paste a transcript below, or add a transcript API key in Vercel.");
-        return;
-      }
-      startWithLines(vid,d.lines,d.title);
-    }catch(e){
-      setVideoId(vid);setNeedPaste(true);setErr("Couldn't reach the caption service. Paste a transcript below.");
-    }finally{ setLoading(false); }
+      if(r.ok&&d.lines?.length){ startWithLines(vid,d.lines,d.title,meta); return; }
+      if(d.error==="no_arabic_captions"||d.error==="no_captions"){ setGenOffer(true);setErr("This video has no Arabic captions."); return; }
+      setErr(d.error==="needs_transcript_source"
+        ?"Automatic transcripts aren't switched on yet — the transcript service key (SUPADATA_API_KEY) still needs adding in Vercel."
+        :"Couldn't get the transcript ("+(d.detail||d.error||"blocked")+").");
+    }catch{ setErr("Couldn't reach the transcript service."); }
+    finally{ setLoading(false); }
   };
-  const usePasted=()=>{
-    const ls=parsePastedTranscript(pasteTxt);
-    if(!ls.length){ setErr("Nothing to read in that text."); return; }
-    startWithLines(videoId||ytVideoId(url),ls,"");
+  const loadFromLink=()=>{
+    const vid=ytVideoId(url);
+    if(!vid){ setErr("That doesn't look like a YouTube link."); return; }
+    openVideo(vid,null);
+  };
+  const generate=async()=>{
+    setLoading(true);setErr("");setGenOffer(false);
+    try{
+      let r=await fetch("/api/yt-transcript?v="+videoId+"&generate=1");
+      let d=await r.json().catch(()=>({}));
+      for(let n=0;n<45&&d.pending&&d.jobId;n++){
+        await new Promise(res=>setTimeout(res,4000));
+        r=await fetch("/api/yt-transcript?job="+encodeURIComponent(d.jobId)+"&v="+videoId);
+        d=await r.json().catch(()=>({}));
+      }
+      if(d.lines?.length){ startWithLines(videoId,d.lines,"",vidMeta); return; }
+      setErr("Speech-to-text didn't return a transcript ("+(d.detail||d.error||"timed out")+").");
+    }catch{ setErr("Speech-to-text request failed."); }
+    finally{ setLoading(false); }
   };
 
-  // ── Player: YouTube IFrame API, speed, line tracking, loop ────────────
+  // ── Explore: English → Arabic MSA query → YouTube search (captions only)
+  const search=async(more)=>{
+    const q=query.trim(),c=WATCH_CATEGORIES.find(x=>x.k===cat);
+    if(!q&&!c.ar) return;
+    setSearching(true);setSearchErr("");
+    try{
+      let ar=arQuery;
+      if(!more){
+        ar=c.ar;
+        if(q){
+          const raw=await callClaude(`Turn this search into a short YouTube search query in Modern Standard Arabic (فصحى), 2-5 words, no dialect. Search: "${q}"${c.ar?`\nCategory keywords to include: ${c.ar}`:""}\nReturn ONLY the Arabic query, nothing else.`,60,"watchQuery",trackUsage);
+          ar=raw.replace(/["'\n`]/g,"").trim()||q;
+        }
+        setArQuery(ar);
+      }
+      const r=await fetch("/api/yt-search?q="+encodeURIComponent(ar)+(more&&nextTok?"&pageToken="+nextTok:""));
+      const d=await r.json().catch(()=>({}));
+      if(!r.ok){ setSearchErr(d.error==="no_api_key"?"Search isn't switched on yet — the YouTube API key (YOUTUBE_API_KEY) still needs adding in Vercel.":"Search failed ("+(d.detail||d.error||r.status)+")."); return; }
+      setResults(prev=>more?[...prev,...d.items]:d.items);setNextTok(d.next||null);
+      if(!d.items.length&&!more) setSearchErr("No videos with captions found. Try different words.");
+    }catch(e){ setSearchErr(e?.message||"Search failed."); }
+    finally{ setSearching(false); }
+  };
+
+  // ── Player (IFrame API): speed, line tracking, loop ───────────────────
   useEffect(()=>{
     if(!videoId||!lines.length) return;
     let cancelled=false,timer=null;
@@ -2762,7 +2834,6 @@ Return ONLY valid JSON, no commentary: [{"i":0,"tr":"English translation","w":[{
     });
     return()=>{ cancelled=true; if(timer) clearInterval(timer); try{playerRef.current?.destroy();}catch{} playerRef.current=null; };
   },[videoId,lines.length]);
-
   useEffect(()=>{ try{playerRef.current?.setPlaybackRate?.(rate);}catch{} },[rate,videoId]);
   useEffect(()=>{ activeEl.current?.scrollIntoView?.({block:"center",behavior:"smooth"}); },[active]);
 
@@ -2785,36 +2856,90 @@ Return ONLY valid JSON, no commentary: [{"i":0,"tr":"English translation","w":[{
     setTimeout(()=>{setSel(null);setAdded(false);},900);
   };
 
+  const VideoCard=({v,onClick})=>(
+    <div onClick={onClick} style={{display:"flex",gap:10,padding:8,border:"1.5px solid var(--border)",borderRadius:"var(--rs)",background:"var(--surface)",cursor:"pointer"}}>
+      <div style={{position:"relative",width:128,flexShrink:0}}>
+        <img src={v.thumb||`https://i.ytimg.com/vi/${v.id}/mqdefault.jpg`} alt="" style={{width:"100%",aspectRatio:"16/9",objectFit:"cover",borderRadius:6,background:"var(--border)"}}/>
+        {v.durationSec>0&&<span style={{position:"absolute",right:4,bottom:4,background:"rgba(0,0,0,.75)",color:"#fff",fontSize:10.5,padding:"1px 5px",borderRadius:4}}>{fmtDur(v.durationSec)}</span>}
+      </div>
+      <div style={{flex:1,minWidth:0}}>
+        <div style={{fontSize:13,fontWeight:600,lineHeight:1.35,display:"-webkit-box",WebkitLineClamp:2,WebkitBoxOrient:"vertical",overflow:"hidden"}}>{v.title}</div>
+        <div style={{fontSize:11.5,color:"var(--text3)",marginTop:3}}>{v.channel}</div>
+        {v.category&&v.category!=="all"&&<span style={{fontSize:10.5,color:"var(--info)",marginTop:3,display:"inline-block"}}>{WATCH_CATEGORIES.find(x=>x.k===v.category)?.label}</span>}
+      </div>
+    </div>
+  );
+
   return (
     <div className="screen">
-      <Hdr title="Watch" sub="Arabic video" onBack={onBack}/>
-      <div style={{padding:"14px 20px 0",display:"flex",flexDirection:"column",gap:12}}>
-        {!lines.length&&(<>
-          <div style={{fontSize:13,color:"var(--text2)",lineHeight:1.6}}>Paste a YouTube link (Modern Standard Arabic works best). You'll get the transcript with a word-for-word breakdown, and can add any word to your flashcards.</div>
-          <input className="input" placeholder="https://www.youtube.com/watch?v=…" value={url} onChange={e=>setUrl(e.target.value)} onKeyDown={e=>{if(e.key==="Enter")load();}} style={{fontSize:13,padding:"11px 12px"}}/>
-          <button className="btn btn-primary" onClick={load} disabled={loading||!url.trim()} style={{padding:"13px",borderRadius:"var(--r)"}}>{loading?"Fetching transcript…":"Load video"}</button>
-        </>)}
-        {err&&<div style={{fontSize:12.5,color:"var(--weak)",lineHeight:1.5}}>{err}</div>}
-        {needPaste&&(<>
-          <textarea className="input" rows={7} placeholder={"Paste the transcript here.\nWith timestamps (SRT/VTT) the text follows the video; plain lines work too, without following along."} value={pasteTxt} onChange={e=>setPasteTxt(e.target.value)} style={{fontSize:13,padding:"10px 12px"}}/>
-          <button className="btn btn-primary" onClick={usePasted} disabled={!pasteTxt.trim()} style={{padding:"13px",borderRadius:"var(--r)"}}>Use this transcript</button>
-        </>)}
-      </div>
+      <Hdr title="Watch" sub="Arabic video" onBack={lines.length||videoId?closeVideo:onBack}/>
+
+      {!lines.length&&(
+        <div style={{padding:"14px 20px 0",display:"flex",flexDirection:"column",gap:12}}>
+          {!videoId&&(
+            <div style={{display:"flex",gap:6}}>
+              {[["explore","Explore"],["library","Library"],["link","Paste link"]].map(([k,l])=>(
+                <button key={k} className={`chip ${tab===k?"chip-on":""}`} onClick={()=>setTab(k)} style={{flex:1,justifyContent:"center",padding:"8px 0",fontSize:12.5}}>{l}</button>
+              ))}
+            </div>
+          )}
+
+          {videoId&&(<div style={{display:"flex",flexDirection:"column",gap:10}}>
+            {vidMeta?.thumb&&<img src={vidMeta.thumb} alt="" style={{width:"100%",aspectRatio:"16/9",objectFit:"cover",borderRadius:"var(--rs)"}}/>}
+            {title&&<div style={{fontSize:14,fontWeight:600}}>{title}</div>}
+            {loading&&<div style={{fontSize:13,color:"var(--text2)"}}>Getting the transcript… (speech-to-text can take a minute or two)</div>}
+            {err&&<div style={{fontSize:12.5,color:"var(--weak)",lineHeight:1.5}}>{err}</div>}
+            {genOffer&&(<>
+              <div style={{fontSize:12.5,color:"var(--text2)",lineHeight:1.6}}>You can generate one with speech-to-text. It costs about 2 credits per minute{vidMeta?.durationSec?` — roughly ${Math.ceil(vidMeta.durationSec/60)*2} credits for this ${Math.ceil(vidMeta.durationSec/60)}-minute video`:""} on your transcript service.</div>
+              <button className="btn btn-primary" onClick={generate} style={{padding:"13px",borderRadius:"var(--r)"}}>Generate transcript (speech-to-text)</button>
+            </>)}
+          </div>)}
+
+          {!videoId&&tab==="explore"&&(<>
+            <input className="input" placeholder="Search in English — e.g. cooking, space, animals" value={query} onChange={e=>setQuery(e.target.value)} onKeyDown={e=>{if(e.key==="Enter")search(false);}} style={{fontSize:13,padding:"11px 12px"}}/>
+            <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+              {WATCH_CATEGORIES.map(c=>(<button key={c.k} className={`chip ${cat===c.k?"chip-on":""}`} onClick={()=>setCat(c.k)} style={{padding:"6px 11px",fontSize:12}}>{c.label}</button>))}
+            </div>
+            <button className="btn btn-primary" onClick={()=>search(false)} disabled={searching||(!query.trim()&&cat==="all")} style={{padding:"12px",borderRadius:"var(--r)"}}>{searching?"Searching…":"Find videos with captions"}</button>
+            {arQuery&&<div style={{fontSize:11.5,color:"var(--text3)"}}>Searched for: <span className="ar" style={{fontSize:15}}>{arQuery}</span></div>}
+            {searchErr&&<div style={{fontSize:12.5,color:"var(--weak)",lineHeight:1.5}}>{searchErr}</div>}
+            <div style={{display:"flex",flexDirection:"column",gap:8}}>
+              {results.map(v=><VideoCard key={v.id} v={{...v,category:cat}} onClick={()=>openVideo(v.id,v)}/>)}
+            </div>
+            {nextTok&&<button className="btn" onClick={()=>search(true)} disabled={searching} style={{padding:"10px"}}>More results</button>}
+          </>)}
+
+          {!videoId&&tab==="library"&&(<>
+            {libErr&&<div style={{fontSize:12.5,color:"var(--weak)",lineHeight:1.5}}>{libErr}</div>}
+            {library===null&&<div style={{fontSize:13,color:"var(--text3)"}}>Loading…</div>}
+            {library&&!library.length&&!libErr&&<div style={{fontSize:13,color:"var(--text3)",lineHeight:1.6}}>No videos in the library yet. Open a video from Explore and tap "Add to shared library".</div>}
+            <div style={{display:"flex",flexDirection:"column",gap:8}}>
+              {(library||[]).map(v=><VideoCard key={v.id} v={v} onClick={()=>openVideo(v.id,v)}/>)}
+            </div>
+          </>)}
+
+          {!videoId&&tab==="link"&&(<>
+            <input className="input" placeholder="https://www.youtube.com/watch?v=…" value={url} onChange={e=>setUrl(e.target.value)} onKeyDown={e=>{if(e.key==="Enter")loadFromLink();}} style={{fontSize:13,padding:"11px 12px"}}/>
+            <button className="btn btn-primary" onClick={loadFromLink} disabled={!url.trim()} style={{padding:"13px",borderRadius:"var(--r)"}}>Load video</button>
+            {err&&<div style={{fontSize:12.5,color:"var(--weak)",lineHeight:1.5}}>{err}</div>}
+          </>)}
+        </div>
+      )}
 
       {lines.length>0&&(
         <div>
           <div style={{position:"sticky",top:0,zIndex:5,background:"var(--bg)",padding:"12px 20px 8px"}}>
             <div style={{position:"relative",width:"100%",aspectRatio:"16/9",borderRadius:"var(--rs)",overflow:"hidden",background:"#000"}}><div ref={playerDiv} style={{position:"absolute",inset:0}}/></div>
             <div style={{display:"flex",gap:6,alignItems:"center",marginTop:8,flexWrap:"wrap"}}>
-              {[0.5,0.75,1,1.25].map(r=>(
-                <button key={r} className={`chip ${rate===r?"chip-on":""}`} onClick={()=>setRate(r)} style={{padding:"6px 10px",fontSize:12}}>{r}×</button>
-              ))}
+              {[0.5,0.75,1,1.25].map(r=>(<button key={r} className={`chip ${rate===r?"chip-on":""}`} onClick={()=>setRate(r)} style={{padding:"6px 10px",fontSize:12}}>{r}×</button>))}
               {timed&&<button className={`chip ${loopLine?"chip-on":""}`} onClick={()=>setLoopLine(v=>!v)} style={{padding:"6px 10px",fontSize:12}}><RotateCcw size={12}/> Loop line</button>}
               <span style={{marginLeft:"auto",fontSize:11,color:"var(--text3)"}}>{bdProgress<lines.length?`Breaking down… ${bdProgress}/${lines.length}`:"Breakdown ready"}</span>
             </div>
-            {title&&<div style={{fontSize:11.5,color:"var(--text3)",marginTop:4,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{title}</div>}
+            <div style={{display:"flex",alignItems:"center",gap:8,marginTop:4}}>
+              {title&&<div style={{fontSize:11.5,color:"var(--text3)",flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{title}</div>}
+              <button className="btn btn-sm" disabled={libSaved} onClick={()=>addToLibrary(cat)} style={{flexShrink:0,fontSize:11.5}}>{libSaved?"In library ✓":"Add to shared library"}</button>
+            </div>
           </div>
-
           <div style={{padding:"4px 20px 120px",display:"flex",flexDirection:"column",gap:8}}>
             {lines.map((l,i)=>{
               const b=bd[i],on=i===active;
@@ -2824,16 +2949,13 @@ Return ONLY valid JSON, no commentary: [{"i":0,"tr":"English translation","w":[{
                   {b?.w?.length?(
                     <div className="ar" style={{display:"flex",flexWrap:"wrap",flexDirection:"row-reverse",justifyContent:"flex-start",gap:on?"10px 14px":"6px 10px"}}>
                       {b.w.map((w,k)=>(
-                        <div key={k} onClick={e=>{e.stopPropagation();setSel({...w,sentence:l.text,tr:b.tr,t:l.start});setAdded(false);}}
-                          style={{textAlign:"center",cursor:"pointer",padding:"2px 4px",borderRadius:6}}>
+                        <div key={k} onClick={e=>{e.stopPropagation();setSel({...w,sentence:l.text,tr:b.tr,t:l.start});setAdded(false);}} style={{textAlign:"center",cursor:"pointer",padding:"2px 4px",borderRadius:6}}>
                           <div style={{fontSize:on?24:19,lineHeight:1.5}}>{w.ar}</div>
                           <div style={{direction:"ltr",fontFamily:"inherit",fontSize:on?11.5:10,color:"var(--text3)",lineHeight:1.3}}>{w.en}</div>
                         </div>
                       ))}
                     </div>
-                  ):(
-                    <div className="ar" style={{fontSize:on?22:18,textAlign:"right"}}>{l.text}</div>
-                  )}
+                  ):(<div className="ar" style={{fontSize:on?22:18,textAlign:"right"}}>{l.text}</div>)}
                   {b?.tr&&<div style={{fontSize:on?13.5:12,color:"var(--text2)",marginTop:8,lineHeight:1.5}}>{b.tr}</div>}
                 </div>
               );
@@ -12266,7 +12388,7 @@ export default function App() {
 
   const screens={
     home:<HomeScreen {...commonProps} onOpenDeck={openDeck} onSettings={()=>go("settings")} onCreateDeck={()=>go("createDeck")} onReading={()=>go("reading")} onListening={()=>go("listening")} onConversation={()=>go("conversation")} onDictation={()=>go("dictation")} onCapsules={()=>go("capsules")} onSearch={()=>setShowSearch(true)} onWatch={()=>go("watch")} onTranslate={()=>go("translate")} onProgress={()=>go("progress")} onMasterReview={()=>go("masterReview")} onGuide={()=>go("guide")} onPresets={()=>go("preset")} onGrammarImport={()=>{setGrammarTarget(null);go("grammarImport");}} onVocabImport={()=>{setVocabTarget(null);go("vocabImport");}} darkMode={darkMode} onToggleDark={()=>setDarkMode(d=>!d)} studyLog={studyLog} poolThresholdDays={getPoolThresholdDays(settings)} immersionMode={!!settings.immersionMode} immersionNudgeShown={!!settings.immersionNudgeShown} onImmersionNudgeAction={handleImmersionNudge}/>,
-    watch:<WatchScreen onBack={()=>go("home")} onAddToFlashcard={addToFlashcard} decks={decks} trackUsage={trackUsage}/>,
+    watch:<WatchScreen onBack={()=>go("home")} onAddToFlashcard={addToFlashcard} decks={decks} trackUsage={trackUsage} user={user}/>,
     translate:<TranslateScreen onBack={()=>go("home")} onAddToFlashcard={addToFlashcard} decks={decks} trackUsage={trackUsage} nativeLanguage={settings.nativeLanguage}/>,
     grammarImport:<GrammarImportScreen key={grammarTarget?.id||"new"} onBack={()=>{setGrammarTarget(null);go("home");}} trackUsage={trackUsage} onSave={saveGrammarDeck} targetDeck={grammarTarget} nativeLanguage={settings.nativeLanguage}/>,
     vocabImport:<VocabImportScreen key={vocabTarget?.id||"new"} onBack={()=>{setVocabTarget(null);go("home");}} trackUsage={trackUsage} onSave={saveVocabDeck} targetDeck={vocabTarget} nativeLanguage={settings.nativeLanguage} cardStates={cardStates}/>,
