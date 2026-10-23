@@ -938,7 +938,7 @@ function emptyAIResponseMessage(d, model){
   if(fr==="length") return `"${model}" ran out of output tokens (it spends them "thinking" first) before writing an answer. Pick a different model for this feature in Settings.`;
   return `"${model}" returned an empty response. Try again, or pick a different model in Settings.`;
 }
-async function callClaude(prompt, maxTokens=1500, tag="other", trackFn=null, timeoutMs=null) {
+async function callClaude(prompt, maxTokens=1500, tag="other", trackFn=null, timeoutMs=null, modelOverride=null) {
   // Optional client-side timeout so a hung request fails fast instead of
   // leaving the UI spinning forever (used by quick interactive calls like
   // word lookups).
@@ -949,7 +949,7 @@ async function callClaude(prompt, maxTokens=1500, tag="other", trackFn=null, tim
       method:"POST",
       headers:{"Content-Type":"application/json"},
       body:JSON.stringify({
-        model: pickModelForTag(tag),
+        model: modelOverride || pickModelForTag(tag),
         max_tokens: maxTokens,
         messages:[{role:"user",content:prompt}],
         ..._orKey ? {apiKey:_orKey} : {},
@@ -2755,9 +2755,10 @@ Lines:
 ${chunk.map((u,k)=>`${k}. ${u.t}`).join("\n")}
 
 Return ONLY valid JSON, no commentary: [{"i":0,"t":"translation","w":[{"a":"..","e":"..","p":"n","l":".."}]}]`;
-      for(let attempt=0;attempt<2;attempt++){
+      for(let attempt=0;attempt<3;attempt++){
         try{
-          const raw=await callClaude(prompt,1500,"watchBreakdown",trackUsage,55000);
+          // attempt 1 uses your chosen model; if it stalls, retry on a fast reliable one
+          const raw=await callClaude(prompt,1500,"watchBreakdown",trackUsage,40000,attempt>0?"openai/gpt-4o-mini":null);
           const arr=extractJSON(raw);
           if(!Array.isArray(arr)) throw new Error("the AI didn't return valid JSON");
           setBd(prev=>{
@@ -2774,7 +2775,7 @@ Return ONLY valid JSON, no commentary: [{"i":0,"t":"translation","w":[{"a":"..",
           sinceSave+=chunk.length;
           if(sinceSave>=12){ sinceSave=0; setTimeout(()=>saveMine(vid,ls,bdRef.current,vidMetaRef.current,titleRef.current),120); }
           return;
-        }catch(e){ if(attempt===1){ doneU+=chunk.length;setBdProgress(Math.round(doneU/totalU*ls.length));setBdErr(e?.message||"AI request failed"); } }
+        }catch(e){ if(attempt===2){ doneU+=chunk.length;setBdProgress(Math.round(doneU/totalU*ls.length));setBdErr(e?.message||"AI request failed"); } }
       }
     };
     // Work nearest the line you're watching first; 8 batches in parallel.
