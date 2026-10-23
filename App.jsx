@@ -2644,6 +2644,10 @@ function WatchScreen({onBack,onAddToFlashcard,decks,trackUsage,user}) {
   const [genOffer,setGenOffer]=useState(false);
   const [bdProgress,setBdProgress]=useState(0);
   const [bdErr,setBdErr]=useState("");
+  const [ready,setReady]=useState(false);      // lesson fully prepared → show player
+  const [prepDone,setPrepDone]=useState(false); // preparation finished (maybe with gaps)
+  const [mine,setMine]=useState(null);          // my saved videos
+  const [savedMine,setSavedMine]=useState(false);
   const [active,setActive]=useState(0);
   const [activeWord,setActiveWord]=useState(-1);
   const [rate,setRate]=useState(1);
@@ -2663,7 +2667,8 @@ function WatchScreen({onBack,onAddToFlashcard,decks,trackUsage,user}) {
   const [library,setLibrary]=useState(null);
   const [libErr,setLibErr]=useState("");
   const [libSaved,setLibSaved]=useState(false);
-  const playerRef=useRef(null),playerDiv=useRef(null),linesRef=useRef([]),loopRef=useRef(false),activeRef=useRef(0),activeEl=useRef(null),bdRef=useRef([]),wordRef=useRef(-1);
+  const playerRef=useRef(null),playerDiv=useRef(null),linesRef=useRef([]),loopRef=useRef(false),activeRef=useRef(0),activeEl=useRef(null),bdRef=useRef([]),wordRef=useRef(-1),vidMetaRef=useRef(null),titleRef=useRef("");
+  vidMetaRef.current=vidMeta;titleRef.current=title;
   linesRef.current=lines;loopRef.current=loopLine;bdRef.current=bd;
 
   const vocabDecks=decks.filter(d=>d.deckType!=="grammar");
@@ -2684,6 +2689,27 @@ function WatchScreen({onBack,onAddToFlashcard,decks,trackUsage,user}) {
   };
   useEffect(()=>{ if(tab==="library"&&library===null) loadLibrary(); },[tab]);
 
+  // ── My saved videos: this device (instant) + my account (any device) ──
+  const mineKey=(id)=>`watch:v2:${id}`;
+  const saveMine=async(vid,ls,bdArr,meta,ttl)=>{
+    const payload={id:vid,title:ttl||meta?.title||"",channel:meta?.channel||"",thumb:meta?.thumb||`https://i.ytimg.com/vi/${vid}/mqdefault.jpg`,
+      durationSec:meta?.durationSec||0,savedAt:Date.now(),lines:ls,bd:bdArr};
+    try{ localStorage.setItem(mineKey(vid),JSON.stringify(payload)); }catch{}
+    if(user&&JSON.stringify(payload).length<900000){
+      try{ await setDoc(doc(db,"users",user.uid,"watchVideos",vid),payload); setSavedMine(true); setMine(null); }catch(e){ console.error("Save video failed:",e); }
+    }
+  };
+  const loadMine=async()=>{
+    if(!user){ setMine([]); return; }
+    try{
+      const snap=await getDocs(collection(db,"users",user.uid,"watchVideos"));
+      const arr=[];snap.forEach(d=>{const x=d.data();arr.push({id:d.id,title:x.title,channel:x.channel,thumb:x.thumb,durationSec:x.durationSec,savedAt:x.savedAt});});
+      arr.sort((a,b)=>(b.savedAt||0)-(a.savedAt||0));
+      setMine(arr);
+    }catch{ setMine([]); }
+  };
+  useEffect(()=>{ if(tab==="library"&&mine===null) loadMine(); },[tab]);
+
   const addToLibrary=async(category)=>{
     if(!videoId||!lines.length) return;
     try{
@@ -2701,7 +2727,8 @@ function WatchScreen({onBack,onAddToFlashcard,decks,trackUsage,user}) {
   };
 
   // ── Breakdown (chunked AI calls, cached per video on this device) ─────
-  const runBreakdown=async(vid,ls,preset)=>{
+  const runBreakdown=async(vid,ls,preset,src)=>{
+    setReady(false);setPrepDone(false);
     let cached=null;
     try{ cached=JSON.parse(localStorage.getItem(watchCacheKey(vid))||"null"); }catch{}
     const base=preset&&preset.length===ls.length?preset:(cached&&cached.bd&&cached.n===ls.length?cached.bd:Array(ls.length).fill(null));
@@ -2739,27 +2766,48 @@ Return ONLY valid JSON, no commentary: [{"i":0,"tr":"English translation","w":[{
     const queue=[...todo];
     const next=()=>{ const a=activeRef.current; let bi=0; for(let i=1;i<queue.length;i++){ if(Math.abs(queue[i]-a)<Math.abs(queue[bi]-a)) bi=i; } return queue.splice(bi,1)[0]; };
     await Promise.all([0,1,2,3,4].map(async()=>{ while(queue.length) await work(next()); }));
+    await new Promise(r=>setTimeout(r,80));   // let the last setBd commit
+    const finalBd=bdRef.current;
+    const missing=ls.some((_,i)=>!finalBd[i]);
+    setPrepDone(true);
+    if(!missing){
+      setReady(true);
+      if(src!=="mine") saveMine(vid,ls,finalBd,vidMetaRef.current,titleRef.current);
+    }
   };
 
-  const startWithLines=(vid,ls,ttl,meta,preset)=>{
+  const startWithLines=(vid,ls,ttl,meta,preset,src)=>{
     setVideoId(vid);setTitle(ttl||meta?.title||"");setVidMeta(meta||null);setLines(ls);setActive(0);activeRef.current=0;
-    setGenOffer(false);setErr("");setLibSaved(false);
-    runBreakdown(vid,ls,preset);
+    setGenOffer(false);setErr("");setLibSaved(false);setSavedMine(src==="mine");
+    vidMetaRef.current=meta||null;titleRef.current=ttl||meta?.title||"";
+    runBreakdown(vid,ls,preset,src);
   };
-  const closeVideo=()=>{ setLines([]);setBd([]);setVideoId(null);setErr("");setGenOffer(false);setLoading(false); };
+  const closeVideo=()=>{ setReady(false);setPrepDone(false);setLines([]);setBd([]);setVideoId(null);setErr("");setGenOffer(false);setLoading(false); };
 
   // ── Transcript: captions first; speech-to-text only if you confirm ────
   const openVideo=async(vid,meta)=>{
     setLoading(true);setErr("");setGenOffer(false);setVideoId(vid);setVidMeta(meta||null);setTitle(meta?.title||"");
-    // shared library first — free, already broken down
+    // 1) my saved copy on this device, 2) my saved copy in my account, 3) shared library — all free
+    try{
+      const loc=JSON.parse(localStorage.getItem(mineKey(vid))||"null");
+      if(loc?.lines?.length&&loc.bd?.length===loc.lines.length&&loc.bd.every(Boolean)){ startWithLines(vid,loc.lines,loc.title,{thumb:loc.thumb,channel:loc.channel,durationSec:loc.durationSec},loc.bd,"mine"); setLoading(false); return; }
+    }catch{}
+    if(user){
+      try{
+        const m=await getDoc(doc(db,"users",user.uid,"watchVideos",vid));
+        if(m.exists()&&m.data().lines?.length){ const x=m.data(); startWithLines(vid,x.lines,x.title,{thumb:x.thumb,channel:x.channel,durationSec:x.durationSec},x.bd,"mine"); setLoading(false); return; }
+      }catch{}
+    }
     try{
       const d=await getDoc(doc(db,"watchLibrary",vid));
-      if(d.exists()&&d.data().lines?.length){ const x=d.data(); startWithLines(vid,x.lines,x.title,{thumb:x.thumb,channel:x.channel,durationSec:x.durationSec},x.bd); setLoading(false); return; }
+      if(d.exists()&&d.data().lines?.length){ const x=d.data(); startWithLines(vid,x.lines,x.title,{thumb:x.thumb,channel:x.channel,durationSec:x.durationSec},x.bd,"shared"); setLoading(false); return; }
     }catch{}
     try{
+      let cachedT=null; try{ cachedT=JSON.parse(localStorage.getItem(`watch:t:${vid}`)||"null"); }catch{}
+      if(cachedT?.lines?.length){ startWithLines(vid,cachedT.lines,cachedT.title,meta); return; }
       const r=await fetch("/api/yt-transcript?v="+vid);
       const d=await r.json().catch(()=>({}));
-      if(r.ok&&d.lines?.length){ startWithLines(vid,d.lines,d.title,meta); return; }
+      if(r.ok&&d.lines?.length){ try{ localStorage.setItem(`watch:t:${vid}`,JSON.stringify({lines:d.lines,title:d.title})); }catch{} startWithLines(vid,d.lines,d.title,meta); return; }
       if(d.error==="no_arabic_captions"||d.error==="no_captions"){ setGenOffer(true);setErr("This video has no Arabic captions."); return; }
       setErr(d.error==="needs_transcript_source"
         ?"Automatic transcripts aren't switched on yet — the transcript service key (SUPADATA_API_KEY) still needs adding in Vercel."
@@ -2782,7 +2830,7 @@ Return ONLY valid JSON, no commentary: [{"i":0,"tr":"English translation","w":[{
         r=await fetch("/api/yt-transcript?job="+encodeURIComponent(d.jobId)+"&v="+videoId);
         d=await r.json().catch(()=>({}));
       }
-      if(d.lines?.length){ startWithLines(videoId,d.lines,"",vidMeta); return; }
+      if(d.lines?.length){ try{ localStorage.setItem(`watch:t:${videoId}`,JSON.stringify({lines:d.lines,title:""})); }catch{} startWithLines(videoId,d.lines,"",vidMeta); return; }
       setErr("Speech-to-text didn't return a transcript ("+(d.detail||d.error||"timed out")+").");
     }catch{ setErr("Speech-to-text request failed."); }
     finally{ setLoading(false); }
@@ -2814,7 +2862,7 @@ Return ONLY valid JSON, no commentary: [{"i":0,"tr":"English translation","w":[{
 
   // ── Player (IFrame API): speed, line tracking, loop ───────────────────
   useEffect(()=>{
-    if(!videoId||!lines.length) return;
+    if(!videoId||!lines.length||!ready) return;
     let cancelled=false,timer=null;
     loadYouTubeApi().then(YT=>{
       if(cancelled||!playerDiv.current) return;
@@ -2854,8 +2902,8 @@ Return ONLY valid JSON, no commentary: [{"i":0,"tr":"English translation","w":[{
       });
     });
     return()=>{ cancelled=true; if(timer) clearInterval(timer); try{playerRef.current?.destroy();}catch{} playerRef.current=null; };
-  },[videoId,lines.length]);
-  useEffect(()=>{ try{playerRef.current?.setPlaybackRate?.(rate);}catch{} },[rate,videoId]);
+  },[videoId,lines.length,ready]);
+  useEffect(()=>{ try{playerRef.current?.setPlaybackRate?.(rate);}catch{} },[rate,videoId,ready]);
   useEffect(()=>{ activeEl.current?.scrollIntoView?.({block:"center",behavior:"smooth"}); },[active]);
 
   const seek=(i)=>{
@@ -2931,6 +2979,13 @@ Return ONLY valid JSON, no commentary: [{"i":0,"tr":"English translation","w":[{
           </>)}
 
           {!videoId&&tab==="library"&&(<>
+            <div className="sec" style={{margin:0}}>My videos</div>
+            {mine===null&&<div style={{fontSize:13,color:"var(--text3)"}}>Loading…</div>}
+            {mine&&!mine.length&&<div style={{fontSize:12.5,color:"var(--text3)",lineHeight:1.6}}>Videos you've prepared are saved here automatically, so you can watch them again without reloading.</div>}
+            <div style={{display:"flex",flexDirection:"column",gap:8}}>
+              {(mine||[]).map(v=><VideoCard key={v.id} v={v} onClick={()=>openVideo(v.id,v)}/>)}
+            </div>
+            <div className="sec" style={{margin:"10px 0 0"}}>Shared library</div>
             {libErr&&<div style={{fontSize:12.5,color:"var(--weak)",lineHeight:1.5}}>{libErr}</div>}
             {library===null&&<div style={{fontSize:13,color:"var(--text3)"}}>Loading…</div>}
             {library&&!library.length&&!libErr&&<div style={{fontSize:13,color:"var(--text3)",lineHeight:1.6}}>No videos in the library yet. Open a video from Explore and tap "Add to shared library".</div>}
@@ -2947,7 +3002,24 @@ Return ONLY valid JSON, no commentary: [{"i":0,"tr":"English translation","w":[{
         </div>
       )}
 
-      {lines.length>0&&(
+      {lines.length>0&&!ready&&(
+        <div style={{padding:"18px 20px 0",display:"flex",flexDirection:"column",gap:12}}>
+          {vidMeta?.thumb&&<img src={vidMeta.thumb} alt="" style={{width:"100%",aspectRatio:"16/9",objectFit:"cover",borderRadius:"var(--rs)"}}/>}
+          {title&&<div style={{fontSize:14,fontWeight:600}}>{title}</div>}
+          <div style={{fontSize:13.5,fontWeight:600}}>{prepDone?"Lesson prepared with some gaps":"Preparing your lesson…"}</div>
+          <div style={{height:10,background:"var(--border)",borderRadius:6,overflow:"hidden"}}><div style={{width:`${Math.round(Math.min(bdProgress,lines.length)/lines.length*100)}%`,height:"100%",background:"var(--accent)",transition:"width .3s"}}/></div>
+          <div style={{fontSize:12,color:"var(--text3)",lineHeight:1.6}}>{Math.min(bdProgress,lines.length)} of {lines.length} lines translated word by word. Keep this page open — once it's ready you can watch in real time, and the lesson is saved so you never pay for it twice.</div>
+          {prepDone&&(<>
+            <div style={{fontSize:12.5,color:"var(--weak)",lineHeight:1.5}}>{bd.filter(x=>!x).length} lines couldn't be translated{bdErr?` (${bdErr})`:""}.</div>
+            <div style={{display:"flex",gap:8}}>
+              <button className="btn btn-primary" onClick={()=>runBreakdown(videoId,lines)} style={{flex:1,padding:"12px",borderRadius:"var(--r)"}}>Retry missing lines</button>
+              <button className="btn" onClick={()=>setReady(true)} style={{flex:1,padding:"12px",borderRadius:"var(--r)"}}>Watch anyway</button>
+            </div>
+          </>)}
+        </div>
+      )}
+
+      {lines.length>0&&ready&&(
         <div>
           <div style={{position:"sticky",top:0,zIndex:5,background:"var(--bg)",padding:"12px 20px 8px"}}>
             <div style={{position:"relative",width:"100%",aspectRatio:"16/9",borderRadius:"var(--rs)",overflow:"hidden",background:"#000"}}><div ref={playerDiv} style={{position:"absolute",inset:0}}/></div>
@@ -2961,6 +3033,7 @@ Return ONLY valid JSON, no commentary: [{"i":0,"tr":"English translation","w":[{
             )}
             <div style={{display:"flex",alignItems:"center",gap:8,marginTop:4}}>
               {title&&<div style={{fontSize:11.5,color:"var(--text3)",flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{title}</div>}
+              {savedMine&&<span style={{fontSize:11,color:"var(--know)",flexShrink:0}}>Saved ✓</span>}
               <button className="btn btn-sm" disabled={libSaved} onClick={()=>addToLibrary(cat)} style={{flexShrink:0,fontSize:11.5}}>{libSaved?"In library ✓":"Add to shared library"}</button>
             </div>
           </div>
