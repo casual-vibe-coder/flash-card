@@ -2641,7 +2641,9 @@ function WatchScreen({onBack,onAddToFlashcard,decks,trackUsage,user}) {
   const [err,setErr]=useState("");
   const [genOffer,setGenOffer]=useState(false);
   const [bdProgress,setBdProgress]=useState(0);
+  const [bdErr,setBdErr]=useState("");
   const [active,setActive]=useState(0);
+  const [activeWord,setActiveWord]=useState(-1);
   const [rate,setRate]=useState(1);
   const [loopLine,setLoopLine]=useState(false);
   const [sel,setSel]=useState(null);
@@ -2659,7 +2661,7 @@ function WatchScreen({onBack,onAddToFlashcard,decks,trackUsage,user}) {
   const [library,setLibrary]=useState(null);
   const [libErr,setLibErr]=useState("");
   const [libSaved,setLibSaved]=useState(false);
-  const playerRef=useRef(null),playerDiv=useRef(null),linesRef=useRef([]),loopRef=useRef(false),activeRef=useRef(0),activeEl=useRef(null),bdRef=useRef([]);
+  const playerRef=useRef(null),playerDiv=useRef(null),linesRef=useRef([]),loopRef=useRef(false),activeRef=useRef(0),activeEl=useRef(null),bdRef=useRef([]),wordRef=useRef(-1);
   linesRef.current=lines;loopRef.current=loopLine;bdRef.current=bd;
 
   const vocabDecks=decks.filter(d=>d.deckType!=="grammar");
@@ -2701,7 +2703,7 @@ function WatchScreen({onBack,onAddToFlashcard,decks,trackUsage,user}) {
     let cached=null;
     try{ cached=JSON.parse(localStorage.getItem(watchCacheKey(vid))||"null"); }catch{}
     const base=preset&&preset.length===ls.length?preset:(cached&&cached.bd&&cached.n===ls.length?cached.bd:Array(ls.length).fill(null));
-    setBd(base);
+    setBd(base);setBdErr("");
     const todo=[];
     for(let i=0;i<ls.length;i+=WATCH_CHUNK){ if(base.slice(i,i+WATCH_CHUNK).some(x=>!x)) todo.push(i); }
     let done=ls.length-todo.reduce((n,i)=>n+Math.min(WATCH_CHUNK,ls.length-i),0);
@@ -2727,7 +2729,7 @@ Return ONLY valid JSON, no commentary: [{"i":0,"tr":"English translation","w":[{
           });
           done+=chunk.length;setBdProgress(done);
           return;
-        }catch(e){ if(attempt===1){ done+=chunk.length;setBdProgress(done); } }
+        }catch(e){ if(attempt===1){ done+=chunk.length;setBdProgress(done);setBdErr(e?.message||"AI request failed"); } }
       }
     };
     const queue=[...todo];
@@ -2828,6 +2830,20 @@ Return ONLY valid JSON, no commentary: [{"i":0,"tr":"English translation","w":[{
               if(end!=null&&t>=end){ p.seekTo(L.start,true); return; }
             }
             if(idx!==activeRef.current){ activeRef.current=idx;setActive(idx); }
+            // Estimated word highlight: captions only time whole lines, so spread
+            // the line's duration across its words by length.
+            const L2=ls[idx],b2=bdRef.current[idx];
+            let wi=-1;
+            if(b2?.w?.length&&L2?.start!=null){
+              const span=L2.dur>0?L2.dur:(ls[idx+1]?.start!=null?ls[idx+1].start-L2.start:4);
+              const frac=Math.min(0.999,Math.max(0,(t-L2.start)/Math.max(0.5,span)));
+              const wts=b2.w.map(w=>Math.max(1,(w.ar||"").replace(/[\u064B-\u065F\u0670]/g,"").length));
+              const tot=wts.reduce((a,b)=>a+b,0);
+              let acc=0;
+              for(let k=0;k<wts.length;k++){ acc+=wts[k]/tot; if(frac<acc){ wi=k; break; } }
+              if(wi<0) wi=wts.length-1;
+            }
+            if(wi!==wordRef.current){ wordRef.current=wi;setActiveWord(wi); }
           },250);
         }},
       });
@@ -2933,8 +2949,11 @@ Return ONLY valid JSON, no commentary: [{"i":0,"tr":"English translation","w":[{
             <div style={{display:"flex",gap:6,alignItems:"center",marginTop:8,flexWrap:"wrap"}}>
               {[0.5,0.75,1,1.25].map(r=>(<button key={r} className={`chip ${rate===r?"chip-on":""}`} onClick={()=>setRate(r)} style={{padding:"6px 10px",fontSize:12}}>{r}×</button>))}
               {timed&&<button className={`chip ${loopLine?"chip-on":""}`} onClick={()=>setLoopLine(v=>!v)} style={{padding:"6px 10px",fontSize:12}}><RotateCcw size={12}/> Loop line</button>}
-              <span style={{marginLeft:"auto",fontSize:11,color:"var(--text3)"}}>{bdProgress<lines.length?`Breaking down… ${bdProgress}/${lines.length}`:"Breakdown ready"}</span>
+              <span style={{marginLeft:"auto",fontSize:11,color:"var(--text3)"}}>{bdProgress<lines.length?`Breaking down… ${bdProgress}/${lines.length}`:(bd.some(x=>!x)?"Some lines missing":"Breakdown ready")}</span>
             </div>
+            {bdErr&&bdProgress>=lines.length&&(
+              <div style={{fontSize:12,color:"var(--weak)",marginTop:6,lineHeight:1.5}}>Word breakdown failed: {bdErr} <button className="btn btn-sm" onClick={()=>runBreakdown(videoId,lines)} style={{marginLeft:6,fontSize:11.5}}>Retry</button></div>
+            )}
             <div style={{display:"flex",alignItems:"center",gap:8,marginTop:4}}>
               {title&&<div style={{fontSize:11.5,color:"var(--text3)",flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{title}</div>}
               <button className="btn btn-sm" disabled={libSaved} onClick={()=>addToLibrary(cat)} style={{flexShrink:0,fontSize:11.5}}>{libSaved?"In library ✓":"Add to shared library"}</button>
@@ -2949,9 +2968,9 @@ Return ONLY valid JSON, no commentary: [{"i":0,"tr":"English translation","w":[{
                   {b?.w?.length?(
                     <div className="ar" style={{display:"flex",flexWrap:"wrap",flexDirection:"row-reverse",justifyContent:"flex-start",gap:on?"10px 14px":"6px 10px"}}>
                       {b.w.map((w,k)=>(
-                        <div key={k} onClick={e=>{e.stopPropagation();setSel({...w,sentence:l.text,tr:b.tr,t:l.start});setAdded(false);}} style={{textAlign:"center",cursor:"pointer",padding:"2px 4px",borderRadius:6}}>
+                        <div key={k} onClick={e=>{e.stopPropagation();setSel({...w,sentence:l.text,tr:b.tr,t:l.start});setAdded(false);}} style={{textAlign:"center",cursor:"pointer",padding:"3px 6px",borderRadius:8,background:on&&k===activeWord?"var(--accent)":"transparent",color:on&&k===activeWord?"#fff":"inherit",transition:"background .12s"}}>
                           <div style={{fontSize:on?24:19,lineHeight:1.5}}>{w.ar}</div>
-                          <div style={{direction:"ltr",fontFamily:"inherit",fontSize:on?11.5:10,color:"var(--text3)",lineHeight:1.3}}>{w.en}</div>
+                          <div style={{direction:"ltr",fontFamily:"inherit",fontSize:on?13:11.5,fontWeight:500,color:on&&k===activeWord?"#fff":"var(--text2)",lineHeight:1.3}}>{w.en}</div>
                         </div>
                       ))}
                     </div>
