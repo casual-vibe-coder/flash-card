@@ -1,3 +1,4 @@
+import { captionWords } from '../watch-timing.js';
 // api/yt-transcript.js — Vercel serverless function
 // GET /api/yt-transcript?v=<videoId>  →  { videoId, title, lang, auto, lines:[{start,dur,text}] }
 // Reads the video's own Arabic captions (no audio download, no API key).
@@ -10,6 +11,7 @@ const WATCH_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/53
 // Reads ytInitialPlayerResponse out of the public watch page.
 async function getPlayer(videoId) {
   const r = await fetch('https://www.youtube.com/watch?v=' + videoId, {
+    signal: AbortSignal.timeout(6000),
     headers: { 'User-Agent': WATCH_UA, 'Accept-Language': 'ar,en;q=0.8', Cookie: 'CONSENT=YES+1' },
   });
   if (!r.ok) throw new Error('watch_' + r.status);
@@ -36,7 +38,7 @@ export async function fetchTranscript(videoId) {
   const track = ar.find(t => t.kind !== 'asr') || ar[0];
   if (!track) return { error: 'no_arabic_captions', available: tracks.map(t => t.languageCode) };
   const url = track.baseUrl.replace(/&fmt=[^&]*/, '') + '&fmt=json3';
-  const r = await fetch(url, { headers: { 'User-Agent': UA } });
+  const r = await fetch(url, { signal: AbortSignal.timeout(6000), headers: { 'User-Agent': UA } });
   const text = await r.text();
   if (!text) return { error: 'empty_caption_response' };
   const data = JSON.parse(text);
@@ -45,7 +47,7 @@ export async function fetchTranscript(videoId) {
     if (!ev.segs) continue;
     const t = decodeEntities(ev.segs.map(s => s.utf8 || '').join('')).replace(/\s+/g, ' ').trim();
     if (!t) continue;
-    lines.push({ start: (ev.tStartMs || 0) / 1000, dur: (ev.dDurationMs || 0) / 1000, text: t });
+    lines.push({ start: (ev.tStartMs || 0) / 1000, dur: (ev.dDurationMs || 0) / 1000, text: t, ...(captionWords(ev, decodeEntities) ? { words: captionWords(ev, decodeEntities) } : {}) });
   }
   return {
     videoId,
@@ -53,7 +55,7 @@ export async function fetchTranscript(videoId) {
     durationSec: +(player?.videoDetails?.lengthSeconds || 0),
     lang: track.languageCode,
     auto: track.kind === 'asr',
-    lines,
+    lines: lines.sort((a,b) => a.start-b.start),
   };
 }
 

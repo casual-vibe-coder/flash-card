@@ -1,3 +1,4 @@
+import { playbackPosition, lineEnd } from "./watch-timing.js";
 import { useState, useRef, useEffect, useCallback } from "react";
 import { auth, googleProvider, db, storage } from "./firebase.js";
 import { signInWithPopup, signOut, onAuthStateChanged } from "firebase/auth";
@@ -2616,7 +2617,7 @@ function loadYouTubeApi(){
   });
   return _ytApiPromise;
 }
-const WATCH_CHUNK=3;
+const WATCH_CHUNK=8;
 // Caption noise (pause markers, music notes, [sound tags]) isn't speech.
 const cleanCaption=(t)=>(t||"").replace(/\*+|♪+|\[[^\]]*\]|\([^)]*\)/g," ").replace(/\s+/g," ").trim();
 const watchCacheKey=(id)=>`watch:v1:${id}`;
@@ -2653,6 +2654,19 @@ function WatchScreen({onBack,onAddToFlashcard,decks,trackUsage,user}) {
   const [activeWord,setActiveWord]=useState(-1);
   const [rate,setRate]=useState(1);
   const [loopLine,setLoopLine]=useState(false);
+  const [syncOffset,setSyncOffset]=useState(0);
+  const syncOffsetRef=useRef(0);
+  syncOffsetRef.current=syncOffset;
+  useEffect(()=>{
+    let offset=0;
+    try{ offset=Number(localStorage.getItem(`watch:sync:${videoId}`))||0; }catch{}
+    setSyncOffset(offset);
+  },[videoId]);
+  const adjustSync=delta=>{
+    const offset=Math.round(Math.max(-10,Math.min(10,syncOffset+delta))*100)/100;
+    setSyncOffset(offset);
+    try{ localStorage.setItem(`watch:sync:${videoId}`,String(offset)); }catch{}
+  };
   const [sel,setSel]=useState(null);
   const [deckId,setDeckId]=useState("");
   const [added,setAdded]=useState(false);
@@ -2740,15 +2754,21 @@ function WatchScreen({onBack,onAddToFlashcard,decks,trackUsage,user}) {
     // anything already translated for a duplicate line fills its twins
     for(const u of uniq){ const have=u.lines.map(i=>base[i]).find(Boolean); if(have) u.lines.forEach(i=>{ if(!base[i]) base[i]=have; }); }
     setBd(base);setBdErr("");
+    const pending=uniq.filter(u=>!base[u.lines[0]]);
     const todo=[];
-    for(let i=0;i<uniq.length;i+=WATCH_CHUNK){ if(uniq.slice(i,i+WATCH_CHUNK).some(u=>!base[u.lines[0]])) todo.push(i); }
+    let batch=[],wordCount=0;
+    for(const u of pending){
+      const count=u.t.split(/\s+/).length;
+      if(batch.length&&(batch.length>=WATCH_CHUNK||wordCount+count>65)){ todo.push(batch);batch=[];wordCount=0; }
+      batch.push(u);wordCount+=count;
+    }
+    if(batch.length) todo.push(batch);
     const totalU=uniq.length;
-    let doneU=totalU-todo.reduce((n,i)=>n+Math.min(WATCH_CHUNK,totalU-i),0);
+    let doneU=totalU-pending.length;
     const alreadyComplete=todo.length===0;
-    setBdProgress(totalU?Math.round(doneU/totalU*ls.length):ls.length);
+    setBdProgress(base.filter(Boolean).length);
     let sinceSave=0;
-    const work=async(start)=>{
-      const chunk=uniq.slice(start,start+WATCH_CHUNK);
+    const work=async(chunk)=>{
       const prompt=`You are an Arabic teacher. Below are numbered lines of Modern Standard Arabic from a video. For EACH line split it into words (split on spaces; keep attached particles و ب ل ك ف ال attached). Give each word: "a" = the word with full vowel marks (if the line already has vowel marks, copy them exactly), "e" = SHORT English meaning in context (1-3 words), "p" = n (noun) / v (verb) / o (other), "l" = dictionary base form with vowel marks. Also "t" = a natural English translation of the whole line.
 
 Lines:
@@ -2758,9 +2778,9 @@ Return ONLY valid JSON, no commentary: [{"i":0,"t":"translation","w":[{"a":"..",
       for(let attempt=0;attempt<3;attempt++){
         try{
           // attempt 1 uses your chosen model; if it stalls, retry on a fast reliable one
-          const raw=await callClaude(prompt,1500,"watchBreakdown",trackUsage,40000,attempt>0?"openai/gpt-4o-mini":null);
+          const raw=await callClaude(prompt,Math.max(1800,chunk.reduce((n,u)=>n+u.t.split(/\s+/).length,0)*65),"watchBreakdown",trackUsage,40000,attempt>0?"openai/gpt-4o-mini":null);
           const arr=extractJSON(raw);
-          if(!Array.isArray(arr)) throw new Error("the AI didn't return valid JSON");
+          if(!Array.isArray(arr)||chunk.some((_,i)=>!arr.some(it=>+it.i===i&&Array.isArray(it.w)&&it.w.length))) throw new Error("the AI returned an incomplete breakdown");
           setBd(prev=>{
             const next=[...prev];
             for(const it of arr){
@@ -2768,6 +2788,7 @@ Return ONLY valid JSON, no commentary: [{"i":0,"t":"translation","w":[{"a":"..",
               const val={tr:it.t||"",w:it.w.filter(w=>w&&w.a).map(w=>({ar:w.a,en:w.e||"",pos:w.p==="v"?"verb":w.p==="n"?"noun":"other",lemma:w.l||w.a}))};
               u.lines.forEach(i=>{ next[i]=val; });
             }
+            bdRef.current=next;
             try{ localStorage.setItem(watchCacheKey(vid),JSON.stringify({n:ls.length,bd:next})); }catch{}
             return next;
           });
@@ -2780,7 +2801,7 @@ Return ONLY valid JSON, no commentary: [{"i":0,"t":"translation","w":[{"a":"..",
     };
     // Work nearest the line you're watching first; 8 batches in parallel.
     const queue=[...todo];
-    const next=()=>{ const a=activeRef.current; let bi=0; for(let i=1;i<queue.length;i++){ if(Math.abs(queue[i]-a)<Math.abs(queue[bi]-a)) bi=i; } return queue.splice(bi,1)[0]; };
+    const next=()=>{ const a=activeRef.current; let bi=0; for(let i=1;i<queue.length;i++){ if(Math.abs(queue[i][0].lines[0]-a)<Math.abs(queue[bi][0].lines[0]-a)) bi=i; } return queue.splice(bi,1)[0]; };
     await Promise.all(Array.from({length:8},async()=>{ while(queue.length) await work(next()); }));
     await new Promise(r=>setTimeout(r,80));   // let the last setBd commit
     const finalBd=bdRef.current;
@@ -2892,30 +2913,14 @@ Return ONLY valid JSON, no commentary: [{"i":0,"t":"translation","w":[{"a":"..",
             const p=playerRef.current;
             if(!p||!p.getCurrentTime) return;
             const t=p.getCurrentTime(),ls=linesRef.current;
-            let idx=-1;
-            for(let i=0;i<ls.length;i++){ if(ls[i].start!=null&&ls[i].start<=t+0.15) idx=i; else if(ls[i].start!=null) break; }
-            if(idx<0) return;
             if(loopRef.current){
               const L=ls[activeRef.current];
-              const end=L?.start!=null?(L.dur>0?L.start+L.dur:(ls[activeRef.current+1]?.start??L.start+4)):null;
-              if(end!=null&&t>=end){ p.seekTo(L.start,true); return; }
+              if(L?.start!=null&&t>=lineEnd(ls,activeRef.current)){ p.seekTo(L.start,true); return; }
             }
+            const {index:idx,word:wi}=playbackPosition(ls,bdRef.current,t-syncOffsetRef.current);
             if(idx!==activeRef.current){ activeRef.current=idx;setActive(idx); }
-            // Estimated word highlight: captions only time whole lines, so spread
-            // the line's duration across its words by length.
-            const L2=ls[idx],b2=bdRef.current[idx];
-            let wi=-1;
-            if(b2?.w?.length&&L2?.start!=null){
-              const span=L2.dur>0?L2.dur:(ls[idx+1]?.start!=null?ls[idx+1].start-L2.start:4);
-              const frac=Math.min(0.999,Math.max(0,(t-L2.start)/Math.max(0.5,span)));
-              const wts=b2.w.map(w=>Math.max(1,(w.ar||"").replace(/[\u064B-\u065F\u0670]/g,"").length));
-              const tot=wts.reduce((a,b)=>a+b,0);
-              let acc=0;
-              for(let k=0;k<wts.length;k++){ acc+=wts[k]/tot; if(frac<acc){ wi=k; break; } }
-              if(wi<0) wi=wts.length-1;
-            }
             if(wi!==wordRef.current){ wordRef.current=wi;setActiveWord(wi); }
-          },250);
+          },50);
         }},
       });
     });
@@ -2926,7 +2931,7 @@ Return ONLY valid JSON, no commentary: [{"i":0,"t":"translation","w":[{"a":"..",
 
   const seek=(i)=>{
     const L=lines[i];
-    activeRef.current=i;setActive(i);
+    activeRef.current=i;setActive(i);wordRef.current=-1;setActiveWord(-1);
     if(L?.start!=null) try{playerRef.current?.seekTo(L.start,true);playerRef.current?.playVideo?.();}catch{}
   };
   const timed=lines.some(l=>l.start!=null);
@@ -3046,6 +3051,13 @@ Return ONLY valid JSON, no commentary: [{"i":0,"t":"translation","w":[{"a":"..",
               {timed&&<button className={`chip ${loopLine?"chip-on":""}`} onClick={()=>setLoopLine(v=>!v)} style={{padding:"6px 10px",fontSize:12}}><RotateCcw size={12}/> Loop line</button>}
               <span style={{marginLeft:"auto",fontSize:11,color:"var(--text3)"}}>{bdProgress<lines.length?`Breaking down… ${bdProgress}/${lines.length}`:(bd.some(x=>!x)?"Some lines missing":"Breakdown ready")}</span>
             </div>
+            {timed&&<div style={{display:"flex",gap:6,alignItems:"center",flexWrap:"wrap",marginTop:6,fontSize:11.5,color:"var(--text3)"}}>
+              <span>Caption sync: {syncOffset>0?"+":""}{syncOffset.toFixed(2)}s</span>
+              <button className="chip" onClick={()=>adjustSync(-0.25)}>Earlier −0.25s</button>
+              <button className="chip" onClick={()=>adjustSync(0.25)}>Later +0.25s</button>
+              {syncOffset!==0&&<button className="chip" onClick={()=>adjustSync(-syncOffset)}>Reset</button>}
+              <span>Word timing is estimated when captions have no word timestamps.</span>
+            </div>}
             {bdErr&&bdProgress>=lines.length&&(
               <div style={{fontSize:12,color:"var(--weak)",marginTop:6,lineHeight:1.5}}>Word breakdown failed: {bdErr} <button className="btn btn-sm" onClick={()=>runBreakdown(videoId,lines)} style={{marginLeft:6,fontSize:11.5}}>Retry</button></div>
             )}
