@@ -1,4 +1,4 @@
-import { playbackPosition, lineEnd } from "./watch-timing.js";
+import { playbackPosition, lineEnd, captionTime, videoTime as captionVideoTime } from "./watch-timing.js";
 import { useState, useRef, useEffect, useCallback } from "react";
 import { auth, googleProvider, db, storage } from "./firebase.js";
 import { signInWithPopup, signOut, onAuthStateChanged } from "firebase/auth";
@@ -2653,17 +2653,19 @@ function WatchScreen({onBack,onAddToFlashcard,decks,trackUsage,user}) {
   const [active,setActive]=useState(0);
   const [activeWord,setActiveWord]=useState(-1);
   const [rate,setRate]=useState(1);
+  const rateRef=useRef(rate);rateRef.current=rate;
   const [loopLine,setLoopLine]=useState(false);
   const [syncOffset,setSyncOffset]=useState(0);
   const syncOffsetRef=useRef(0);
   syncOffsetRef.current=syncOffset;
   useEffect(()=>{
     let offset=0;
-    try{ offset=Number(localStorage.getItem(`watch:sync:${videoId}`))||0; }catch{}
-    setSyncOffset(offset);
+    try{ const stored=Number(localStorage.getItem(`watch:sync:${videoId}`)); offset=Number.isFinite(stored)?Math.max(-10,Math.min(10,stored)):0; }catch{}
+    syncOffsetRef.current=offset;setSyncOffset(offset);
   },[videoId]);
   const adjustSync=delta=>{
-    const offset=Math.round(Math.max(-10,Math.min(10,syncOffset+delta))*100)/100;
+    const offset=Math.round(Math.max(-10,Math.min(10,syncOffsetRef.current+delta))*100)/100;
+    syncOffsetRef.current=offset;
     setSyncOffset(offset);
     try{ localStorage.setItem(`watch:sync:${videoId}`,String(offset)); }catch{}
   };
@@ -2815,7 +2817,7 @@ Return ONLY valid JSON, no commentary: [{"i":0,"t":"translation","w":[{"a":"..",
   };
 
   const startWithLines=(vid,ls,ttl,meta,preset,src)=>{
-    setVideoId(vid);setTitle(ttl||meta?.title||"");setVidMeta(meta||null);setLines(ls);setActive(0);activeRef.current=0;
+    setVideoId(vid);setTitle(ttl||meta?.title||"");setVidMeta(meta||null);setLines(ls);linesRef.current=ls;setActive(0);activeRef.current=0;wordRef.current=-1;setActiveWord(-1);
     setGenOffer(false);setErr("");setLibSaved(false);setSavedMine(src==="mine");
     vidMetaRef.current=meta||null;titleRef.current=ttl||meta?.title||"";
     if(src!=="mine"&&src!=="shared") saveMine(vid,ls,preset||Array(ls.length).fill(null),meta||null,ttl||meta?.title||"");
@@ -2909,15 +2911,17 @@ Return ONLY valid JSON, no commentary: [{"i":0,"t":"translation","w":[{"a":"..",
         videoId,width:"100%",height:"100%",
         playerVars:{playsinline:1,rel:0,cc_load_policy:0,modestbranding:1},
         events:{onReady:()=>{
+          if(cancelled) return;
+          try{playerRef.current?.setPlaybackRate?.(rateRef.current);}catch{}
           timer=setInterval(()=>{
             const p=playerRef.current;
             if(!p||!p.getCurrentTime) return;
-            const t=p.getCurrentTime(),ls=linesRef.current;
+            const t=captionTime(p.getCurrentTime(),syncOffsetRef.current),ls=linesRef.current;
             if(loopRef.current){
               const L=ls[activeRef.current];
-              if(L?.start!=null&&t>=lineEnd(ls,activeRef.current)){ p.seekTo(L.start,true); return; }
+              if(L?.start!=null&&t>=lineEnd(ls,activeRef.current)){ p.seekTo(captionVideoTime(L.start,syncOffsetRef.current),true); return; }
             }
-            const {index:idx,word:wi}=playbackPosition(ls,bdRef.current,t-syncOffsetRef.current);
+            const {index:idx,word:wi}=playbackPosition(ls,bdRef.current,t);
             if(idx!==activeRef.current){ activeRef.current=idx;setActive(idx); }
             if(wi!==wordRef.current){ wordRef.current=wi;setActiveWord(wi); }
           },50);
@@ -2927,12 +2931,12 @@ Return ONLY valid JSON, no commentary: [{"i":0,"t":"translation","w":[{"a":"..",
     return()=>{ cancelled=true; if(timer) clearInterval(timer); try{playerRef.current?.destroy();}catch{} playerRef.current=null; };
   },[videoId,lines.length,ready]);
   useEffect(()=>{ try{playerRef.current?.setPlaybackRate?.(rate);}catch{} },[rate,videoId,ready]);
-  useEffect(()=>{ activeEl.current?.scrollIntoView?.({block:"center",behavior:"smooth"}); },[active]);
+  useEffect(()=>{ activeEl.current?.scrollIntoView?.({block:"center",behavior:"instant"}); },[active]);
 
   const seek=(i)=>{
     const L=lines[i];
     activeRef.current=i;setActive(i);wordRef.current=-1;setActiveWord(-1);
-    if(L?.start!=null) try{playerRef.current?.seekTo(L.start,true);playerRef.current?.playVideo?.();}catch{}
+    if(L?.start!=null) try{playerRef.current?.seekTo(captionVideoTime(L.start,syncOffsetRef.current),true);playerRef.current?.playVideo?.();}catch{}
   };
   const timed=lines.some(l=>l.start!=null);
 
@@ -3053,10 +3057,10 @@ Return ONLY valid JSON, no commentary: [{"i":0,"t":"translation","w":[{"a":"..",
             </div>
             {timed&&<div style={{display:"flex",gap:6,alignItems:"center",flexWrap:"wrap",marginTop:6,fontSize:11.5,color:"var(--text3)"}}>
               <span>Caption sync: {syncOffset>0?"+":""}{syncOffset.toFixed(2)}s</span>
-              <button className="chip" onClick={()=>adjustSync(-0.25)}>Earlier −0.25s</button>
-              <button className="chip" onClick={()=>adjustSync(0.25)}>Later +0.25s</button>
+              <button className="chip" onClick={()=>adjustSync(-0.25)}>Text earlier −0.25s</button>
+              <button className="chip" onClick={()=>adjustSync(0.25)}>Text later +0.25s</button>
               {syncOffset!==0&&<button className="chip" onClick={()=>adjustSync(-syncOffset)}>Reset</button>}
-              <span>Word timing is estimated when captions have no word timestamps.</span>
+              <span>Audio ahead of the text? Choose Text earlier. Word timing is estimated without matching caption timestamps.</span>
             </div>}
             {bdErr&&bdProgress>=lines.length&&(
               <div style={{fontSize:12,color:"var(--weak)",marginTop:6,lineHeight:1.5}}>Word breakdown failed: {bdErr} <button className="btn btn-sm" onClick={()=>runBreakdown(videoId,lines)} style={{marginLeft:6,fontSize:11.5}}>Retry</button></div>
@@ -3074,16 +3078,16 @@ Return ONLY valid JSON, no commentary: [{"i":0,"t":"translation","w":[{"a":"..",
                 <div key={i} ref={on?activeEl:null} onClick={()=>seek(i)}
                   style={{padding:on?"14px 12px":"10px 12px",borderRadius:"var(--rs)",cursor:"pointer",border:`1.5px solid ${on?"var(--accent)":"var(--border)"}`,background:on?"var(--accent-bg)":"var(--surface)",opacity:on||!timed?1:.8}}>
                   {b?.w?.length?(
-                    <div className="ar" style={{display:"flex",flexWrap:"wrap",flexDirection:"row-reverse",justifyContent:"flex-start",gap:on?"10px 14px":"6px 10px"}}>
+                    <div className="ar" dir="rtl" style={{direction:"rtl",display:"flex",flexWrap:"wrap",flexDirection:"row",justifyContent:"flex-start",gap:on?"10px 14px":"6px 10px"}}>
                       {b.w.map((w,k)=>(
-                        <div key={k} onClick={e=>{e.stopPropagation();setSel({...w,sentence:l.text,tr:b.tr,t:l.start});setAdded(false);}} style={{textAlign:"center",cursor:"pointer",padding:"3px 6px",borderRadius:8,background:on&&k===activeWord?"var(--accent)":"transparent",color:on&&k===activeWord?"#fff":"inherit",transition:"background .12s"}}>
-                          <div style={{fontSize:on?24:19,lineHeight:1.5}}>{w.ar}</div>
-                          <div style={{direction:"ltr",fontFamily:"inherit",fontSize:on?13:11.5,fontWeight:500,color:on&&k===activeWord?"#fff":"var(--text2)",lineHeight:1.3}}>{w.en}</div>
+                        <div key={k} onClick={e=>{e.stopPropagation();setSel({...w,sentence:l.text,tr:b.tr,t:l.start});setAdded(false);}} style={{textAlign:"center",cursor:"pointer",padding:"3px 6px",borderRadius:8,background:on&&k===activeWord?"var(--accent)":"transparent",color:on&&k===activeWord?"#fff":"inherit",transition:"none"}}>
+                          <div dir="rtl" lang="ar" style={{fontSize:on?24:19,lineHeight:1.5}}>{w.ar}</div>
+                          <div dir="ltr" lang="en" style={{direction:"ltr",fontFamily:"inherit",fontSize:on?13:11.5,fontWeight:500,color:on&&k===activeWord?"#fff":"var(--text2)",lineHeight:1.3}}>{w.en}</div>
                         </div>
                       ))}
                     </div>
                   ):(<div className="ar" style={{fontSize:on?22:18,textAlign:"right"}}>{l.text}</div>)}
-                  {b?.tr&&<div style={{fontSize:on?13.5:12,color:"var(--text2)",marginTop:8,lineHeight:1.5}}>{b.tr}</div>}
+                  {b?.tr&&<div dir="ltr" lang="en" style={{textAlign:"left",fontSize:on?13.5:12,color:"var(--text2)",marginTop:8,lineHeight:1.5}}>{b.tr}</div>}
                 </div>
               );
             })}
