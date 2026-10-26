@@ -1,3 +1,7 @@
+import useWatchProgress from "./useWatchProgress.js";
+import WatchProgress, { LevelOptions } from "./WatchProgress.jsx";
+import { PlaybackTracker, createWatchSession, mergeWatchStudyLog, progressSummary, timeLabel } from "./watch-progress.js";
+import { matchesLevel, levelInfo, levelEvidence, assessmentFingerprint, buildLevelPrompt, parseLevelAssessment } from "./watch-levels.js";
 import WatchCosts from "./WatchCosts.jsx";
 import { filterVideos, searchQuery, normalizeBreakdown, prepareWatchLesson } from "./watch-library.js";
 import { requestTranscript } from "./watch-transcript.js";
@@ -409,9 +413,9 @@ function getPerformanceInsights(cardStates,studyLog){
   if(maxMod&&minMod&&maxMod[1]>0&&minMod[1]===0) insights.push({icon:"📊",text:`${maxMod[0]} is your strongest module. Consider more ${minMod[0]} practice.`,type:"info"});
 
   const target=studyLog?.targets?.weeklyMinutes||150;
-  if(weekMin>=target) insights.push({icon:"✅",text:`On track — ${weekMin} min this week (target: ${target} min).`,type:"success"});
-  else if(weekMin>=target*0.5) insights.push({icon:"🔄",text:`${weekMin} of ${target} min target this week — ${Math.round(weekMin/target*100)}% done.`,type:"info"});
-  else if(weekMin>0) insights.push({icon:"⏰",text:`Behind target — only ${weekMin} of ${target} min this week.`,type:"warning"});
+  if(weekMin>=target) insights.push({icon:"✅",text:`On track — ${Math.round(weekMin)} min this week (target: ${target} min).`,type:"success"});
+  else if(weekMin>=target*0.5) insights.push({icon:"🔄",text:`${Math.round(weekMin)} of ${target} min target this week — ${Math.round(weekMin/target*100)}% done.`,type:"info"});
+  else if(weekMin>0) insights.push({icon:"⏰",text:`Behind target — only ${Math.round(weekMin)} of ${target} min this week.`,type:"warning"});
 
   return insights.slice(0,4);
 }
@@ -617,6 +621,7 @@ const MODEL_FEATURES = [
   {tag:"dictation", label:"Dictation",              desc:"Dictation sentence generation"},
   {tag:"grammar",   label:"Grammar import",         desc:"Extract grammar cards from notes/PDFs — pick a vision-capable model (e.g. gpt-4o-mini) if you import screenshots"},
   {tag:"vocab",     label:"Vocab import",           desc:"Extract noun/verb flashcards from screenshots/PDFs — pick a vision-capable model (e.g. gpt-4o-mini) if you import photos"},
+  {tag:"watchLevel",label:"Video difficulty",desc:"Estimate Arabic video difficulty from transcript evidence before watching"},
   {tag:"watchBreakdown",label:"Watch word breakdown",desc:"Word-by-word translation of video transcripts (long answers — a cheap fast model is ideal)"},
   {tag:"other",     label:"Topics & conversation",  desc:"Topic generation, chat replies, misc"},
 ];
@@ -626,7 +631,7 @@ const USAGE_LABELS = {
   reading:"Reading Passage", listening:"Listening Content",
   wordLookup:"Word Lookup", regen:"Form Regeneration",
   island:"Language Island", dictation:"Dictation", grammar:"Grammar Import",
-  vocab:"Vocab Import",
+  vocab:"Vocab Import", watchLevel:"Video Difficulty", watchBreakdown:"Video Word Breakdown",
   imageNB1:"Image · Nano Banana 1", imageNB2:"Image · Nano Banana 2",
   ttsGoogle:"Voice · Google TTS", sttWhisper:"Voice · OpenAI Whisper",
 };
@@ -1886,7 +1891,7 @@ function renderDeckCard(deck,cardStates,onOpenDeck,isGrammar=false,poolThreshold
   );
 }
 
-function HomeScreen({decks,cardStates,onOpenDeck,onSettings,onCreateDeck,onReading,onListening,onConversation,onDictation,onCapsules,onSearch,onTranslate,onWatch,onProgress,onMasterReview,onGuide,onPresets,onGrammarImport,onVocabImport,darkMode,onToggleDark,studyLog,poolThresholdDays,immersionMode,immersionNudgeShown,onImmersionNudgeAction}) {
+function HomeScreen({watchHours,decks,cardStates,onOpenDeck,onSettings,onCreateDeck,onReading,onListening,onConversation,onDictation,onCapsules,onSearch,onTranslate,onWatch,onProgress,onMasterReview,onGuide,onPresets,onGrammarImport,onVocabImport,darkMode,onToggleDark,studyLog,poolThresholdDays,immersionMode,immersionNudgeShown,onImmersionNudgeAction}) {
   const [deckSort,setDeckSort]=useState(()=>localStorage.getItem("arabic_fc_deck_sort")||"newest");
   useEffect(()=>{localStorage.setItem("arabic_fc_deck_sort",deckSort);},[deckSort]);
   const sortDecks=(arr)=>{
@@ -2019,7 +2024,7 @@ function HomeScreen({decks,cardStates,onOpenDeck,onSettings,onCreateDeck,onReadi
           </div>
           <div className="module-card" style={{borderColor:"var(--info-border)",background:"var(--info-bg)"}} onClick={onWatch}>
             <div style={{width:40,height:40,borderRadius:12,background:"var(--info)",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}><Play size={19} color="white"/></div>
-            <div style={{flex:1}}><div style={{fontWeight:700,fontSize:14.5,color:"var(--info)"}}>Watch</div><div style={{fontSize:12.5,color:"var(--text2)",marginTop:2}}>YouTube videos with word-for-word breakdown</div></div>
+            <div style={{flex:1}}><div style={{fontWeight:700,fontSize:14.5,color:"var(--info)"}}>Watch</div><div style={{fontSize:12.5,color:"var(--text2)",marginTop:2}}>YouTube videos with word-for-word breakdown · {watchHours||"0.00"} hours watched</div></div>
             <ChevronRight size={15} color="var(--info)"/>
           </div>
           <div className="module-card" style={{borderColor:"var(--listen-border)",background:"var(--listen-bg)"}} onClick={onListening}>
@@ -2637,7 +2642,31 @@ const WATCH_CATEGORIES=[
 ];
 const fmtDur=(s)=>{ if(!s) return ""; const m=Math.floor(s/60),r=s%60; return m>=60?`${Math.floor(m/60)}:${String(m%60).padStart(2,"0")}:${String(r).padStart(2,"0")}`:`${m}:${String(r).padStart(2,"0")}`; };
 
-function WatchScreen({onBack,onAddToFlashcard,decks,trackUsage,user}) {
+function WatchScreen({onBack,onAddToFlashcard,decks,trackUsage,user,watchProgress}) {
+  const [lessonEntered,setLessonEntered]=useState(false);
+  const [assessment,setAssessment]=useState(null);const [levelBusy,setLevelBusy]=useState(false);const [levelError,setLevelError]=useState("");
+  const trackerRef=useRef(null),progressRef=useRef(watchProgress),levelRunRef=useRef(0);
+  progressRef.current=watchProgress;
+  const flushWatch=(cloud=true)=>{const tracker=trackerRef.current;if(tracker?.record.seconds>0)progressRef.current.save(tracker.snapshot(),cloud);};
+  const estimateLevel=async(vid,ls,ttl)=>{
+    const run=++levelRunRef.current;setAssessment(null);setLevelError("");setLevelBusy(true);
+    try{
+      const evidence=levelEvidence(ls,ttl);if(!evidence.sufficient)throw Error("Too little Arabic transcript to estimate reliably. You can watch unrated.");
+      const model=pickModelForTag("watchLevel"),fingerprint=await assessmentFingerprint(vid,ls,model);
+      if(run!==levelRunRef.current)return;
+      const cached=progressRef.current.records.find(r=>r.kind==='assessment'&&r.videoId===vid&&r.fingerprint===fingerprint);
+      const result=cached||parseLevelAssessment(await callClaude(buildLevelPrompt(evidence),650,"watchLevel",trackUsage,40000,model,recordWatchCost),{videoId:vid,fingerprint,model,evidence});
+      if(run!==levelRunRef.current)return;
+      setAssessment(result);if(!cached)progressRef.current.save({...result,owner:progressRef.current.owner});
+    }catch(e){if(run===levelRunRef.current)setLevelError(e.message||"Level estimate unavailable. You can watch unrated.");}
+    finally{if(run===levelRunRef.current)setLevelBusy(false);}
+  };
+  useEffect(()=>{flushWatch();trackerRef.current=null;levelRunRef.current++;setLessonEntered(false);setAssessment(null);setLevelBusy(false);setLevelError("");},[watchProgress.owner]);
+  const beginWatching=()=>{
+    trackerRef.current=new PlaybackTracker(createWatchSession({id:crypto.randomUUID(),owner:watchProgress.owner,videoId,title,assessment}));
+    setLessonEntered(true);
+  };
+
   const [billed,setBilled]=useState({usd:0,requests:0,unknown:0});
   const recordWatchCost=usage=>setBilled(prev=>({usd:prev.usd+(Number.isFinite(usage?.cost)?usage.cost:0),requests:prev.requests+1,unknown:prev.unknown+(Number.isFinite(usage?.cost)?0:1)}));
   const [tab,setTab]=useState("explore");
@@ -2694,6 +2723,7 @@ function WatchScreen({onBack,onAddToFlashcard,decks,trackUsage,user}) {
   const [canServiceSearch,setCanServiceSearch]=useState(false);
   const searchRequestRef=useRef(null),searchSnapshotRef=useRef(null);
   const [libraryQuery,setLibraryQuery]=useState("");
+  const [libraryLevel,setLibraryLevel]=useState("all");
   const [mineErr,setMineErr]=useState("");
   // shared library
   const [library,setLibrary]=useState(null);
@@ -2847,6 +2877,7 @@ Return ONLY valid JSON, no commentary: [{"i":0,"t":"translation","w":[{"a":"..",
   const startWithLines=(vid,ls,ttl,meta,preset,src)=>{
     if(!preset){try{const cached=JSON.parse(localStorage.getItem(watchCacheKey(vid))||"null");if(cached?.n===ls.length)preset=cached.bd;}catch{}}
     const prepared=prepareWatchLesson(ls,preset);ls=prepared.lines;preset=prepared.breakdown;
+    flushWatch();trackerRef.current=null;setLessonEntered(false);estimateLevel(vid,ls,ttl||meta?.title||"");
     setVideoId(vid);setTitle(ttl||meta?.title||"");setVidMeta(meta||null);setLines(ls);linesRef.current=ls;setActive(0);activeRef.current=0;wordRef.current=-1;setActiveWord(-1);
     setGenOffer(false);setErr("");setLibSaved(false);setSavedMine(src==="mine");
     vidMetaRef.current=meta||null;titleRef.current=ttl||meta?.title||"";
@@ -2857,11 +2888,13 @@ Return ONLY valid JSON, no commentary: [{"i":0,"t":"translation","w":[{"a":"..",
   const readJob=vid=>{try{return JSON.parse(localStorage.getItem(jobKey(vid))||'null')?.jobId||null;}catch{return null;}};
   const forgetJob=vid=>{try{localStorage.removeItem(jobKey(vid));}catch{}setPendingJob(null);};
   const closeVideo=()=>{
+    flushWatch();trackerRef.current=null;levelRunRef.current++;setLessonEntered(false);setAssessment(null);
     transcriptRef.current?.abort();generationLockRef.current=false;watchSessionRef.current++;breakdownRunRef.current++;
     setReady(false);setPrepDone(false);setLines([]);setBd([]);setVideoId(null);setErr("");setGenOffer(false);setLoading(false);setTranscriptStatus("");setPendingJob(null);
   };
-  useEffect(()=>()=>{transcriptRef.current?.abort();searchRequestRef.current?.abort();watchSessionRef.current++;breakdownRunRef.current++;},[]);
+  useEffect(()=>()=>{flushWatch();levelRunRef.current++;transcriptRef.current?.abort();searchRequestRef.current?.abort();watchSessionRef.current++;breakdownRunRef.current++;},[]);
   const openVideo=async(vid,meta)=>{
+    flushWatch();trackerRef.current=null;levelRunRef.current++;setLessonEntered(false);
     transcriptRef.current?.abort();generationLockRef.current=false;const controller=new AbortController();transcriptRef.current=controller;
     const session=++watchSessionRef.current;breakdownRunRef.current++;
     const current=()=>session===watchSessionRef.current&&!controller.signal.aborted;
@@ -2931,27 +2964,33 @@ Return ONLY valid JSON, no commentary: [{"i":0,"t":"translation","w":[{"a":"..",
     finally{if(searchRequestRef.current===controller)setSearching(false);}
   };
   const changeSearch=(value)=>{setQuery(value);setNextTok(null);searchRequestRef.current?.abort();setSearching(false);};
-  const visibleMine=filterVideos(mine,libraryQuery),visibleLibrary=filterVideos(library,libraryQuery);
+  const videoAssessment=id=>watchProgress.records.filter(r=>r.kind==="assessment"&&r.videoId===id).sort((a,b)=>b.assessedAt-a.assessedAt)[0];
+  const inLevel=v=>matchesLevel(videoAssessment(v.id)?.levelId||"unrated",libraryLevel);
+  const visibleMine=filterVideos(mine,libraryQuery).filter(inLevel),visibleLibrary=filterVideos(library,libraryQuery).filter(inLevel);
 
   // ── Player (IFrame API): speed, line tracking, loop ───────────────────
   useEffect(()=>{
-    if(!videoId||!lines.length||!ready) return;
-    let cancelled=false,timer=null;
+    if(!videoId||!lines.length||!ready||!lessonEntered) return;
+    let cancelled=false,timer=null,heartbeat=null,ticks=0;
+    const sample=()=>{const p=playerRef.current;if(!p)return;try{trackerRef.current?.sample({wallMs:performance.now(),at:Date.now(),position:p.getCurrentTime(),rate:p.getPlaybackRate(),playing:p.getPlayerState()===1,visible:document.visibilityState==='visible',focused:document.hasFocus()});}catch{}};
+    const reset=()=>{flushWatch();trackerRef.current?.reset();sample();};
+    const signals=['visibilitychange','focus','blur','pagehide'];signals.forEach(name=>window.addEventListener(name,reset));
     loadYouTubeApi().then(YT=>{
       if(cancelled||!playerDiv.current) return;
       playerRef.current=new YT.Player(playerDiv.current,{
         videoId,width:"100%",height:"100%",
         playerVars:{playsinline:1,rel:0,cc_load_policy:0,modestbranding:1},
-        events:{onPlaybackRateChange:event=>{if(Number.isFinite(event.data)&&event.data>0)setRate(event.data);},onReady:()=>{
+        events:{onStateChange:()=>{sample();reset();},onPlaybackRateChange:event=>{reset();if(Number.isFinite(event.data)&&event.data>0)setRate(event.data);},onReady:()=>{
           if(cancelled) return;
           try{playerRef.current?.setPlaybackRate?.(rateRef.current);}catch{}
+          heartbeat=setInterval(()=>{sample();if(++ticks%5===0)flushWatch(ticks%15===0);},1000);
           timer=setInterval(()=>{
             const p=playerRef.current;
             if(!p||!p.getCurrentTime) return;
             const t=captionTime(p.getCurrentTime(),syncOffsetRef.current),ls=linesRef.current;
             if(loopRef.current){
               const L=ls[activeRef.current];
-              if(L?.start!=null&&t>=lineEnd(ls,activeRef.current)){ p.seekTo(captionVideoTime(L.start,syncOffsetRef.current),true); return; }
+              if(L?.start!=null&&t>=lineEnd(ls,activeRef.current)){ trackerRef.current?.reset();p.seekTo(captionVideoTime(L.start,syncOffsetRef.current),true); return; }
             }
             const {index:idx,word:wi}=playbackPosition(ls,bdRef.current,t);
             if(idx!==activeRef.current){ activeRef.current=idx;setActive(idx); }
@@ -2960,12 +2999,13 @@ Return ONLY valid JSON, no commentary: [{"i":0,"t":"translation","w":[{"a":"..",
         }},
       });
     });
-    return()=>{ cancelled=true; if(timer) clearInterval(timer); try{playerRef.current?.destroy();}catch{} playerRef.current=null; };
-  },[videoId,lines.length,ready]);
+    return()=>{ flushWatch();trackerRef.current?.reset();signals.forEach(name=>window.removeEventListener(name,reset));if(heartbeat)clearInterval(heartbeat);cancelled=true; if(timer) clearInterval(timer); try{playerRef.current?.destroy();}catch{} playerRef.current=null; };
+  },[videoId,lines.length,ready,lessonEntered,watchProgress.owner]);
   useEffect(()=>{ try{playerRef.current?.setPlaybackRate?.(rate);}catch{} },[rate,videoId,ready]);
   useEffect(()=>{ activeEl.current?.scrollIntoView?.({block:"center",behavior:"instant"}); },[active]);
 
   const seek=(i)=>{
+    flushWatch();trackerRef.current?.reset();
     const L=lines[i];
     activeRef.current=i;setActive(i);wordRef.current=-1;setActiveWord(-1);
     if(L?.start!=null) try{playerRef.current?.seekTo(captionVideoTime(L.start,syncOffsetRef.current),true);playerRef.current?.playVideo?.();}catch{}
@@ -3002,6 +3042,7 @@ Return ONLY valid JSON, no commentary: [{"i":0,"t":"translation","w":[{"a":"..",
       <div style={{flex:1,minWidth:0}}>
         <div style={{fontSize:13,fontWeight:600,lineHeight:1.35,display:"-webkit-box",WebkitLineClamp:2,WebkitBoxOrient:"vertical",overflow:"hidden"}}>{v.title}</div>
         <div style={{fontSize:11.5,color:"var(--text3)",marginTop:3}}>{v.channel}</div>
+        <small>{videoAssessment(v.id)?levelInfo(videoAssessment(v.id).levelId).label+" · AI estimate":"Level estimated when you prepare this video"}</small>
         {v.category&&v.category!=="all"&&<span style={{fontSize:10.5,color:"var(--info)",marginTop:3,display:"inline-block"}}>{WATCH_CATEGORIES.find(x=>x.k===v.category)?.label}</span>}
       </div>
     </div>
@@ -3016,12 +3057,13 @@ Return ONLY valid JSON, no commentary: [{"i":0,"t":"translation","w":[{"a":"..",
         <div style={{padding:"14px 20px 0",display:"flex",flexDirection:"column",gap:12}}>
           {!videoId&&(
             <div style={{display:"flex",gap:6}}>
-              {[["explore","Explore"],["library","Library"],["link","Paste link"]].map(([k,l])=>(
+              {[["explore","Explore"],["library","Library"],["link","Paste link"],["progress","Progress"]].map(([k,l])=>(
                 <button key={k} className={`chip ${tab===k?"chip-on":""}`} onClick={()=>setTab(k)} style={{flex:1,justifyContent:"center",padding:"8px 0",fontSize:12.5}}>{l}</button>
               ))}
             </div>
           )}
 
+          {!videoId&&tab==="progress"&&<WatchProgress progress={watchProgress}/>}
           {videoId&&(<div style={{display:"flex",flexDirection:"column",gap:10}}>
             {vidMeta?.thumb&&<img src={vidMeta.thumb} alt="" style={{width:"100%",aspectRatio:"16/9",objectFit:"cover",borderRadius:"var(--rs)"}}/>}
             {title&&<div style={{fontSize:14,fontWeight:600}}>{title}</div>}
@@ -3053,6 +3095,8 @@ Return ONLY valid JSON, no commentary: [{"i":0,"t":"translation","w":[{"a":"..",
 
           {!videoId&&tab==="library"&&(<>
             <input className="input" dir="auto" placeholder="Filter saved videos by title or channel" value={libraryQuery} onChange={e=>setLibraryQuery(e.target.value)}/>
+            <select className="input" aria-label="Saved video level" value={libraryLevel} onChange={e=>setLibraryLevel(e.target.value)}><LevelOptions/></select>
+            {libraryLevel!=="all"&&!visibleMine.length&&!visibleLibrary.length&&<small>No prepared videos match this level. Try All levels; unseen videos are rated after their transcript is loaded.</small>}
             {mineErr&&<div style={{fontSize:12,color:"var(--weak)"}}>{mineErr}</div>}
             {libraryQuery.trim()&&(mine!==null||library!==null)&&!visibleMine.length&&!visibleLibrary.length&&<div style={{fontSize:12.5}}>No saved videos match this query. <button className="btn btn-sm" onClick={()=>{setTab("explore");changeSearch(libraryQuery);}}>Search YouTube instead</button></div>}
             <div className="sec" style={{margin:0}}>My videos</div>
@@ -3095,8 +3139,18 @@ Return ONLY valid JSON, no commentary: [{"i":0,"t":"translation","w":[{"a":"..",
         </div>
       )}
 
-      {lines.length>0&&ready&&(
+      {lines.length>0&&ready&&!lessonEntered&&<div style={{padding:20,display:"grid",gap:12}}>
+        <h2 style={{margin:0,fontSize:20}}>{title||"Your video"}</h2>
+        <strong>{levelBusy?"Estimating listening difficulty…":assessment?levelInfo(assessment.levelId).label:"Unrated material"}</strong>
+        {assessment&&<><div>{assessment.reason}</div><small>{assessment.confidence} confidence · {assessment.register} · transcript-based estimate</small><small>{assessment.caveats.join(' ')}</small></>}
+        {levelError&&<div role="status">{levelError}</div>}
+        <p>See the transcript word by word as you listen, and save useful words to flashcards. Only active foreground playback adds listening time.</p>
+        <button className="btn btn-primary" onClick={beginWatching} disabled={levelBusy}>Begin watching{!assessment&&!levelBusy?" · unrated":""}</button>
+        {!levelBusy&&<button className="btn" onClick={()=>estimateLevel(videoId,lines,title)}>Recheck difficulty</button>}
+      </div>}
+      {lines.length>0&&ready&&lessonEntered&&(
         <div>
+          <div style={{padding:"8px 20px",fontSize:12}}>{levelInfo(trackerRef.current?.record.levelId).label} · Listening time saved to Watch → Progress · {watchProgress.status}</div>
           <div style={{position:"sticky",top:0,zIndex:5,background:"var(--bg)",padding:"12px 20px 8px"}}>
             <div style={{position:"relative",width:"100%",aspectRatio:"16/9",borderRadius:"var(--rs)",overflow:"hidden",background:"#000"}}><div ref={playerDiv} style={{position:"absolute",inset:0}}/></div>
             <div style={{display:"flex",gap:6,alignItems:"center",marginTop:8,flexWrap:"wrap"}}>
@@ -10012,7 +10066,7 @@ function BarChart({data,maxVal,color1="var(--accent)",color2="var(--info)"}){
 // ─────────────────────────────────────────────────────────────
 // PROGRESS / ANALYTICS DASHBOARD
 // ─────────────────────────────────────────────────────────────
-function ProgressScreen({cardStates,studyLog,onBack,onLogManual}) {
+function ProgressScreen({cardStates,studyLog,onBack,onLogManual,watchProgress}) {
   const allCards=Object.values(cardStates).flat();
   const known=allCards.filter(c=>c.status==="known").length;
   const weak=allCards.filter(c=>c.status==="weak").length;
@@ -10054,7 +10108,8 @@ function ProgressScreen({cardStates,studyLog,onBack,onLogManual}) {
         right={<button className="btn btn-sm" onClick={()=>setShowLog(true)} style={{background:"var(--surface2)",color:"var(--text2)"}}><PenLine size={13}/>Log</button>}/>
       <div style={{padding:"12px 20px 0"}}>
         {/* Tab toggle */}
-        <Seg options={[{value:"performance",label:"Performance"},{value:"progress",label:"Progress"}]} value={tab} onChange={setTab}/>
+        <Seg options={[{value:"performance",label:"Performance"},{value:"progress",label:"Progress"},{value:"watch",label:"Watch hours"}]} value={tab} onChange={setTab}/>
+        {tab==="watch"&&<WatchProgress progress={watchProgress}/>}
       </div>
       <div style={{padding:"16px 20px 0",display:"flex",flexDirection:"column",gap:16}}>
 
@@ -10134,12 +10189,12 @@ function ProgressScreen({cardStates,studyLog,onBack,onLogManual}) {
             {/* Today + Week summary */}
             <div style={{display:"flex",gap:8}}>
               <div className="stat-card" style={{borderColor:todayMin>=dailyTarget?"var(--know-border)":"var(--border)"}}>
-                <div className="stat-num" style={{color:todayMin>=dailyTarget?"var(--know)":"var(--text)"}}>{todayMin}</div>
+                <div className="stat-num" style={{color:todayMin>=dailyTarget?"var(--know)":"var(--text)"}}>{Math.round(todayMin)}</div>
                 <div className="stat-label">min today</div>
                 <div style={{fontSize:10,color:"var(--text3)",marginTop:2}}>/{dailyTarget}m target</div>
               </div>
               <div className="stat-card" style={{borderColor:weekMin>=weeklyTarget?"var(--know-border)":"var(--border)"}}>
-                <div className="stat-num" style={{color:weekMin>=weeklyTarget?"var(--know)":"var(--text)"}}>{weekMin}</div>
+                <div className="stat-num" style={{color:weekMin>=weeklyTarget?"var(--know)":"var(--text)"}}>{Math.round(weekMin)}</div>
                 <div className="stat-label">min this week</div>
                 <div style={{fontSize:10,color:"var(--text3)",marginTop:2}}>/{weeklyTarget}m target</div>
               </div>
@@ -11610,6 +11665,7 @@ export default function App() {
   const [activeCard,setActiveCard]=useState(null);
   const [settings,setSettings]=useState({orKey:"",gKey:"",model:"openai/gpt-4o-mini"});
   const [user,setUser]=useState(undefined); // undefined = loading, null = signed out
+  const watchProgress=useWatchProgress(user);
   const [dataLoaded,setDataLoaded]=useState(false);
   const [loadError,setLoadError]=useState(false);
   const [loadRetryTick,setLoadRetryTick]=useState(0);
@@ -12571,8 +12627,8 @@ export default function App() {
   const commonProps={decks,cardStates,trackUsage};
 
   const screens={
-    home:<HomeScreen {...commonProps} onOpenDeck={openDeck} onSettings={()=>go("settings")} onCreateDeck={()=>go("createDeck")} onReading={()=>go("reading")} onListening={()=>go("listening")} onConversation={()=>go("conversation")} onDictation={()=>go("dictation")} onCapsules={()=>go("capsules")} onSearch={()=>setShowSearch(true)} onWatch={()=>go("watch")} onTranslate={()=>go("translate")} onProgress={()=>go("progress")} onMasterReview={()=>go("masterReview")} onGuide={()=>go("guide")} onPresets={()=>go("preset")} onGrammarImport={()=>{setGrammarTarget(null);go("grammarImport");}} onVocabImport={()=>{setVocabTarget(null);go("vocabImport");}} darkMode={darkMode} onToggleDark={()=>setDarkMode(d=>!d)} studyLog={studyLog} poolThresholdDays={getPoolThresholdDays(settings)} immersionMode={!!settings.immersionMode} immersionNudgeShown={!!settings.immersionNudgeShown} onImmersionNudgeAction={handleImmersionNudge}/>,
-    watch:<WatchScreen onBack={()=>go("home")} onAddToFlashcard={addToFlashcard} decks={decks} trackUsage={trackUsage} user={user}/>,
+    home:<HomeScreen {...commonProps} watchHours={(progressSummary(watchProgress.records).seconds/3600).toFixed(2)} onOpenDeck={openDeck} onSettings={()=>go("settings")} onCreateDeck={()=>go("createDeck")} onReading={()=>go("reading")} onListening={()=>go("listening")} onConversation={()=>go("conversation")} onDictation={()=>go("dictation")} onCapsules={()=>go("capsules")} onSearch={()=>setShowSearch(true)} onWatch={()=>go("watch")} onTranslate={()=>go("translate")} onProgress={()=>go("progress")} onMasterReview={()=>go("masterReview")} onGuide={()=>go("guide")} onPresets={()=>go("preset")} onGrammarImport={()=>{setGrammarTarget(null);go("grammarImport");}} onVocabImport={()=>{setVocabTarget(null);go("vocabImport");}} darkMode={darkMode} onToggleDark={()=>setDarkMode(d=>!d)} studyLog={mergeWatchStudyLog(studyLog,watchProgress.records)} poolThresholdDays={getPoolThresholdDays(settings)} immersionMode={!!settings.immersionMode} immersionNudgeShown={!!settings.immersionNudgeShown} onImmersionNudgeAction={handleImmersionNudge}/>,
+    watch:<WatchScreen onBack={()=>go("home")} onAddToFlashcard={addToFlashcard} decks={decks} trackUsage={trackUsage} user={user} watchProgress={watchProgress}/>,
     translate:<TranslateScreen onBack={()=>go("home")} onAddToFlashcard={addToFlashcard} decks={decks} trackUsage={trackUsage} nativeLanguage={settings.nativeLanguage}/>,
     grammarImport:<GrammarImportScreen key={grammarTarget?.id||"new"} onBack={()=>{setGrammarTarget(null);go("home");}} trackUsage={trackUsage} onSave={saveGrammarDeck} targetDeck={grammarTarget} nativeLanguage={settings.nativeLanguage}/>,
     vocabImport:<VocabImportScreen key={vocabTarget?.id||"new"} onBack={()=>{setVocabTarget(null);go("home");}} trackUsage={trackUsage} onSave={saveVocabDeck} targetDeck={vocabTarget} nativeLanguage={settings.nativeLanguage} cardStates={cardStates}/>,
@@ -12594,7 +12650,7 @@ export default function App() {
     masterListening:<ListeningScreen {...commonProps} master={true} masterPool={masterPool} onBack={()=>go("masterReview")} onFinish={()=>{saveScreen("masterListening",null);saveSession(null);go("home");setSessionRating({module:"listening",master:true});}} onAddToFlashcard={addToFlashcard} onLogStudy={logStudy}/>,
     masterSpeaking:<ConversationScreen {...commonProps} master={true} masterPool={masterPool} onBack={()=>go("masterReview")} onFinish={()=>{saveScreen("masterSpeaking",null);saveSession(null);go("home");setSessionRating({module:"speaking",master:true});}} onLogStudy={logStudy} onAddToFlashcard={addToFlashcard}/>,
     conversation:<ConversationScreen {...commonProps} onBack={()=>go("home")} onFinish={()=>{saveScreen("conversation",null);saveSession(null);go("home");setSessionRating({module:"speaking"});}} onLogStudy={logStudy} onAddToFlashcard={addToFlashcard}/>,
-    progress:<ProgressScreen cardStates={cardStates} studyLog={studyLog} onBack={()=>go("home")} onLogManual={(e)=>logStudy(e)}/>,
+    progress:<ProgressScreen watchProgress={watchProgress} cardStates={cardStates} studyLog={mergeWatchStudyLog(studyLog,watchProgress.records)} onBack={()=>go("home")} onLogManual={(e)=>logStudy(e)}/>,
     masterReview:<MasterReviewScreen decks={decks} cardStates={cardStates} onBack={()=>go("home")} onSwipeCard={handleMasterSwipe} onUndoSwipe={restoreCard} onDeckTouched={touchDeck} onToggleWeakForm={toggleWeakForm} trackUsage={trackUsage} onAddToFlashcard={addToFlashcard} studyLog={studyLog} onLogStudy={logStudy} onSaveAid={saveCardAid}
       poolThresholdDays={getPoolThresholdDays(settings)} newPoolDaily={newPoolDailyToday} onNewPoolDeckDone={markNewPoolDeckDone}
       newCardsPerDayEnabled={settings.newCardsPerDayEnabled!==false} newCardsPerDayLimit={settings.newCardsPerDayLimit??20} newCardsIntroducedToday={newCardsIntroducedTodayCount} maxReviewsPerDayEnabled={!!settings.maxReviewsPerDayEnabled} maxReviewsPerDay={settings.maxReviewsPerDay??100} reviewsDoneToday={reviewsDoneTodayCount} onReviewLogged={logReviewToday}
