@@ -1,0 +1,8 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { suggestedGoal, listeningGoal } from './watch-goals.js';
+const session=(id,levelId,hours)=>({kind:'session',id,videoId:id,levelId,seconds:hours*3600,days:{[new Date().toISOString().slice(0,10)]:{seconds:hours*3600,ranges:[]}}});
+test('listening planning defaults are per-level, never overall or unrated',()=>{assert.equal(suggestedGoal('cefr:A1'),75);assert.equal(suggestedGoal('cefr:A2'),100);assert.equal(suggestedGoal('cefr:B1'),200);assert.equal(suggestedGoal('cefr:B2'),250);assert.equal(suggestedGoal('cefr:C1'),300);assert.equal(suggestedGoal('cefr:C2'),null);assert.equal(suggestedGoal('all'),null);assert.equal(suggestedGoal('unrated'),null);});
+test('sub-bands roll up into family without including other levels or unrated time',()=>{const records=[session('one','b1-low',10),session('two','b1-high',20),session('three','a2',40),session('four','unrated',60)];assert.equal(listeningGoal(records,'cefr:B1').seconds,30*3600);assert.equal(listeningGoal(records,'b1-low').seconds,10*3600);assert.equal(listeningGoal(records,'cefr:A2').seconds,40*3600);});
+test('existing custom goals preserved and A1/fine aliases share goal',()=>{const records=[{kind:'goal',level:'a1',hours:90,updatedAt:1},session('s','a1',90)];assert.equal(listeningGoal(records,'cefr:A1').hours,90);assert(listeningGoal(records,'a1').reached);assert.equal(listeningGoal(records,'a1').percent,100);});
+test('B1 and B2 default sub-band planning splits equal family budget',()=>{for(const [family,hours] of [['b1',200],['b2',250]])assert.equal(['low','mid','high'].reduce((n,s)=>n+suggestedGoal(family+'-'+s),0),hours);});

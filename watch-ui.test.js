@@ -7,6 +7,8 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { transformSync } from 'esbuild';
 import * as progressHelpers from './watch-progress.js';
 import * as levelHelpers from './watch-levels.js';
+import { arabicSearchQuery } from './watch-search.js';
+import { WATCH_RESOURCES } from './watch-resources.js';
 import * as icons from 'lucide-react';
 import { playbackPosition, lineEnd, captionTime, videoTime as captionVideoTime, alignedWordTimes } from './watch-timing.js';
 import { filterVideos, searchQuery, normalizeBreakdown, prepareWatchLesson } from './watch-library.js';
@@ -16,7 +18,7 @@ const component=source.slice(start,end).replace(/const \[(\w+),(\w+)\]=useState\
 const compiled=transformSync(component+'\nglobalThis.Component=WatchScreen;',{loader:'jsx',jsxFactory:'React.createElement',format:'cjs'}).code;
 function fixture(overrides={},request=async()=>{},harness=null){
  const refs=[],effects=[];
- const context={React,...icons,...progressHelpers,...levelHelpers,WatchProgress:()=>null,LevelOptions:()=>null,AbortController,console,setTimeout,clearTimeout,playbackPosition,lineEnd,captionTime,captionVideoTime,alignedWordTimes,filterVideos,searchQuery,normalizeBreakdown,prepareWatchLesson,requestTranscript:request,
+ const context={React,arabicSearchQuery,WATCH_RESOURCES,URLSearchParams,...icons,...progressHelpers,...levelHelpers,WatchProgress:()=>null,LevelOptions:()=>null,AbortController,console,setTimeout,clearTimeout,playbackPosition,lineEnd,captionTime,captionVideoTime,alignedWordTimes,filterVideos,searchQuery,normalizeBreakdown,prepareWatchLesson,requestTranscript:request,
   localStorage:{length:0,getItem:()=>null,setItem(){},removeItem(){}},useRef:value=>{const ref={current:value};refs.push(ref);return ref;},useEffect:fn=>effects.push(fn),useNamedState:(key,value)=>[Object.hasOwn(overrides,key)?overrides[key]:typeof value==='function'?value():value,()=>{}],
   WatchCosts:()=>null,Hdr:()=>null,pickModelForTag:()=> 'test',MODEL_PRICES:{},WATCH_CATEGORIES:[{k:'all',label:'All',ar:''}],fmtDur:()=>'',};
  vm.createContext(context);vm.runInContext(compiled,context);const tree=context.Component({decks:[],user:null,watchProgress:{owner:"device",records:[],status:"Saved",save(){}}});if(harness)Object.assign(harness,{context,refs,effects,tree});return tree;
@@ -59,4 +61,13 @@ test('actual player heartbeat excludes paused, hidden and seeked playback',async
  state=1;events.onStateChange();position=80;tick();assert.equal(tracker.record.seconds,1);
  h.context.document.visibilityState='hidden';position=81;tick();assert.equal(tracker.record.seconds,1);
  cleanup();assert(saved.some(r=>r.seconds===1));
+});
+
+test('English search translates before fetching and pagination reuses Arabic query',async()=>{
+ const h={};fixture({query:'space travel',nextTok:'next'},undefined,h);let translations=0;const urls=[];
+ h.context.callClaude=async()=>{translations++;return '{"query":"السفر إلى الفضاء"}';};
+ h.context.fetch=async url=>{urls.push(new URL(url,'https://example.com'));return {ok:true,json:async()=>({items:[],next:'next'})};};
+ const all=buttons(h.tree);const find=all.find(b=>b.props.children==='Find videos');assert(find);await find.props.onClick();
+ const more=all.find(b=>b.props.children==='More results');assert(more);await more.props.onClick();
+ assert.equal(translations,1);assert.equal(urls[0].searchParams.get('q'),'السفر إلى الفضاء');assert.equal(urls[0].searchParams.get('captions'),'1');assert.equal(urls[1].searchParams.get('q'),'السفر إلى الفضاء');assert.equal(urls[1].searchParams.get('pageToken'),'next');
 });

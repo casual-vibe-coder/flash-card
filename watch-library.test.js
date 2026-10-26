@@ -10,7 +10,7 @@ test('saved library search handles Arabic vowels, alef variants, English case an
   assert.equal(filterVideos(videos,'no match').length,0);
   assert.equal(filterVideos(videos,'').length,2);
 });
-test('video search uses the typed query without an AI call',()=>{
+test('base query composer preserves typed terms and category',()=>{
   assert.equal(searchQuery('  space exploration '),'space exploration');
   assert.equal(searchQuery('أخبار','وثائقي'),'أخبار وثائقي');
 });

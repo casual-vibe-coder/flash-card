@@ -1,3 +1,5 @@
+import { arabicSearchQuery } from "./watch-search.js";
+import { WATCH_RESOURCES } from "./watch-resources.js";
 import useWatchProgress from "./useWatchProgress.js";
 import WatchProgress, { LevelOptions } from "./WatchProgress.jsx";
 import { PlaybackTracker, createWatchSession, mergeWatchStudyLog, progressSummary, timeLabel } from "./watch-progress.js";
@@ -621,6 +623,7 @@ const MODEL_FEATURES = [
   {tag:"dictation", label:"Dictation",              desc:"Dictation sentence generation"},
   {tag:"grammar",   label:"Grammar import",         desc:"Extract grammar cards from notes/PDFs — pick a vision-capable model (e.g. gpt-4o-mini) if you import screenshots"},
   {tag:"vocab",     label:"Vocab import",           desc:"Extract noun/verb flashcards from screenshots/PDFs — pick a vision-capable model (e.g. gpt-4o-mini) if you import photos"},
+  {tag:"watchSearch",label:"Arabic video search",desc:"Translate English video queries into Arabic; repeated queries reuse a device cache"},
   {tag:"watchLevel",label:"Video difficulty",desc:"Estimate Arabic video difficulty from transcript evidence before watching"},
   {tag:"watchBreakdown",label:"Watch word breakdown",desc:"Word-by-word translation of video transcripts (long answers — a cheap fast model is ideal)"},
   {tag:"other",     label:"Topics & conversation",  desc:"Topic generation, chat replies, misc"},
@@ -631,7 +634,7 @@ const USAGE_LABELS = {
   reading:"Reading Passage", listening:"Listening Content",
   wordLookup:"Word Lookup", regen:"Form Regeneration",
   island:"Language Island", dictation:"Dictation", grammar:"Grammar Import",
-  vocab:"Vocab Import", watchLevel:"Video Difficulty", watchBreakdown:"Video Word Breakdown",
+  vocab:"Vocab Import", watchSearch:"Arabic Video Search", watchLevel:"Video Difficulty", watchBreakdown:"Video Word Breakdown",
   imageNB1:"Image · Nano Banana 1", imageNB2:"Image · Nano Banana 2",
   ttsGoogle:"Voice · Google TTS", sttWhisper:"Voice · OpenAI Whisper",
 };
@@ -2719,7 +2722,7 @@ function WatchScreen({onBack,onAddToFlashcard,decks,trackUsage,user,watchProgres
   const [nextTok,setNextTok]=useState(null);
   const [searching,setSearching]=useState(false);
   const [searchErr,setSearchErr]=useState("");
-  const [captionsOnly,setCaptionsOnly]=useState(false);
+  const [captionsOnly,setCaptionsOnly]=useState(true);
   const [canServiceSearch,setCanServiceSearch]=useState(false);
   const searchRequestRef=useRef(null),searchSnapshotRef=useRef(null);
   const [libraryQuery,setLibraryQuery]=useState("");
@@ -2941,15 +2944,22 @@ Return ONLY valid JSON, no commentary: [{"i":0,"t":"translation","w":[{"a":"..",
       setGenOffer(true);setCanGenerate(error.canGenerate!==false);setErr(error.message||"Speech-to-text couldn't finish. Resume a saved job rather than starting another.");
     }}finally{if(current())setLoading(false);}
   };
-  // Direct Arabic/English search. Model availability must not block finding videos.
-  const search=async(more=false,provider='youtube')=>{
-    const category=WATCH_CATEGORIES.find(x=>x.k===cat);
-    const selected=more?searchSnapshotRef.current:{q:searchQuery(query,category?.ar),provider,captions:captionsOnly};
+  // Translate English search terms once; failure still permits original-query search.
+  const search=async(more=false,provider='youtube',queryOverride=null)=>{
+    const category=queryOverride!==null?null:WATCH_CATEGORIES.find(x=>x.k===cat);
+    let selected=more?searchSnapshotRef.current:{q:searchQuery(queryOverride??query,category?.ar),provider,captions:captionsOnly};
     if(!selected?.q||(more&&!nextTok))return;
     searchRequestRef.current?.abort();const controller=new AbortController();searchRequestRef.current=controller;
     setSearching(true);setSearchErr("");setCanServiceSearch(false);
-    if(!more){searchSnapshotRef.current=selected;setArQuery(selected.q);setNextTok(null);setResults([]);}
+    if(!more){setArQuery("");setNextTok(null);setResults([]);}
     try{
+      if(!more){
+        const translated=await arabicSearchQuery(queryOverride??query,category?.ar,{model:pickModelForTag("watchSearch"),storage:localStorage,signal:controller.signal,
+          translate:prompt=>callClaude(prompt,180,"watchSearch",trackUsage,10000,null,recordWatchCost)});
+        if(controller.signal.aborted)return;
+        selected={...selected,q:translated.q};searchSnapshotRef.current=selected;setArQuery(selected.q);
+        if(translated.warning)setSearchErr(translated.warning);
+      }
       const params=new URLSearchParams({q:selected.q,provider:selected.provider,captions:selected.captions?'1':'0'});
       if(more)params.set('pageToken',nextTok);
       const response=await fetch('/api/yt-search?'+params,{signal:controller.signal});
@@ -3077,11 +3087,19 @@ Return ONLY valid JSON, no commentary: [{"i":0,"t":"translation","w":[{"a":"..",
           </div>)}
 
           {!videoId&&tab==="explore"&&(<>
+            <details style={{border:"1px solid var(--border)",padding:12,borderRadius:"var(--rs)"}}><summary style={{cursor:"pointer",fontWeight:600}}>Find graded listening · different speakers</summary>
+              <p style={{fontSize:12}}>Choose a starting source. Search stays inside this app; each prepared video gets its own AI level estimate. External resource pages do not add tracked hours.</p>
+              {WATCH_RESOURCES.map(resource=><div key={resource.id} style={{borderTop:"1px solid var(--border)",padding:"12px 0",display:"grid",gap:6}}>
+                <strong>{resource.name}</strong><small>{resource.band} · {resource.variety}</small><small>{resource.speaker}</small><small>{resource.note}</small>
+                <div style={{display:"flex",gap:8,flexWrap:"wrap"}}><button className="btn btn-sm" disabled={searching} onClick={()=>{setQuery(resource.query);search(false,"youtube",resource.query);}}>Find videos in app</button><a href={resource.url} target="_blank" rel="noreferrer">Publisher resources ↗</a></div>
+              </div>)}
+            </details>
             <input className="input" dir="auto" placeholder="Search Arabic or English — video title, channel or topic" value={query} onChange={e=>changeSearch(e.target.value)} onKeyDown={e=>{if(e.key==="Enter")search(false);}} style={{fontSize:13,padding:"11px 12px"}}/>
             <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
               {WATCH_CATEGORIES.map(c=>(<button key={c.k} className={`chip ${cat===c.k?"chip-on":""}`} onClick={()=>{setCat(c.k);setNextTok(null);setResults([]);setArQuery("");setSearchErr("");setCanServiceSearch(false);searchRequestRef.current?.abort();setSearching(false);}} style={{padding:"6px 11px",fontSize:12}}>{c.label}</button>))}
             </div>
-            <label style={{fontSize:12,display:"flex",gap:8,alignItems:"center"}}><input type="checkbox" checked={captionsOnly} onChange={e=>{setCaptionsOnly(e.target.checked);setNextTok(null);searchRequestRef.current?.abort();setSearching(false);}}/>Only videos with captions</label>
+            <label style={{fontSize:12,display:"flex",gap:8,alignItems:"center"}}><input type="checkbox" checked={captionsOnly} onChange={e=>{setCaptionsOnly(e.target.checked);setNextTok(null);searchRequestRef.current?.abort();setSearching(false);}}/>Only videos with caption tracks · lower transcript cost</label>
+            <small>English searches are translated to Arabic and cached. Caption tracks may be in another language or unavailable to the app; speech-to-text is never started automatically.</small>
             <button className="btn btn-primary" onClick={()=>search(false)} disabled={searching||(!query.trim()&&cat==="all")} style={{padding:"12px",borderRadius:"var(--r)"}}>{searching?"Searching…":"Find videos"}</button>
             {arQuery&&<div style={{fontSize:11.5,color:"var(--text3)"}}>Searched for: <span dir="auto" style={{fontSize:15}}>{arQuery}</span></div>}
             {searchErr&&<div style={{fontSize:12.5,color:"var(--weak)",lineHeight:1.5}}>{searchErr}</div>}
@@ -10286,7 +10304,7 @@ function ProgressScreen({cardStates,studyLog,onBack,onLogManual,watchProgress}) 
 // ROOT
 // ─────────────────────────────────────────────────────────────
 function initUsage() {
-  const tags=["flashcard","sentence","reading","listening","wordLookup","regen","island","dictation","grammar","other","imageNB1","imageNB2","ttsGoogle","sttWhisper"];
+  const tags=["flashcard","sentence","reading","listening","wordLookup","regen","island","dictation","grammar","watchSearch","watchLevel","watchBreakdown","other","imageNB1","imageNB2","ttsGoogle","sttWhisper"];
   const byTag={};
   // For text tags, the meaningful counters are tokens. For voice tags we
   // reuse the existing shape but treat inputTokens as "units" (chars for
@@ -12241,7 +12259,7 @@ export default function App() {
   // Usage tracker function passed to all Claude calls
   const trackUsage=useCallback((tag,inputChars,outputChars,inputTokens,outputTokens)=>{
     setUsage(prev=>{
-      const t=prev.byTag[tag]||prev.byTag["other"]||{calls:0,inputTokens:0,outputTokens:0};
+      const t=prev.byTag[tag]||{calls:0,inputTokens:0,outputTokens:0};
       return {
         ...prev,
         byTag:{
