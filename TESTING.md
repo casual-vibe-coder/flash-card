@@ -120,3 +120,23 @@ and `STACK.md` (the stack). Everything is additive on the existing app.
 - Only Language Island + Dictation use the gateway; Reading/Listening/Conversation still use `/api/claude`.
 - Preset seed is Book-1 only (3 decks); central Firestore layer is inert until you seed `preset_decks`.
 - Root duplicate API handlers (`/claude.js` etc.) still present — not deleted pending your OK.
+
+
+## Watch fixes — October 26, 2026
+
+Automated checks:
+
+```bash
+node --test watch-timing.test.js watch-library.test.js watch-transcript.test.js watch-costs.test.js watch-ui.test.js tests/yt-transcript.test.js tests/yt-search.test.js
+npm run build
+```
+
+- Search accepts Arabic/English directly; a failed language-model call cannot block search. Caption-only filtering is optional. Metadata lookup failure preserves video results. API setup/quota failures are shown explicitly. An explicitly selected Supadata search fallback costs 1 credit/page; it is never used automatically.
+- Library filters saved title/channel/category/ID, tolerating Arabic vowel marks and common alef variants. Device lessons remain visible if account loading fails.
+- Cached reversed word arrays are reconciled with source caption order. Caption/translation pairs sort together. Arabic stays RTL; English glosses stay LTR. Earlier timing regression coverage remains.
+- Playback uses media time, restores requested speed and reflects player speed changes. Align-this-line adjusts only the saved caption offset; it does not seek or retranscribe. Cue-only sources remain estimated rather than acoustically aligned.
+- Native captions never silently start speech-to-text. Blocked, empty and unavailable paths offer an explicit generation choice when configured. Missing credentials, provider access and exhausted credits remain actionable errors.
+- Paid jobs persist per account/device and video for resume; polling does not create another generation. Expired or failed jobs stop polling. Rapid duplicate clicks cannot start two jobs before rerender.
+- No paid live provider calls or authenticated browser playback were performed by these checks. Tests use mocked provider responses and server-render the actual Watch component. Vercel's transcript maxDuration is 120 seconds to accommodate the provider's synchronous response window; this requires a compatible runtime (Fluid compute supports it).
+
+Pricing references checked October 26, 2026: https://supadata.ai/pricing and https://docs.supadata.ai/get-transcript . Published generation is 2 credits/minute; 10 minutes estimates 20 credits = $0.20 at the Basic/Pro recharge rate ($10/1000 credits). Different plans change the USD equivalent. Forecasts round up whole minutes; English breakdown, retries, hosting and taxes are separate. Unavailable native transcript requests may still use 1 credit; polling is not charged. Provider dashboards determine settled usage.

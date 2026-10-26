@@ -49,12 +49,14 @@ export async function chatComplete({ apiKey, model, max_tokens, messages, title 
   }
   if (!r.ok) return { ok: false, status: r.status, data };
 
+  const charges=[data?.usage?.cost];
   let text = extractText(data);
   let retried = false;
   if (!text && data?.choices?.[0]?.finish_reason === "length") {
     retried = true;
     const bigger = Math.min(16000, (max_tokens || 1000) * 4);
     const second = await post(apiKey, { ...base, max_tokens: bigger }, title);
+    charges.push(second.data?.usage?.cost);
     if (second.r.ok && !second.data?.error) { data = second.data; text = extractText(data); }
   }
 
@@ -64,6 +66,7 @@ export async function chatComplete({ apiKey, model, max_tokens, messages, title 
     status: 200,
     text,
     usage: {
+      cost: charges.every(c=>typeof c === "number" && Number.isFinite(c)) ? charges.reduce((a,b)=>a+b,0) : null,
       input_tokens: data?.usage?.prompt_tokens || 0,
       output_tokens: data?.usage?.completion_tokens || 0,
     },

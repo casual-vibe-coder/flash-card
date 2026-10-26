@@ -39,6 +39,7 @@ export async function fetchTranscript(videoId) {
   if (!track) return { error: 'no_arabic_captions', available: tracks.map(t => t.languageCode) };
   const url = track.baseUrl.replace(/&fmt=[^&]*/, '') + '&fmt=json3';
   const r = await fetch(url, { signal: AbortSignal.timeout(6000), headers: { 'User-Agent': UA } });
+  if (!r.ok) return { error: 'caption_blocked', detail: 'YouTube caption access was blocked.' };
   const text = await r.text();
   if (!text) return { error: 'empty_caption_response' };
   const data = JSON.parse(text);
@@ -49,7 +50,9 @@ export async function fetchTranscript(videoId) {
     if (!t) continue;
     lines.push({ start: (ev.tStartMs || 0) / 1000, dur: (ev.dDurationMs || 0) / 1000, text: t, ...(captionWords(ev, decodeEntities) ? { words: captionWords(ev, decodeEntities) } : {}) });
   }
+  if (!lines.length) return { error: 'empty_caption_response', detail: 'The caption track contained no transcript text.' };
   return {
+    via: 'youtube',
     videoId,
     title: player?.videoDetails?.title || '',
     durationSec: +(player?.videoDetails?.lengthSeconds || 0),
@@ -59,61 +62,72 @@ export async function fetchTranscript(videoId) {
   };
 }
 
-// Transcript API (Supadata) — used when SUPADATA_API_KEY is set in Vercel env vars,
-// because YouTube blocks reading caption text directly. It also does speech-to-text
-// for videos with no captions (2 credits/minute) — only when ?generate=1 is passed.
+// Native mode must never silently start paid speech-to-text.
 const SUPA = 'https://api.supadata.ai/v1/transcript';
-const normSupa = (data, videoId) => ({
-  videoId, title: '', durationSec: 0, lang: data.lang || 'ar', auto: false, via: 'supadata',
-  lines: (data.content || [])
-    .map(c => ({ start: (c.offset || 0) / 1000, dur: (c.duration || 0) / 1000, text: String(c.text || '').replace(/\s+/g, ' ').trim() }))
-    .filter(l => l.text),
-});
-
+const key = () => process.env.SUPADATA_API_KEY || process.env.SUPA_API_KEY;
+export function normalizeSupadata(data, videoId) {
+  const transcript = data.result && typeof data.result === 'object' ? data.result : data;
+  if (!Array.isArray(transcript.content)) return { error: 'invalid_transcript', detail: 'The provider returned no timestamped transcript.' };
+  const lines = transcript.content.map(c => ({ start: Number(c.offset) / 1000, dur: Number(c.duration) / 1000,
+    text: String(c.text || '').replace(/\s+/g, ' ').trim() }))
+    .filter(line => line.text && Number.isFinite(line.start) && line.start >= 0 && Number.isFinite(line.dur) && line.dur >= 0)
+    .sort((a,b) => a.start - b.start);
+  if (!lines.length) return { error: 'no_speech', detail: 'No speech was found in the returned transcript.' };
+  if (transcript.lang && !String(transcript.lang).toLowerCase().startsWith('ar'))
+    return { error: 'no_arabic_captions', detail: 'The returned transcript is not Arabic.' };
+  return { videoId, title: '', durationSec: 0, lang: transcript.lang || 'ar', auto: false, via: 'supadata', lines };
+}
+function providerError(response, data, generating) {
+  const code = typeof data.error === 'string' ? data.error : data.error?.code;
+  if (response.status === 206 || code === 'transcript-unavailable')
+    return { error: 'no_captions', detail: 'No existing transcript is available.', canGenerate: true };
+  if ([401,403].includes(response.status)) return { error: 'transcript_auth', detail: 'The transcript service is not authorised. Its API key or access needs checking.', canGenerate: false };
+  if (response.status === 402 || response.status === 429) return { error: 'transcript_limit', detail: 'The transcript service has reached a plan, rate or credit limit. Try again after the limit is resolved.', canGenerate: false };
+  return { error: 'transcript_provider_failed', detail: generating ? 'Speech-to-text could not be completed. Please try again later.' : 'Existing captions could not be retrieved.', canGenerate: !generating };
+}
 async function fetchViaSupadata(videoId, generate) {
-  const key = (process.env.SUPADATA_API_KEY || process.env.SUPA_API_KEY);
-  if (!key) return null;
-  const url = SUPA + '?url=' + encodeURIComponent('https://www.youtube.com/watch?v=' + videoId) +
-    '&lang=ar&text=false&mode=' + (generate ? 'generate' : 'native');
-  const r = await fetch(url, { headers: { 'x-api-key': key } });
-  const data = await r.json().catch(() => ({}));
+  if (!key()) return { error: 'needs_transcript_source', detail: 'Speech-to-text is not configured for this app yet.', canGenerate: false };
+  const params = new URLSearchParams({ url: 'https://www.youtube.com/watch?v=' + videoId, lang: 'ar', text: 'false', mode: generate ? 'generate' : 'native' });
+  const response = await fetch(SUPA + '?' + params, { headers: { 'x-api-key': key() }, signal: AbortSignal.timeout(generate ? 110000 : 15000) });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || data.error || response.status === 206) return providerError(response, data, generate);
   if (data.jobId) return { pending: true, jobId: data.jobId };
-  if (r.ok && Array.isArray(data.content) && data.content.length) return normSupa(data, videoId);
-  const msg = String(data.message || data.error || ('HTTP ' + r.status));
-  if (!generate && /transcript|unavailable|not.?found|no /i.test(msg)) return { error: 'no_captions', detail: msg };
-  return { error: 'supadata_failed', detail: msg };
+  return normalizeSupadata(data, videoId);
 }
-
 async function pollSupadata(jobId, videoId) {
-  const key = (process.env.SUPADATA_API_KEY || process.env.SUPA_API_KEY);
-  if (!key) return { error: 'no_key' };
-  const r = await fetch(SUPA + '/' + encodeURIComponent(jobId), { headers: { 'x-api-key': key } });
-  const data = await r.json().catch(() => ({}));
-  if (data.status === 'completed' && Array.isArray(data.content)) return normSupa(data, videoId);
-  if (data.status === 'failed') return { error: 'supadata_failed', detail: data.error?.message || 'job failed' };
-  return { pending: true, jobId };
+  if (!key()) return { error: 'needs_transcript_source', detail: 'The transcript service is not configured.', canGenerate: false };
+  const response = await fetch(SUPA + '/' + encodeURIComponent(jobId), { headers: { 'x-api-key': key() }, signal: AbortSignal.timeout(15000) });
+  const data = await response.json().catch(() => ({}));
+  if (response.status === 404) return { error: 'job_expired', detail: 'This transcript job has expired. Starting a new transcription may incur a new charge.', canGenerate: true };
+  if (!response.ok) return providerError(response, data, true);
+  if (data.status === 'completed') return normalizeSupadata(data, videoId);
+  if (data.status === 'failed') return { error: 'transcription_failed', detail: 'The speech-to-text job failed. No new job was started.' };
+  if (['queued','active','processing','pending'].includes(data.status)) return { pending: true, jobId };
+  return { error: 'invalid_job', detail: 'The transcript service returned an unknown job state. No new job was started.' };
 }
-
 export default async function handler(req, res) {
+  const videoId = String(req.query?.v || '').trim();
+  if (!/^[A-Za-z0-9_-]{11}$/.test(videoId)) return res.status(400).json({ error: 'bad_video_id', canGenerate: false });
+  const generate = req.query?.generate === '1';
   try {
-    if (req.query?.job) {
-      const out = await pollSupadata(String(req.query.job), String(req.query.v || ''));
-      return res.status(out.error ? 502 : 200).json(out);
+    let out;
+    if (req.query?.job) out = await pollSupadata(String(req.query.job), videoId);
+    else if (generate) out = await fetchViaSupadata(videoId, true);
+    else {
+      try { out = await fetchTranscript(videoId); }
+      catch { out = { error: 'direct_failed', detail: 'YouTube caption access was blocked or unavailable.' }; }
+      if (out.error && out.error !== 'unplayable' && key()) out = await fetchViaSupadata(videoId, false);
     }
-    const videoId = String(req.query?.v || '').trim();
-    if (!/^[A-Za-z0-9_-]{11}$/.test(videoId)) return res.status(400).json({ error: 'bad_video_id' });
-    const generate = req.query?.generate === '1';
-    let out = null;
-    if (!generate) { try { out = await fetchTranscript(videoId); } catch (e) { out = { error: 'direct_failed', detail: String(e.message || e) }; } }
-    if (generate || ['empty_caption_response', 'direct_failed', 'unplayable'].includes(out.error)) {
-      const viaApi = await fetchViaSupadata(videoId, generate);
-      if (viaApi) out = viaApi;
-      else out = { error: 'needs_transcript_source', detail: 'YouTube blocked direct caption access and no SUPADATA_API_KEY is set.' };
+    if (out.error) {
+      if (out.canGenerate == null) out.canGenerate = !!key() && !generate;
+      if (!key() && !out.canGenerate) out.setupRequired = true;
+      res.setHeader('Cache-Control', 'no-store');
+      return res.status(out.error === 'needs_transcript_source' ? 503 : 422).json(out);
     }
-    if (out.pending) return res.status(202).json(out);
-    if (!out.error) res.setHeader('Cache-Control', 's-maxage=86400');
-    return res.status(out.error ? 404 : 200).json(out);
-  } catch (e) {
-    return res.status(502).json({ error: 'fetch_failed', detail: String(e.message || e) });
+    res.setHeader('Cache-Control', out.pending || generate || req.query?.job ? 'no-store' : 's-maxage=86400');
+    return res.status(out.pending ? 202 : 200).json(out);
+  } catch {
+    res.setHeader('Cache-Control', 'no-store');
+    return res.status(502).json({ error: 'fetch_failed', detail: generate ? 'Speech-to-text took too long or lost its connection. A provider request may still be billed; resume a saved job if available.' : 'The transcript service could not be reached.', canGenerate: !!key() && !generate });
   }
 }

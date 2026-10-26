@@ -14,7 +14,7 @@
       "maxDuration": 60
     },
     "api/yt-transcript.js": {
-      "maxDuration": 30
+      "maxDuration": 120
     }
   }
 }

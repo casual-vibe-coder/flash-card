@@ -1,4 +1,7 @@
-import { playbackPosition, lineEnd, captionTime, videoTime as captionVideoTime } from "./watch-timing.js";
+import WatchCosts from "./WatchCosts.jsx";
+import { filterVideos, searchQuery, normalizeBreakdown, prepareWatchLesson } from "./watch-library.js";
+import { requestTranscript } from "./watch-transcript.js";
+import { playbackPosition, lineEnd, captionTime, videoTime as captionVideoTime, alignedWordTimes } from "./watch-timing.js";
 import { useState, useRef, useEffect, useCallback } from "react";
 import { auth, googleProvider, db, storage } from "./firebase.js";
 import { signInWithPopup, signOut, onAuthStateChanged } from "firebase/auth";
@@ -939,7 +942,7 @@ function emptyAIResponseMessage(d, model){
   if(fr==="length") return `"${model}" ran out of output tokens (it spends them "thinking" first) before writing an answer. Pick a different model for this feature in Settings.`;
   return `"${model}" returned an empty response. Try again, or pick a different model in Settings.`;
 }
-async function callClaude(prompt, maxTokens=1500, tag="other", trackFn=null, timeoutMs=null, modelOverride=null) {
+async function callClaude(prompt, maxTokens=1500, tag="other", trackFn=null, timeoutMs=null, modelOverride=null, onUsage=null) {
   // Optional client-side timeout so a hung request fails fast instead of
   // leaving the UI spinning forever (used by quick interactive calls like
   // word lookups).
@@ -959,6 +962,7 @@ async function callClaude(prompt, maxTokens=1500, tag="other", trackFn=null, tim
     });
     const d = await parseAIResponse(res);
     if(d.error) throw new Error(typeof d.error==="string"?d.error:(d.error.message||"AI request failed"));
+    if(onUsage) onUsage(d.usage);
     // api/claude.js normalises OpenRouter response → {content:[{type:"text",text}], usage:{input_tokens, output_tokens}}
     const outputText = d.content?.find(b=>b.type==="text")?.text || "";
     if(!outputText) throw new Error(`Empty response from AI. ${emptyAIResponseMessage(d,pickModelForTag(tag))}`);
@@ -2634,6 +2638,8 @@ const WATCH_CATEGORIES=[
 const fmtDur=(s)=>{ if(!s) return ""; const m=Math.floor(s/60),r=s%60; return m>=60?`${Math.floor(m/60)}:${String(m%60).padStart(2,"0")}:${String(r).padStart(2,"0")}`:`${m}:${String(r).padStart(2,"0")}`; };
 
 function WatchScreen({onBack,onAddToFlashcard,decks,trackUsage,user}) {
+  const [billed,setBilled]=useState({usd:0,requests:0,unknown:0});
+  const recordWatchCost=usage=>setBilled(prev=>({usd:prev.usd+(Number.isFinite(usage?.cost)?usage.cost:0),requests:prev.requests+1,unknown:prev.unknown+(Number.isFinite(usage?.cost)?0:1)}));
   const [tab,setTab]=useState("explore");
   const [url,setUrl]=useState("");
   const [videoId,setVideoId]=useState(null);
@@ -2644,6 +2650,10 @@ function WatchScreen({onBack,onAddToFlashcard,decks,trackUsage,user}) {
   const [loading,setLoading]=useState(false);
   const [err,setErr]=useState("");
   const [genOffer,setGenOffer]=useState(false);
+  const [canGenerate,setCanGenerate]=useState(true);
+  const [transcriptStatus,setTranscriptStatus]=useState("");
+  const [pendingJob,setPendingJob]=useState(null);
+  const transcriptRef=useRef(null),watchSessionRef=useRef(0),breakdownRunRef=useRef(0),generationLockRef=useRef(false);
   const [bdProgress,setBdProgress]=useState(0);
   const [bdErr,setBdErr]=useState("");
   const [ready,setReady]=useState(false);      // lesson fully prepared → show player
@@ -2680,6 +2690,11 @@ function WatchScreen({onBack,onAddToFlashcard,decks,trackUsage,user}) {
   const [nextTok,setNextTok]=useState(null);
   const [searching,setSearching]=useState(false);
   const [searchErr,setSearchErr]=useState("");
+  const [captionsOnly,setCaptionsOnly]=useState(false);
+  const [canServiceSearch,setCanServiceSearch]=useState(false);
+  const searchRequestRef=useRef(null),searchSnapshotRef=useRef(null);
+  const [libraryQuery,setLibraryQuery]=useState("");
+  const [mineErr,setMineErr]=useState("");
   // shared library
   const [library,setLibrary]=useState(null);
   const [libErr,setLibErr]=useState("");
@@ -2717,13 +2732,20 @@ function WatchScreen({onBack,onAddToFlashcard,decks,trackUsage,user}) {
     }
   };
   const loadMine=async()=>{
-    if(!user){ setMine([]); return; }
-    try{
-      const snap=await getDocs(collection(db,"users",user.uid,"watchVideos"));
-      const arr=[];snap.forEach(d=>{const x=d.data();arr.push({id:d.id,title:x.title,channel:x.channel,thumb:x.thumb,durationSec:x.durationSec,savedAt:x.savedAt});});
-      arr.sort((a,b)=>(b.savedAt||0)-(a.savedAt||0));
-      setMine(arr);
-    }catch{ setMine([]); }
+    setMineErr("");
+    const videos=new Map();
+    try{ for(let i=0;i<localStorage.length;i++){
+      const key=localStorage.key(i);if(!key?.startsWith('watch:v2:')) continue;
+      try{const value=JSON.parse(localStorage.getItem(key));if(value?.lines?.length) videos.set(value.id||key.slice(9),{...value,id:value.id||key.slice(9)});}catch{}
+    }}catch{}
+    setMine([...videos.values()].sort((a,b)=>(b.savedAt||0)-(a.savedAt||0)));
+    if(user){
+      try{
+        const snap=await getDocs(collection(db,"users",user.uid,"watchVideos"));
+        snap.forEach(d=>{const x={...d.data(),id:d.id};const current=videos.get(d.id);if(!current||(x.savedAt||0)>=(current.savedAt||0))videos.set(d.id,x);});
+      }catch{setMineErr("Account videos couldn't load. Showing videos saved on this device.");}
+    }
+    setMine([...videos.values()].sort((a,b)=>(b.savedAt||0)-(a.savedAt||0)));
   };
   useEffect(()=>{ if(tab==="library"&&mine===null) loadMine(); },[tab]);
 
@@ -2745,10 +2767,12 @@ function WatchScreen({onBack,onAddToFlashcard,decks,trackUsage,user}) {
 
   // ── Breakdown (chunked AI calls, cached per video on this device) ─────
   const runBreakdown=async(vid,ls,preset,src)=>{
+    const session=watchSessionRef.current,run=++breakdownRunRef.current;
+    const current=()=>session===watchSessionRef.current&&run===breakdownRunRef.current;
     setReady(false);setPrepDone(false);
     let cached=null;
     try{ cached=JSON.parse(localStorage.getItem(watchCacheKey(vid))||"null"); }catch{}
-    const base=preset&&preset.length===ls.length?[...preset]:(cached&&cached.bd&&cached.n===ls.length?[...cached.bd]:Array(ls.length).fill(null));
+    const base=(preset&&preset.length===ls.length?[...preset]:(cached&&cached.bd&&cached.n===ls.length?[...cached.bd]:Array(ls.length).fill(null))).map((entry,i)=>normalizeBreakdown(ls[i],entry));
     // Repeated lines (songs, chants, kids' videos) are translated ONCE and shared.
     const clean=ls.map(l=>cleanCaption(l.text));
     const uniq=[],uIdx={};
@@ -2778,17 +2802,20 @@ ${chunk.map((u,k)=>`${k}. ${u.t}`).join("\n")}
 
 Return ONLY valid JSON, no commentary: [{"i":0,"t":"translation","w":[{"a":"..","e":"..","p":"n","l":".."}]}]`;
       for(let attempt=0;attempt<3;attempt++){
+        if(!current()) return;
         try{
           // attempt 1 uses your chosen model; if it stalls, retry on a fast reliable one
-          const raw=await callClaude(prompt,Math.max(1800,chunk.reduce((n,u)=>n+u.t.split(/\s+/).length,0)*65),"watchBreakdown",trackUsage,40000,attempt>0?"openai/gpt-4o-mini":null);
+          const raw=await callClaude(prompt,Math.max(1800,chunk.reduce((n,u)=>n+u.t.split(/\s+/).length,0)*65),"watchBreakdown",trackUsage,40000,attempt>0?"openai/gpt-4o-mini":null,recordWatchCost);
+          if(!current()) return;
           const arr=extractJSON(raw);
           if(!Array.isArray(arr)||chunk.some((_,i)=>!arr.some(it=>+it.i===i&&Array.isArray(it.w)&&it.w.length))) throw new Error("the AI returned an incomplete breakdown");
           setBd(prev=>{
+            if(!current()) return prev;
             const next=[...prev];
             for(const it of arr){
               const u=chunk[+it.i]; if(!u||!Array.isArray(it.w)) continue;
               const val={tr:it.t||"",w:it.w.filter(w=>w&&w.a).map(w=>({ar:w.a,en:w.e||"",pos:w.p==="v"?"verb":w.p==="n"?"noun":"other",lemma:w.l||w.a}))};
-              u.lines.forEach(i=>{ next[i]=val; });
+              u.lines.forEach(i=>{ next[i]=normalizeBreakdown(ls[i],val); });
             }
             bdRef.current=next;
             try{ localStorage.setItem(watchCacheKey(vid),JSON.stringify({n:ls.length,bd:next})); }catch{}
@@ -2796,16 +2823,17 @@ Return ONLY valid JSON, no commentary: [{"i":0,"t":"translation","w":[{"a":"..",
           });
           doneU+=chunk.length;setBdProgress(Math.round(doneU/totalU*ls.length));
           sinceSave+=chunk.length;
-          if(sinceSave>=12){ sinceSave=0; setTimeout(()=>saveMine(vid,ls,bdRef.current,vidMetaRef.current,titleRef.current),120); }
+          if(sinceSave>=12){ sinceSave=0; setTimeout(()=>{if(current())saveMine(vid,ls,bdRef.current,vidMetaRef.current,titleRef.current);},120); }
           return;
-        }catch(e){ if(attempt===2){ doneU+=chunk.length;setBdProgress(Math.round(doneU/totalU*ls.length));setBdErr(e?.message||"AI request failed"); } }
+        }catch(e){ if(!current()) return; if(attempt===2){ doneU+=chunk.length;setBdProgress(Math.round(doneU/totalU*ls.length));setBdErr(e?.message||"AI request failed"); } }
       }
     };
     // Work nearest the line you're watching first; 8 batches in parallel.
     const queue=[...todo];
     const next=()=>{ const a=activeRef.current; let bi=0; for(let i=1;i<queue.length;i++){ if(Math.abs(queue[i][0].lines[0]-a)<Math.abs(queue[bi][0].lines[0]-a)) bi=i; } return queue.splice(bi,1)[0]; };
-    await Promise.all(Array.from({length:8},async()=>{ while(queue.length) await work(next()); }));
+    await Promise.all(Array.from({length:8},async()=>{ while(queue.length&&current()) await work(next()); }));
     await new Promise(r=>setTimeout(r,80));   // let the last setBd commit
+    if(!current()) return;
     const finalBd=bdRef.current;
     const missing=ls.some((_,i)=>!finalBd[i]);
     setBdProgress(ls.length);
@@ -2817,44 +2845,44 @@ Return ONLY valid JSON, no commentary: [{"i":0,"t":"translation","w":[{"a":"..",
   };
 
   const startWithLines=(vid,ls,ttl,meta,preset,src)=>{
+    if(!preset){try{const cached=JSON.parse(localStorage.getItem(watchCacheKey(vid))||"null");if(cached?.n===ls.length)preset=cached.bd;}catch{}}
+    const prepared=prepareWatchLesson(ls,preset);ls=prepared.lines;preset=prepared.breakdown;
     setVideoId(vid);setTitle(ttl||meta?.title||"");setVidMeta(meta||null);setLines(ls);linesRef.current=ls;setActive(0);activeRef.current=0;wordRef.current=-1;setActiveWord(-1);
     setGenOffer(false);setErr("");setLibSaved(false);setSavedMine(src==="mine");
     vidMetaRef.current=meta||null;titleRef.current=ttl||meta?.title||"";
     if(src!=="mine"&&src!=="shared") saveMine(vid,ls,preset||Array(ls.length).fill(null),meta||null,ttl||meta?.title||"");
     runBreakdown(vid,ls,preset,src);
   };
-  const closeVideo=()=>{ setReady(false);setPrepDone(false);setLines([]);setBd([]);setVideoId(null);setErr("");setGenOffer(false);setLoading(false); };
-
-  // ── Transcript: captions first; speech-to-text only if you confirm ────
+  const jobKey=vid=>`watch:job:${user?.uid||'device'}:${vid}`;
+  const readJob=vid=>{try{return JSON.parse(localStorage.getItem(jobKey(vid))||'null')?.jobId||null;}catch{return null;}};
+  const forgetJob=vid=>{try{localStorage.removeItem(jobKey(vid));}catch{}setPendingJob(null);};
+  const closeVideo=()=>{
+    transcriptRef.current?.abort();generationLockRef.current=false;watchSessionRef.current++;breakdownRunRef.current++;
+    setReady(false);setPrepDone(false);setLines([]);setBd([]);setVideoId(null);setErr("");setGenOffer(false);setLoading(false);setTranscriptStatus("");setPendingJob(null);
+  };
+  useEffect(()=>()=>{transcriptRef.current?.abort();searchRequestRef.current?.abort();watchSessionRef.current++;breakdownRunRef.current++;},[]);
   const openVideo=async(vid,meta)=>{
-    setLoading(true);setErr("");setGenOffer(false);setVideoId(vid);setVidMeta(meta||null);setTitle(meta?.title||"");
-    // 1) my saved copy on this device, 2) my saved copy in my account, 3) shared library — all free
+    transcriptRef.current?.abort();generationLockRef.current=false;const controller=new AbortController();transcriptRef.current=controller;
+    const session=++watchSessionRef.current;breakdownRunRef.current++;
+    const current=()=>session===watchSessionRef.current&&!controller.signal.aborted;
+    setLoading(true);setErr("");setGenOffer(false);setCanGenerate(true);setTranscriptStatus("");setPendingJob(readJob(vid));setVideoId(vid);setVidMeta(meta||null);setTitle(meta?.title||"");
+    const useSaved=(x,source)=>{if(!current())return false;startWithLines(vid,x.lines,x.title,{...meta,thumb:x.thumb||meta?.thumb,channel:x.channel||meta?.channel,durationSec:x.durationSec||meta?.durationSec},x.bd,source);return true;};
     try{
-      const loc=JSON.parse(localStorage.getItem(mineKey(vid))||"null");
-      if(loc?.lines?.length&&loc.bd?.length===loc.lines.length){ startWithLines(vid,loc.lines,loc.title,{thumb:loc.thumb,channel:loc.channel,durationSec:loc.durationSec},loc.bd,"mine"); setLoading(false); return; }
-    }catch{}
-    if(user){
-      try{
-        const m=await getDoc(doc(db,"users",user.uid,"watchVideos",vid));
-        if(m.exists()&&m.data().lines?.length){ const x=m.data(); startWithLines(vid,x.lines,x.title,{thumb:x.thumb,channel:x.channel,durationSec:x.durationSec},x.bd,"mine"); setLoading(false); return; }
-      }catch{}
-    }
-    try{
-      const d=await getDoc(doc(db,"watchLibrary",vid));
-      if(d.exists()&&d.data().lines?.length){ const x=d.data(); startWithLines(vid,x.lines,x.title,{thumb:x.thumb,channel:x.channel,durationSec:x.durationSec},x.bd,"shared"); setLoading(false); return; }
-    }catch{}
-    try{
-      let cachedT=null; try{ cachedT=JSON.parse(localStorage.getItem(`watch:t:${vid}`)||"null"); }catch{}
-      if(cachedT?.lines?.length){ startWithLines(vid,cachedT.lines,cachedT.title,meta); return; }
-      const r=await fetch("/api/yt-transcript?v="+vid);
-      const d=await r.json().catch(()=>({}));
-      if(r.ok&&d.lines?.length){ try{ localStorage.setItem(`watch:t:${vid}`,JSON.stringify({lines:d.lines,title:d.title})); }catch{} startWithLines(vid,d.lines,d.title,meta); return; }
-      if(d.error==="no_arabic_captions"||d.error==="no_captions"){ setGenOffer(true);setErr("This video has no Arabic captions."); return; }
-      setErr(d.error==="needs_transcript_source"
-        ?"Automatic transcripts aren't switched on yet — the transcript service key (SUPADATA_API_KEY) still needs adding in Vercel."
-        :"Couldn't get the transcript ("+(d.detail||d.error||"blocked")+").");
-    }catch{ setErr("Couldn't reach the transcript service."); }
-    finally{ setLoading(false); }
+      try{const x=JSON.parse(localStorage.getItem(mineKey(vid))||'null');if(x?.lines?.length&&x.bd?.length===x.lines.length){useSaved(x,'mine');return;}}catch{}
+      if(user){try{const d=await getDoc(doc(db,'users',user.uid,'watchVideos',vid));if(!current())return;if(d.exists()&&d.data().lines?.length){useSaved(d.data(),'mine');return;}}catch{}}
+      try{const d=await getDoc(doc(db,'watchLibrary',vid));if(!current())return;if(d.exists()&&d.data().lines?.length){useSaved(d.data(),'shared');return;}}catch{}
+      if(!current())return;
+      try{const x=JSON.parse(localStorage.getItem(`watch:t:${vid}`)||'null');if(x?.lines?.length){startWithLines(vid,x.lines,x.title,meta);return;}}catch{}
+      if(readJob(vid)){setGenOffer(true);setCanGenerate(true);setErr("A transcript job was already started. Resume it without starting another paid request.");return;}
+      const data=await requestTranscript(vid,{signal:controller.signal,onJob:job=>{if(current()){setPendingJob(job);try{localStorage.setItem(jobKey(vid),JSON.stringify({jobId:job}));}catch{}}},onStatus:message=>{if(current())setTranscriptStatus(message);}});
+      if(!current())return;
+      try{localStorage.setItem(`watch:t:${vid}`,JSON.stringify({lines:data.lines,title:data.title}));}catch{}
+      forgetJob(vid);startWithLines(vid,data.lines,data.title,meta);
+    }catch(error){
+      if(!current())return;
+      if(['transcription_failed','invalid_job','no_speech','job_expired'].includes(error.code))forgetJob(vid);
+      setGenOffer(true);setCanGenerate(error.canGenerate!==false);setErr(error.message||"Captions are blocked or unavailable. Try speech-to-text instead.");
+    }finally{if(current())setLoading(false);}
   };
   const loadFromLink=()=>{
     const vid=ytVideoId(url);
@@ -2862,44 +2890,48 @@ Return ONLY valid JSON, no commentary: [{"i":0,"t":"translation","w":[{"a":"..",
     openVideo(vid,null);
   };
   const generate=async()=>{
-    setLoading(true);setErr("");setGenOffer(false);
+    if(loading||generationLockRef.current||!videoId||!canGenerate)return;
+    generationLockRef.current=true;
+    const vid=videoId,session=watchSessionRef.current;
+    transcriptRef.current?.abort();const controller=new AbortController();transcriptRef.current=controller;
+    const current=()=>session===watchSessionRef.current&&!controller.signal.aborted;
+    setLoading(true);setErr("");setTranscriptStatus("Starting speech-to-text…");
     try{
-      let r=await fetch("/api/yt-transcript?v="+videoId+"&generate=1");
-      let d=await r.json().catch(()=>({}));
-      for(let n=0;n<45&&d.pending&&d.jobId;n++){
-        await new Promise(res=>setTimeout(res,4000));
-        r=await fetch("/api/yt-transcript?job="+encodeURIComponent(d.jobId)+"&v="+videoId);
-        d=await r.json().catch(()=>({}));
-      }
-      if(d.lines?.length){ try{ localStorage.setItem(`watch:t:${videoId}`,JSON.stringify({lines:d.lines,title:""})); }catch{} startWithLines(videoId,d.lines,"",vidMeta); return; }
-      setErr("Speech-to-text didn't return a transcript ("+(d.detail||d.error||"timed out")+").");
-    }catch{ setErr("Speech-to-text request failed."); }
-    finally{ setLoading(false); }
+      const data=await requestTranscript(vid,{generate:true,jobId:readJob(vid),signal:controller.signal,
+        onJob:job=>{if(current()){setPendingJob(job);try{localStorage.setItem(jobKey(vid),JSON.stringify({jobId:job}));}catch{}}},
+        onStatus:message=>{if(current())setTranscriptStatus(message);}});
+      if(!current())return;
+      forgetJob(vid);try{localStorage.setItem(`watch:t:${vid}`,JSON.stringify({lines:data.lines,title:data.title}));}catch{}
+      startWithLines(vid,data.lines,data.title,vidMeta);
+    }catch(error){if(current()){
+      if(['transcription_failed','invalid_job','no_speech','job_expired'].includes(error.code))forgetJob(vid);
+      setGenOffer(true);setCanGenerate(error.canGenerate!==false);setErr(error.message||"Speech-to-text couldn't finish. Resume a saved job rather than starting another.");
+    }}finally{if(current())setLoading(false);}
   };
-
-  // ── Explore: English → Arabic MSA query → YouTube search (captions only)
-  const search=async(more)=>{
-    const q=query.trim(),c=WATCH_CATEGORIES.find(x=>x.k===cat);
-    if(!q&&!c.ar) return;
-    setSearching(true);setSearchErr("");
+  // Direct Arabic/English search. Model availability must not block finding videos.
+  const search=async(more=false,provider='youtube')=>{
+    const category=WATCH_CATEGORIES.find(x=>x.k===cat);
+    const selected=more?searchSnapshotRef.current:{q:searchQuery(query,category?.ar),provider,captions:captionsOnly};
+    if(!selected?.q||(more&&!nextTok))return;
+    searchRequestRef.current?.abort();const controller=new AbortController();searchRequestRef.current=controller;
+    setSearching(true);setSearchErr("");setCanServiceSearch(false);
+    if(!more){searchSnapshotRef.current=selected;setArQuery(selected.q);setNextTok(null);setResults([]);}
     try{
-      let ar=arQuery;
-      if(!more){
-        ar=c.ar;
-        if(q){
-          const raw=await callClaude(`Turn this search into a short YouTube search query in Modern Standard Arabic (فصحى), 2-5 words, no dialect. Search: "${q}"${c.ar?`\nCategory keywords to include: ${c.ar}`:""}\nReturn ONLY the Arabic query, nothing else.`,60,"watchQuery",trackUsage);
-          ar=raw.replace(/["'\n`]/g,"").trim()||q;
-        }
-        setArQuery(ar);
-      }
-      const r=await fetch("/api/yt-search?q="+encodeURIComponent(ar)+(more&&nextTok?"&pageToken="+nextTok:""));
-      const d=await r.json().catch(()=>({}));
-      if(!r.ok){ setSearchErr(d.error==="no_api_key"?"Search isn't switched on yet — the YouTube API key (YOUTUBE_API_KEY) still needs adding in Vercel.":"Search failed ("+(d.detail||d.error||r.status)+")."); return; }
-      setResults(prev=>more?[...prev,...d.items]:d.items);setNextTok(d.next||null);
-      if(!d.items.length&&!more) setSearchErr("No videos with captions found. Try different words.");
-    }catch(e){ setSearchErr(e?.message||"Search failed."); }
-    finally{ setSearching(false); }
+      const params=new URLSearchParams({q:selected.q,provider:selected.provider,captions:selected.captions?'1':'0'});
+      if(more)params.set('pageToken',nextTok);
+      const response=await fetch('/api/yt-search?'+params,{signal:controller.signal});
+      const data=await response.json().catch(()=>({}));
+      if(controller.signal.aborted)return;
+      setCanServiceSearch(!!data.canUseTranscriptSearch);
+      if(!response.ok){setSearchErr(data.detail||"Search is unavailable. Try again or paste a video link.");return;}
+      const items=Array.isArray(data.items)?data.items:[];
+      setResults(previous=>more?[...new Map([...previous,...items].map(video=>[video.id,video])).values()]:items);setNextTok(data.next||null);
+      if(!items.length&&!more)setSearchErr(selected.captions?"No captioned videos matched. Turn off the captions-only filter to include videos that can use speech-to-text.":"No videos matched this search. Try a shorter query or paste a video link.");
+    }catch(error){if(!controller.signal.aborted)setSearchErr("Search couldn't connect. Try again or paste a video link.");}
+    finally{if(searchRequestRef.current===controller)setSearching(false);}
   };
+  const changeSearch=(value)=>{setQuery(value);setNextTok(null);searchRequestRef.current?.abort();setSearching(false);};
+  const visibleMine=filterVideos(mine,libraryQuery),visibleLibrary=filterVideos(library,libraryQuery);
 
   // ── Player (IFrame API): speed, line tracking, loop ───────────────────
   useEffect(()=>{
@@ -2910,7 +2942,7 @@ Return ONLY valid JSON, no commentary: [{"i":0,"t":"translation","w":[{"a":"..",
       playerRef.current=new YT.Player(playerDiv.current,{
         videoId,width:"100%",height:"100%",
         playerVars:{playsinline:1,rel:0,cc_load_policy:0,modestbranding:1},
-        events:{onReady:()=>{
+        events:{onPlaybackRateChange:event=>{if(Number.isFinite(event.data)&&event.data>0)setRate(event.data);},onReady:()=>{
           if(cancelled) return;
           try{playerRef.current?.setPlaybackRate?.(rateRef.current);}catch{}
           timer=setInterval(()=>{
@@ -2938,7 +2970,16 @@ Return ONLY valid JSON, no commentary: [{"i":0,"t":"translation","w":[{"a":"..",
     activeRef.current=i;setActive(i);wordRef.current=-1;setActiveWord(-1);
     if(L?.start!=null) try{playerRef.current?.seekTo(captionVideoTime(L.start,syncOffsetRef.current),true);playerRef.current?.playVideo?.();}catch{}
   };
+  const alignToAudio=i=>{
+    const line=lines[i],now=playerRef.current?.getCurrentTime?.();
+    if(!Number.isFinite(line?.start)||!Number.isFinite(now))return;
+    const offset=Math.round((now-line.start)*100)/100;
+    if(Math.abs(offset)>10){showToast("Choose the line currently being spoken; it must be within 10 seconds of the audio.","info");return;}
+    adjustSync(offset-syncOffsetRef.current);activeRef.current=i;setActive(i);wordRef.current=-1;setActiveWord(-1);
+    showToast("This line is aligned to the current audio. Sync is saved for this video.","success");
+  };
   const timed=lines.some(l=>l.start!=null);
+  const wordTiming=active>=0&&lines[active]&&bd[active]?.w?alignedWordTimes(lines[active],bd[active].w):null;
 
   const addWord=()=>{
     if(!sel||!deckId) return;
@@ -2969,6 +3010,7 @@ Return ONLY valid JSON, no commentary: [{"i":0,"t":"translation","w":[{"a":"..",
   return (
     <div className="screen">
       <Hdr title="Watch" sub="Arabic video" onBack={lines.length||videoId?closeVideo:onBack}/>
+      <WatchCosts model={pickModelForTag("watchBreakdown")} fallbackPrice={MODEL_PRICES[pickModelForTag("watchBreakdown")]} durationSec={vidMeta?.durationSec} billed={billed}/>
 
       {!lines.length&&(
         <div style={{padding:"14px 20px 0",display:"flex",flexDirection:"column",gap:12}}>
@@ -2983,22 +3025,26 @@ Return ONLY valid JSON, no commentary: [{"i":0,"t":"translation","w":[{"a":"..",
           {videoId&&(<div style={{display:"flex",flexDirection:"column",gap:10}}>
             {vidMeta?.thumb&&<img src={vidMeta.thumb} alt="" style={{width:"100%",aspectRatio:"16/9",objectFit:"cover",borderRadius:"var(--rs)"}}/>}
             {title&&<div style={{fontSize:14,fontWeight:600}}>{title}</div>}
-            {loading&&<div style={{fontSize:13,color:"var(--text2)"}}>Getting the transcript… (speech-to-text can take a minute or two)</div>}
+            {loading&&<div style={{fontSize:13,color:"var(--text2)"}}>{transcriptStatus||"Getting the transcript…"}</div>}
             {err&&<div style={{fontSize:12.5,color:"var(--weak)",lineHeight:1.5}}>{err}</div>}
             {genOffer&&(<>
-              <div style={{fontSize:12.5,color:"var(--text2)",lineHeight:1.6}}>You can generate one with speech-to-text. It costs about 2 credits per minute{vidMeta?.durationSec?` — roughly ${Math.ceil(vidMeta.durationSec/60)*2} credits for this ${Math.ceil(vidMeta.durationSec/60)}-minute video`:""} on your transcript service.</div>
-              <button className="btn btn-primary" onClick={generate} style={{padding:"13px",borderRadius:"var(--r)"}}>Generate transcript (speech-to-text)</button>
+              <div style={{fontSize:12.5,color:"var(--text2)",lineHeight:1.6}}>Captions unavailable? Transcribe the audio instead. It costs about 2 credits per minute{vidMeta?.durationSec?` — roughly ${Math.ceil(vidMeta.durationSec/60)*2} credits for this ${Math.ceil(vidMeta.durationSec/60)}-minute video`:""} on your transcript service.</div>
+              <button className="btn btn-primary" onClick={generate} disabled={loading||!canGenerate} style={{padding:"13px",borderRadius:"var(--r)"}}>{pendingJob?"Resume speech-to-text job":loading?"Transcribing…":"Generate transcript (speech-to-text)"}</button>
+              {!canGenerate&&<div style={{fontSize:12,color:"var(--text3)"}}>Speech-to-text is currently unavailable. The app’s transcript-service configuration or limits need checking.</div>}
             </>)}
           </div>)}
 
           {!videoId&&tab==="explore"&&(<>
-            <input className="input" placeholder="Search in English — e.g. cooking, space, animals" value={query} onChange={e=>setQuery(e.target.value)} onKeyDown={e=>{if(e.key==="Enter")search(false);}} style={{fontSize:13,padding:"11px 12px"}}/>
+            <input className="input" dir="auto" placeholder="Search Arabic or English — video title, channel or topic" value={query} onChange={e=>changeSearch(e.target.value)} onKeyDown={e=>{if(e.key==="Enter")search(false);}} style={{fontSize:13,padding:"11px 12px"}}/>
             <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
-              {WATCH_CATEGORIES.map(c=>(<button key={c.k} className={`chip ${cat===c.k?"chip-on":""}`} onClick={()=>setCat(c.k)} style={{padding:"6px 11px",fontSize:12}}>{c.label}</button>))}
+              {WATCH_CATEGORIES.map(c=>(<button key={c.k} className={`chip ${cat===c.k?"chip-on":""}`} onClick={()=>{setCat(c.k);setNextTok(null);setResults([]);setArQuery("");setSearchErr("");setCanServiceSearch(false);searchRequestRef.current?.abort();setSearching(false);}} style={{padding:"6px 11px",fontSize:12}}>{c.label}</button>))}
             </div>
-            <button className="btn btn-primary" onClick={()=>search(false)} disabled={searching||(!query.trim()&&cat==="all")} style={{padding:"12px",borderRadius:"var(--r)"}}>{searching?"Searching…":"Find videos with captions"}</button>
-            {arQuery&&<div style={{fontSize:11.5,color:"var(--text3)"}}>Searched for: <span className="ar" style={{fontSize:15}}>{arQuery}</span></div>}
+            <label style={{fontSize:12,display:"flex",gap:8,alignItems:"center"}}><input type="checkbox" checked={captionsOnly} onChange={e=>{setCaptionsOnly(e.target.checked);setNextTok(null);searchRequestRef.current?.abort();setSearching(false);}}/>Only videos with captions</label>
+            <button className="btn btn-primary" onClick={()=>search(false)} disabled={searching||(!query.trim()&&cat==="all")} style={{padding:"12px",borderRadius:"var(--r)"}}>{searching?"Searching…":"Find videos"}</button>
+            {arQuery&&<div style={{fontSize:11.5,color:"var(--text3)"}}>Searched for: <span dir="auto" style={{fontSize:15}}>{arQuery}</span></div>}
             {searchErr&&<div style={{fontSize:12.5,color:"var(--weak)",lineHeight:1.5}}>{searchErr}</div>}
+            {canServiceSearch&&searchErr&&<button className="btn" onClick={()=>search(false,"supadata")} disabled={searching}>Try transcript-service search · 1 credit per page</button>}
+            <div style={{fontSize:11.5,color:"var(--text3)"}}>Videos without captions can use speech-to-text after you choose it. Transcript-service search is optional and uses 1 credit per page.</div>
             <div style={{display:"flex",flexDirection:"column",gap:8}}>
               {results.map(v=><VideoCard key={v.id} v={{...v,category:cat}} onClick={()=>openVideo(v.id,v)}/>)}
             </div>
@@ -3006,18 +3052,21 @@ Return ONLY valid JSON, no commentary: [{"i":0,"t":"translation","w":[{"a":"..",
           </>)}
 
           {!videoId&&tab==="library"&&(<>
+            <input className="input" dir="auto" placeholder="Filter saved videos by title or channel" value={libraryQuery} onChange={e=>setLibraryQuery(e.target.value)}/>
+            {mineErr&&<div style={{fontSize:12,color:"var(--weak)"}}>{mineErr}</div>}
+            {libraryQuery.trim()&&(mine!==null||library!==null)&&!visibleMine.length&&!visibleLibrary.length&&<div style={{fontSize:12.5}}>No saved videos match this query. <button className="btn btn-sm" onClick={()=>{setTab("explore");changeSearch(libraryQuery);}}>Search YouTube instead</button></div>}
             <div className="sec" style={{margin:0}}>My videos</div>
             {mine===null&&<div style={{fontSize:13,color:"var(--text3)"}}>Loading…</div>}
             {mine&&!mine.length&&<div style={{fontSize:12.5,color:"var(--text3)",lineHeight:1.6}}>Videos you've prepared are saved here automatically, so you can watch them again without reloading.</div>}
             <div style={{display:"flex",flexDirection:"column",gap:8}}>
-              {(mine||[]).map(v=><VideoCard key={v.id} v={v} onClick={()=>openVideo(v.id,v)}/>)}
+              {visibleMine.map(v=><VideoCard key={v.id} v={v} onClick={()=>openVideo(v.id,v)}/>)}
             </div>
             <div className="sec" style={{margin:"10px 0 0"}}>Shared library</div>
             {libErr&&<div style={{fontSize:12.5,color:"var(--weak)",lineHeight:1.5}}>{libErr}</div>}
             {library===null&&<div style={{fontSize:13,color:"var(--text3)"}}>Loading…</div>}
             {library&&!library.length&&!libErr&&<div style={{fontSize:13,color:"var(--text3)",lineHeight:1.6}}>No videos in the library yet. Open a video from Explore and tap "Add to shared library".</div>}
             <div style={{display:"flex",flexDirection:"column",gap:8}}>
-              {(library||[]).map(v=><VideoCard key={v.id} v={v} onClick={()=>openVideo(v.id,v)}/>)}
+              {visibleLibrary.map(v=><VideoCard key={v.id} v={v} onClick={()=>openVideo(v.id,v)}/>)}
             </div>
           </>)}
 
@@ -3035,7 +3084,7 @@ Return ONLY valid JSON, no commentary: [{"i":0,"t":"translation","w":[{"a":"..",
           {title&&<div style={{fontSize:14,fontWeight:600}}>{title}</div>}
           <div style={{fontSize:13.5,fontWeight:600}}>{prepDone?"Lesson prepared with some gaps":"Preparing your lesson…"}</div>
           <div style={{height:10,background:"var(--border)",borderRadius:6,overflow:"hidden"}}><div style={{width:`${Math.round(Math.min(bdProgress,lines.length)/lines.length*100)}%`,height:"100%",background:"var(--accent)",transition:"width .3s"}}/></div>
-          <div style={{fontSize:12,color:"var(--text3)",lineHeight:1.6}}>{Math.min(bdProgress,lines.length)} of {lines.length} lines translated word by word. Keep this page open — once it's ready you can watch in real time, and the lesson is saved so you never pay for it twice.</div>
+          <div style={{fontSize:12,color:"var(--text3)",lineHeight:1.6}}>{Math.min(bdProgress,lines.length)} of {lines.length} lines translated word by word. Keep this page open — once it's ready you can watch in real time, and completed translations are saved for reuse. Retrying missing lines can incur additional charges.</div>
           {prepDone&&(<>
             <div style={{fontSize:12.5,color:"var(--weak)",lineHeight:1.5}}>{bd.filter(x=>!x).length} lines couldn't be translated{bdErr?` (${bdErr})`:""}.</div>
             <div style={{display:"flex",gap:8}}>
@@ -3056,7 +3105,7 @@ Return ONLY valid JSON, no commentary: [{"i":0,"t":"translation","w":[{"a":"..",
               <span style={{marginLeft:"auto",fontSize:11,color:"var(--text3)"}}>{bdProgress<lines.length?`Breaking down… ${bdProgress}/${lines.length}`:(bd.some(x=>!x)?"Some lines missing":"Breakdown ready")}</span>
             </div>
             {timed&&<div style={{display:"flex",gap:6,alignItems:"center",flexWrap:"wrap",marginTop:6,fontSize:11.5,color:"var(--text3)"}}>
-              <span>Caption sync: {syncOffset>0?"+":""}{syncOffset.toFixed(2)}s</span>
+              <span>Caption sync: {syncOffset>0?"+":""}{syncOffset.toFixed(2)}s · {wordTiming?"Caption word timing":"Estimated word timing"}</span>
               <button className="chip" onClick={()=>adjustSync(-0.25)}>Text earlier −0.25s</button>
               <button className="chip" onClick={()=>adjustSync(0.25)}>Text later +0.25s</button>
               {syncOffset!==0&&<button className="chip" onClick={()=>adjustSync(-syncOffset)}>Reset</button>}
@@ -3077,6 +3126,10 @@ Return ONLY valid JSON, no commentary: [{"i":0,"t":"translation","w":[{"a":"..",
               return (
                 <div key={i} ref={on?activeEl:null} onClick={()=>seek(i)}
                   style={{padding:on?"14px 12px":"10px 12px",borderRadius:"var(--rs)",cursor:"pointer",border:`1.5px solid ${on?"var(--accent)":"var(--border)"}`,background:on?"var(--accent-bg)":"var(--surface)",opacity:on||!timed?1:.8}}>
+                  {Number.isFinite(l.start)&&<div dir="ltr" style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:8,marginBottom:6,fontSize:11,color:"var(--text3)"}}>
+                    <span>{fmtDur(Math.floor(l.start))}</span>
+                    <button className="chip" title="Click when you hear the start of this line" onClick={event=>{event.stopPropagation();alignToAudio(i);}} style={{fontSize:11}}>Align this line to audio now</button>
+                  </div>}
                   {b?.w?.length?(
                     <div className="ar" dir="rtl" style={{direction:"rtl",display:"flex",flexWrap:"wrap",flexDirection:"row",justifyContent:"flex-start",gap:on?"10px 14px":"6px 10px"}}>
                       {b.w.map((w,k)=>(
