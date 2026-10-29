@@ -44,7 +44,7 @@ test('rapid double click starts one paid job even before React rerenders',async(
  const first=button.props.onClick(),second=button.props.onClick();assert.equal(calls,1);reject(Error('controlled request failure'));await Promise.all([first,second]);
 });
 
-test('ready lesson shows level estimate before player is mounted',()=>{const html=renderToStaticMarkup(fixture({ready:true,videoId:'video',lines:[{text:'مرحبا'}],assessment:{levelId:'b1-low',reason:'Everyday narrative',confidence:'medium',register:'msa',caveats:['Transcript only']}}));assert(html.includes('Lower intermediate'));assert(html.includes('Everyday narrative'));assert(html.includes('Begin watching'));assert(!html.includes('aspect-ratio:16/9'));});
+test('ready lesson shows level estimate before player is mounted',()=>{const html=renderToStaticMarkup(fixture({ready:true,videoId:'video',lines:[{text:'مرحبا'}],assessment:{levelId:'b1-low',reason:'Everyday narrative',confidence:'medium',register:'msa',caveats:['Transcript only']}}));assert(html.includes('B1 · Lower'));assert(html.includes('Everyday narrative'));assert(html.includes('Begin watching'));assert(!html.includes('aspect-ratio:16/9'));});
 
 test('actual player heartbeat excludes paused, hidden and seeked playback',async()=>{
  const h={};fixture({videoId:'video',ready:true,lessonEntered:true,lines:[{start:0,dur:90,text:'مرحبا'}],bd:[{tr:'hello',w:[]}]},undefined,h);

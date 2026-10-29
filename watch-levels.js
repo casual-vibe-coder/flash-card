@@ -1,8 +1,8 @@
 export const LEVEL_VERSION = 1;
 export const WATCH_LEVELS = [
   ['a1','A1 · Beginner','A1'],['a2','A2 · Elementary','A2'],
-  ['b1-low','B1 · Lower intermediate','B1'],['b1-mid','B1 · Intermediate','B1'],['b1-high','B1 · Upper intermediate','B1'],
-  ['b2-low','B2 · Lower B2','B2'],['b2-mid','B2 · Mid B2','B2'],['b2-high','B2 · Upper B2','B2'],
+  ['b1-low','B1 · Lower','B1'],['b1-mid','B1 · Mid','B1'],['b1-high','B1 · High','B1'],
+  ['b2-low','B2 · Lower','B2'],['b2-mid','B2 · Mid','B2'],['b2-high','B2 · High','B2'],
   ['c1','C1 · Advanced','C1'],['c2','C2 · Proficient','C2'],
 ].map(([id,label,cefr])=>({id,label,cefr}));
 export const levelInfo = id => WATCH_LEVELS.find(level=>level.id===id) || {id:'unrated',label:'Unrated',cefr:null};
@@ -13,7 +13,7 @@ export function nextLevel(filter) {
   if(filter?.startsWith('cefr:')){const all=['A1','A2','B1','B2','C1','C2'];const i=all.indexOf(filter.slice(5));return i>=0&&i<all.length-1?'cefr:'+all[i+1]:null;}
   const i=WATCH_LEVELS.findIndex(level=>level.id===filter);return i>=0&&i<WATCH_LEVELS.length-1?WATCH_LEVELS[i+1].id:null;
 }
-export const filterLabel = id => id==='all'?'All levels':id?.startsWith('cefr:')?id.slice(5)+' · all sub-bands':levelInfo(id).label;
+export const filterLabel = id => id==='all'?'All levels':id?.startsWith('cefr:')?id.slice(5)+' · overall':levelInfo(id).label;
 export function levelEvidence(lines, title='') {
   const valid=(lines||[]).filter(line=>typeof line.text==='string'&&line.text.trim());
   const text=valid.map(line=>line.text).join(' ');
