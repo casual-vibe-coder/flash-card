@@ -1,3 +1,5 @@
+import { lookupPrompt, parseLookup } from "./word-lookup.js";
+import DuplicateFinder from "./DuplicateFinder.jsx";
 import { arabicSearchQuery } from "./watch-search.js";
 import { WATCH_RESOURCES } from "./watch-resources.js";
 import useWatchProgress from "./useWatchProgress.js";
@@ -1511,74 +1513,34 @@ function ClickableArabic({text,highlightWords=[],onWordClick,fontSize=20}) {
 // ─────────────────────────────────────────────────────────────
 // WORD POPUP
 // ─────────────────────────────────────────────────────────────
-function WordPopup({word,context,decks,cardStates,onClose,onAddToFlashcard,trackUsage}) {
+function WordPopup({word,context="",decks=[],cardStates,onClose,onAddToFlashcard,trackUsage}) {
   const [data,setData]=useState(null);
   const [loading,setLoading]=useState(true);
   const [addOpen,setAddOpen]=useState(false);
   const [targetDeck,setTargetDeck]=useState(decks[0]?.id||"");
   const [added,setAdded]=useState(false);
 
+  const [error,setError]=useState('');
+  const [attempt,setAttempt]=useState(0);
+  const trackRef=useRef(trackUsage);
+  trackRef.current=trackUsage;
   useEffect(()=>{
-    if(!word) return;
     let cancelled=false;
-    // NOTE: this is a plain bilingual DICTIONARY lookup — deliberately NOT
-    // wrapped in BAYNA_YADAYK_STYLE. That style guide is for generating
-    // passages ("Modern Standard Arabic only, no colloquial") and, when bolted
-    // onto a lookup, made the model REFUSE colloquial words, proper nouns, and
-    // anything it judged "outside the register" — i.e. the "this word isn't
-    // available" reports even for words Google translates fine.
-    const buildPrompt=(force)=>`You are an expert Arabic→English lexicographer. A learner tapped a single word and wants its meaning.
-
-Word tapped: "${word}"
-Sentence it appeared in: "${context.length > 300 ? context.substring(0, 300) + '...' : context}"
-
-RULES:
-- ALWAYS give your best-effort English meaning. NEVER reply that the word is unavailable, unknown, not found, not a real word, or outside any curriculum/register. Every Arabic string is translatable.
-- Handle ANY register: Modern Standard, Classical, Qur'anic, or colloquial/dialect — translate it regardless.
-- If the word carries attached prefixes (و=and, ف=so, ب=with/in, ك=like, ل=for, ال=the, س=will) or a suffix pronoun, analyse the core word and translate that.
-- If it is a name or place, transliterate it and say so.
-- If genuinely uncertain, give the most likely meaning from the root + context and append " (approx.)".${force?`\n- Your previous attempt did NOT give a real translation. You MUST output an actual English meaning now.`:""}
-
-Return ONLY valid JSON, no markdown. Put full tashkeel on Arabic text:
-{"word":"${word}","root":"3-letter Arabic root with tashkeel like كَتَبَ, or empty","rootMeaning":"short root meaning or empty","meaning":"English meaning — REQUIRED, must never be empty or a refusal","partOfSpeech":"noun/verb/adjective/particle/proper noun/etc","note":"one short usage tip or empty"}`;
-    // Did the model dodge instead of translating?
-    const looksLikeRefusal=(m)=>{
-      if(!m||!m.trim()) return true;
-      return /not? available|unavailable|isn'?t available|not found|cannot? find|can'?t find|\bunknown\b|no (clear |exact )?(meaning|translation)|n\/a|not a (real|standard|valid) word|unable to|outside (the |this )?(register|curriculum|level)/i.test(m);
-    };
+    setLoading(true);setData(null);setError('');setAdded(false);setAddOpen(false);
+    if(!word){setLoading(false);setError('Choose an Arabic word to look up.');return;}
     (async()=>{
       try {
-        let parsed={};
-        try {
-          const raw=await callClaude(buildPrompt(false),400,"wordLookup",trackUsage,25000);
-          parsed=extractJSON(raw);
-        } catch(e) { 
-          throw e; 
-        }
-        // One forceful retry if the model refused or returned no meaning.
-        if(looksLikeRefusal(parsed?.meaning)){
-          try {
-            const raw2=await callClaude(buildPrompt(true),400,"wordLookup",trackUsage,25000);
-            const p2=extractJSON(raw2);
-            if(p2?.meaning && !looksLikeRefusal(p2.meaning)) parsed=p2;
-            else if(p2?.meaning) parsed=p2; // still take whatever it gave over nothing
-          } catch(e) {
-            console.error("Retry failed:", e);
-          }
-        }
-        if(cancelled) return;
-        // Guard against a parse that succeeded but lacks the meaning field.
-        setData({word,root:"",rootMeaning:"",meaning:"",partOfSpeech:"",note:"",...parsed});
-      } catch(e) {
-        if(cancelled) return;
-        setData({word,root:"",rootMeaning:"",meaning:e?.message?.includes("timed out")?"Lookup timed out — tap again to retry":`Couldn't load — ${e?.message || "tap the word again"}`,partOfSpeech:"",note:""});
-      } finally { if(!cancelled) setLoading(false); }
+        const raw=await callClaude(lookupPrompt(word,context),1200,"wordLookup",trackRef.current,30000);
+        const parsed=parseLookup(raw,word,extractJSON);
+        if(!cancelled)setData(parsed);
+      }catch(e){if(!cancelled)setError(e?.message||'Could not load the meaning. Please retry.');}
+      finally{if(!cancelled)setLoading(false);}
     })();
     return ()=>{cancelled=true;};
-  },[word]);
+  },[word,context,attempt]);
 
   const doAdd=()=>{
-    if(!data||!targetDeck) return;
+    if(!data||error||!targetDeck) return;
     const card={id:`c${Date.now()}`,wordType:data.partOfSpeech?.toLowerCase().includes("verb")?"verb":"noun",english:data.meaning,arabicBase:data.word,forms:{singular:data.word},status:"new"};
     onAddToFlashcard(targetDeck,card);
     setAdded(true);
@@ -1596,9 +1558,11 @@ Return ONLY valid JSON, no markdown. Put full tashkeel on Arabic text:
           <div style={{display:"flex",flexDirection:"column",alignItems:"center",gap:10,padding:"16px 0"}}>
             <RefreshCw size={18} className="spin" color="var(--accent)"/>
             <div style={{fontSize:13,color:"var(--text2)",fontWeight:500}}>Looking up root, meaning & usage…</div>
-            <div style={{fontSize:11,color:"var(--text3)"}}>Usually 1-2 seconds</div>
+            <div style={{fontSize:11,color:"var(--text3)"}}>Some models take up to 30 seconds</div>
           </div>
-        ) : (
+        ) : error ? (
+          <div role="alert" style={{display:'grid',gap:12}}><p style={{color:'var(--weak)',margin:0}}>{error}</p><button className="btn btn-primary" onClick={()=>setAttempt(n=>n+1)}>Retry lookup</button><small>Check the Word lookups model and API key in Settings if this keeps happening.</small></div>
+        ) : data ? (
           <div style={{display:"flex",flexDirection:"column",gap:12}}>
             {data.root&&(
               <div style={{background:"var(--accent-bg)",border:"1px solid var(--accent-border)",borderRadius:"var(--rxs)",padding:"10px 13px"}}>
@@ -1631,7 +1595,7 @@ Return ONLY valid JSON, no markdown. Put full tashkeel on Arabic text:
               </div>
             )}
           </div>
-        )}
+        ) : null}
       </div>
     </div>
   );
@@ -2342,144 +2306,6 @@ CRITICAL: Every Arabic word in any "value" field MUST have full tashkeel.`;
 // DUPLICATE FINDER — exact-match dedup across all decks
 // ─────────────────────────────────────────────────────────────
 function stripTashkeel(s){return (s||"").replace(/[ً-ْٰ]/g,"");}
-
-function findDuplicateGroups(decks,cardStates){
-  const buckets=new Map(); // key -> [{card, deckId, deckTitle}]
-  for(const deck of decks){
-    for(const card of (cardStates[deck.id]||[])){
-      const ar=stripTashkeel(card.arabicBase||"").trim();
-      const en=(card.english||"").trim().toLowerCase();
-      if(!ar&&!en) continue;
-      const key=`${ar}|${en}`;
-      if(!buckets.has(key)) buckets.set(key,[]);
-      buckets.get(key).push({card,deckId:deck.id,deckTitle:deck.title});
-    }
-  }
-  // Only groups with >1 entry are duplicates
-  const groups=[];
-  for(const [key,entries] of buckets){
-    if(entries.length>1) groups.push({key,entries});
-  }
-  return groups;
-}
-
-function scoreCardForKeep(card){
-  const statusPts=card.status==="known"?300:card.status==="weak"?200:100;
-  const formsPts=Object.values(card.forms||{}).filter(Boolean).length*5;
-  const srsPts=card.srsLastReview?20:0;
-  const streakPts=(card.srsStreak||0)*3;
-  return statusPts+formsPts+srsPts+streakPts;
-}
-
-function DuplicateFinder({decks,cardStates,setCardStates}) {
-  const [phase,setPhase]=useState("idle"); // idle | review | done
-  const [keepIds,setKeepIds]=useState({}); // groupKey -> cardId to keep
-
-  const groups=phase==="idle"?[]:findDuplicateGroups(decks,cardStates);
-  const totalDuplicates=groups.reduce((s,g)=>s+g.entries.length-1,0);
-
-  const startScan=()=>{
-    const found=findDuplicateGroups(decks,cardStates);
-    if(!found.length){setPhase("done");return;}
-    // Default: keep the highest-scored card per group
-    const defaults={};
-    for(const g of found){
-      const winner=[...g.entries].sort((a,b)=>scoreCardForKeep(b.card)-scoreCardForKeep(a.card))[0];
-      defaults[g.key]=winner.card.id;
-    }
-    setKeepIds(defaults);
-    setPhase("review");
-  };
-
-  const apply=()=>{
-    setCardStates(prev=>{
-      const next={...prev};
-      for(const g of groups){
-        const keep=keepIds[g.key];
-        for(const e of g.entries){
-          if(e.card.id===keep) continue;
-          next[e.deckId]=(next[e.deckId]||[]).filter(c=>c.id!==e.card.id);
-        }
-      }
-      return next;
-    });
-    showToast(`Removed ${totalDuplicates} duplicate${totalDuplicates===1?"":"s"}`,"success");
-    setPhase("done");
-  };
-
-  const reset=()=>{setPhase("idle");setKeepIds({});};
-
-  // Initial scan count for the idle button
-  const initialGroups=findDuplicateGroups(decks,cardStates);
-  const initialDupes=initialGroups.reduce((s,g)=>s+g.entries.length-1,0);
-
-  return (
-    <div style={{background:"var(--surface)",border:"1.5px solid var(--border)",borderRadius:"var(--r)",padding:"15px 17px"}}>
-      <div className="sec">Duplicate Finder</div>
-      <div style={{fontSize:13,color:"var(--text2)",lineHeight:1.6,marginBottom:10}}>
-        Finds cards with the same Arabic word and English meaning across all decks. Picks the most-mastered copy to keep; you can override per group before applying.
-      </div>
-
-      {phase==="idle"&&(
-        <button className="btn btn-primary" onClick={startScan} disabled={!initialGroups.length}
-          style={{width:"100%",padding:12,borderRadius:"var(--rs)",fontSize:13,opacity:initialGroups.length?1:0.5}}>
-          <Search size={14}/> {initialGroups.length?`Find ${initialDupes} duplicate${initialDupes===1?"":"s"} across ${initialGroups.length} group${initialGroups.length===1?"":"s"}`:"No duplicates found"}
-        </button>
-      )}
-
-      {phase==="review"&&(
-        <div>
-          <div style={{background:"var(--info-bg)",border:"1px solid var(--info-border)",borderRadius:"var(--rs)",padding:"10px 12px",marginBottom:10,fontSize:13}}>
-            <strong>{groups.length}</strong> group{groups.length===1?"":"s"} · <strong>{totalDuplicates}</strong> card{totalDuplicates===1?"":"s"} will be removed (the un-selected ones)
-          </div>
-          <div style={{maxHeight:380,overflowY:"auto",border:"1px solid var(--border)",borderRadius:"var(--rs)",padding:"8px 10px",marginBottom:10}}>
-            {groups.map(g=>(
-              <div key={g.key} style={{padding:"8px 0",borderBottom:"1px solid var(--border)"}}>
-                <div style={{fontSize:11,fontWeight:700,color:"var(--text3)",letterSpacing:".05em",textTransform:"uppercase",marginBottom:5}}>
-                  {g.entries[0].card.english} <span className="ar" style={{color:"var(--accent)",fontSize:14,letterSpacing:0,textTransform:"none"}}>· {g.entries[0].card.arabicBase}</span>
-                </div>
-                <div style={{display:"flex",flexDirection:"column",gap:4}}>
-                  {g.entries.map(e=>{
-                    const isKeep=keepIds[g.key]===e.card.id;
-                    const formsCount=Object.values(e.card.forms||{}).filter(Boolean).length;
-                    return (
-                      <div key={e.card.id} onClick={()=>setKeepIds(p=>({...p,[g.key]:e.card.id}))}
-                        style={{display:"flex",alignItems:"center",gap:8,padding:"6px 8px",borderRadius:"var(--rxs)",cursor:"pointer",border:`1.5px solid ${isKeep?"var(--know)":"var(--border)"}`,background:isKeep?"var(--know-bg)":"transparent"}}>
-                        <div className={`chk ${isKeep?"on":""}`} style={{width:14,height:14,borderColor:isKeep?"var(--know)":"var(--border)",background:isKeep?"var(--know)":"transparent"}}>{isKeep&&<Check size={9} color="white"/>}</div>
-                        <div style={{flex:1,fontSize:12}}>
-                          <span style={{fontWeight:isKeep?600:400,color:isKeep?"var(--know)":"var(--text2)"}}>{isKeep?"Keep":"Delete"}</span>
-                          <span style={{color:"var(--text3)",marginLeft:6}}>· {e.deckTitle}</span>
-                          {e.card.status&&<span className={`tag tag-${e.card.status}`} style={{fontSize:9,marginLeft:6}}>{e.card.status}</span>}
-                          <span style={{color:"var(--text3)",fontSize:11,marginLeft:6}}>{formsCount} forms</span>
-                          {e.card.srsStreak>0&&<span style={{color:"var(--know)",fontSize:11,marginLeft:6}}>🔥{e.card.srsStreak}</span>}
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-            ))}
-          </div>
-          <div style={{display:"flex",gap:8}}>
-            <button className="btn" onClick={reset} style={{flex:1,background:"var(--surface2)",color:"var(--text2)",padding:"10px",borderRadius:"var(--rs)",fontSize:13}}>Cancel</button>
-            <button className="btn btn-primary" onClick={apply} style={{flex:2,padding:"10px",borderRadius:"var(--rs)",fontSize:13}}>
-              <Trash2 size={14}/> Delete {totalDuplicates} Duplicate{totalDuplicates===1?"":"s"}
-            </button>
-          </div>
-        </div>
-      )}
-
-      {phase==="done"&&(
-        <div style={{background:"var(--know-bg)",border:"1px solid var(--know-border)",borderRadius:"var(--rs)",padding:"12px",fontSize:13,color:"var(--know)",textAlign:"center"}}>
-          {initialGroups.length===0?"No duplicates found — your decks look clean.":"Duplicates removed."}
-          <div style={{marginTop:8}}>
-            <button className="btn btn-ghost" onClick={reset} style={{fontSize:12,color:"var(--text3)"}}>Run again</button>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
 
 // ─────────────────────────────────────────────────────────────
 // PROFILE PANEL (Phase 1) — edit working level, personalization mode,
