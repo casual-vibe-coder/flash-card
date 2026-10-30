@@ -71,3 +71,13 @@ test('English search translates before fetching and pagination reuses Arabic que
  const more=all.find(b=>b.props.children==='More results');assert(more);await more.props.onClick();
  assert.equal(translations,1);assert.equal(urls[0].searchParams.get('q'),'السفر إلى الفضاء');assert.equal(urls[0].searchParams.get('captions'),'1');assert.equal(urls[1].searchParams.get('q'),'السفر إلى الفضاء');assert.equal(urls[1].searchParams.get('pageToken'),'next');
 });
+
+test('following the spoken line scrolls only the transcript and leaves visible lines still',()=>{
+ const h={};fixture({videoId:'abcdefghijk',ready:true,lessonEntered:true,active:0,lines:[{start:0,dur:2,text:'مرحبا'}]},undefined,h);
+ const find=(node,predicate)=>{if(!node||typeof node!=='object')return null;if(predicate(node))return node;for(const child of React.Children.toArray(node.props?.children)){const result=find(child,predicate);if(result)return result;}return null;};
+ const region=find(h.tree,n=>n.props?.className==='watch-transcript');
+ const row=find(region,n=>n.ref&&n.props?.onClick);
+ let rect={top:650,bottom:800};region.ref.current={scrollTop:0,getBoundingClientRect:()=>({top:300,bottom:600})};row.ref.current={getBoundingClientRect:()=>rect};
+ const follow=h.effects.find(fn=>String(fn).includes('getBoundingClientRect'));assert(follow);follow();assert.equal(region.ref.current.scrollTop,338);
+ rect={top:320,bottom:500};follow();assert.equal(region.ref.current.scrollTop,338);
+});

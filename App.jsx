@@ -844,6 +844,15 @@ textarea.input{resize:vertical;min-height:110px;line-height:1.7}
 .flip-card.is-flipped .flip-card-inner{transform:rotateY(180deg)}
 .flip-card-face{position:absolute;top:0;left:0;width:100%;min-height:230px;backface-visibility:hidden;-webkit-backface-visibility:hidden;background:var(--surface);border:1.5px solid var(--border);border-radius:var(--r);box-shadow:0 5px 24px rgba(0,0,0,0.08);display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:30px 22px}
 .flip-card-back{transform:rotateY(180deg)}
+.watch-lesson{height:calc(100dvh - 76px);min-height:400px;display:flex;flex-direction:column}
+.watch-player-panel{flex-shrink:0;background:var(--bg);padding:6px 12px 8px}
+.watch-video-frame{position:relative;width:min(100%,53.333dvh);aspect-ratio:16/9;margin:0 auto;border-radius:var(--rs);overflow:hidden;background:#000}
+.watch-transcript{flex:1;min-height:0;overflow-y:auto;overscroll-behavior:contain;padding:12px 12px 24px;display:flex;flex-direction:column;gap:8px;scrollbar-gutter:stable}
+.watch-transcript>div{flex-shrink:0}
+.watch-options{margin-top:8px;font-size:12px}
+.watch-options>summary{cursor:pointer;color:var(--text2);padding:5px 0}
+.watch-options[open]{max-height:22dvh;overflow-y:auto}
+@media(max-width:480px){.watch-player-panel .chip{padding:5px 8px!important;font-size:11px!important}.watch-lesson{min-height:320px}}
 .overlay{position:fixed;inset:0;background:rgba(0,0,0,.44);z-index:100;display:flex;align-items:flex-end;justify-content:center;animation:ovIn .2s ease}
 @keyframes ovIn{from{opacity:0}to{opacity:1}}
 .drawer{background:var(--surface);border-radius:20px 20px 0 0;width:100%;max-width:680px;padding:22px 20px 36px;animation:drIn .25s cubic-bezier(.2,0,.2,1)}
@@ -2558,7 +2567,7 @@ function WatchScreen({onBack,onAddToFlashcard,decks,trackUsage,user,watchProgres
   const [library,setLibrary]=useState(null);
   const [libErr,setLibErr]=useState("");
   const [libSaved,setLibSaved]=useState(false);
-  const playerRef=useRef(null),playerDiv=useRef(null),linesRef=useRef([]),loopRef=useRef(false),activeRef=useRef(0),activeEl=useRef(null),bdRef=useRef([]),wordRef=useRef(-1),vidMetaRef=useRef(null),titleRef=useRef("");
+  const playerRef=useRef(null),playerDiv=useRef(null),linesRef=useRef([]),loopRef=useRef(false),activeRef=useRef(0),activeEl=useRef(null),transcriptEl=useRef(null),bdRef=useRef([]),wordRef=useRef(-1),vidMetaRef=useRef(null),titleRef=useRef("");
   vidMetaRef.current=vidMeta;titleRef.current=title;
   linesRef.current=lines;loopRef.current=loopLine;bdRef.current=bd;
 
@@ -2838,7 +2847,14 @@ Return ONLY valid JSON, no commentary: [{"i":0,"t":"translation","w":[{"a":"..",
     return()=>{ flushWatch();trackerRef.current?.reset();signals.forEach(name=>window.removeEventListener(name,reset));if(heartbeat)clearInterval(heartbeat);cancelled=true; if(timer) clearInterval(timer); try{playerRef.current?.destroy();}catch{} playerRef.current=null; };
   },[videoId,lines.length,ready,lessonEntered,watchProgress.owner]);
   useEffect(()=>{ try{playerRef.current?.setPlaybackRate?.(rate);}catch{} },[rate,videoId,ready]);
-  useEffect(()=>{ activeEl.current?.scrollIntoView?.({block:"center",behavior:"instant"}); },[active]);
+  useEffect(()=>{
+    const container=transcriptEl.current,line=activeEl.current;
+    if(!container||!line)return;
+    const view=container.getBoundingClientRect(),row=line.getBoundingClientRect();
+    if(row.top<view.top+12||row.bottom>view.bottom-12){
+      container.scrollTop+=row.top-view.top-12;
+    }
+  },[active,lessonEntered,ready]);
 
   const seek=(i)=>{
     flushWatch();trackerRef.current?.reset();
@@ -2993,15 +3009,16 @@ Return ONLY valid JSON, no commentary: [{"i":0,"t":"translation","w":[{"a":"..",
         {!levelBusy&&<button className="btn" onClick={()=>estimateLevel(videoId,lines,title)}>Recheck difficulty</button>}
       </div>}
       {lines.length>0&&ready&&lessonEntered&&(
-        <div>
-          <div style={{padding:"8px 20px",fontSize:12}}>{levelInfo(trackerRef.current?.record.levelId).label} · Listening time saved to Watch → Progress · {watchProgress.status}</div>
-          <div style={{position:"sticky",top:0,zIndex:5,background:"var(--bg)",padding:"12px 20px 8px"}}>
-            <div style={{position:"relative",width:"100%",aspectRatio:"16/9",borderRadius:"var(--rs)",overflow:"hidden",background:"#000"}}><div ref={playerDiv} style={{position:"absolute",inset:0}}/></div>
+        <div className="watch-lesson">
+          <div style={{padding:"6px 12px",fontSize:11,flexShrink:0}}>{levelInfo(trackerRef.current?.record.levelId).label} · Listening time saved to Watch → Progress · {watchProgress.status}</div>
+          <div className="watch-player-panel">
+            <div className="watch-video-frame"><div ref={playerDiv} style={{position:"absolute",inset:0}}/></div>
             <div style={{display:"flex",gap:6,alignItems:"center",marginTop:8,flexWrap:"wrap"}}>
               {[0.5,0.75,1,1.25].map(r=>(<button key={r} className={`chip ${rate===r?"chip-on":""}`} onClick={()=>setRate(r)} style={{padding:"6px 10px",fontSize:12}}>{r}×</button>))}
               {timed&&<button className={`chip ${loopLine?"chip-on":""}`} onClick={()=>setLoopLine(v=>!v)} style={{padding:"6px 10px",fontSize:12}}><RotateCcw size={12}/> Loop line</button>}
               <span style={{marginLeft:"auto",fontSize:11,color:"var(--text3)"}}>{bdProgress<lines.length?`Breaking down… ${bdProgress}/${lines.length}`:(bd.some(x=>!x)?"Some lines missing":"Breakdown ready")}</span>
             </div>
+            <details className="watch-options"><summary>Playback options · caption sync &amp; library</summary>
             {timed&&<div style={{display:"flex",gap:6,alignItems:"center",flexWrap:"wrap",marginTop:6,fontSize:11.5,color:"var(--text3)"}}>
               <span>Caption sync: {syncOffset>0?"+":""}{syncOffset.toFixed(2)}s · {wordTiming?"Caption word timing":"Estimated word timing"}</span>
               <button className="chip" onClick={()=>adjustSync(-0.25)}>Text earlier −0.25s</button>
@@ -3017,8 +3034,9 @@ Return ONLY valid JSON, no commentary: [{"i":0,"t":"translation","w":[{"a":"..",
               {savedMine&&<span style={{fontSize:11,color:"var(--know)",flexShrink:0}}>Saved ✓</span>}
               <button className="btn btn-sm" disabled={libSaved} onClick={()=>addToLibrary(cat)} style={{flexShrink:0,fontSize:11.5}}>{libSaved?"In library ✓":"Add to shared library"}</button>
             </div>
+            </details>
           </div>
-          <div style={{padding:"4px 20px 120px",display:"flex",flexDirection:"column",gap:8}}>
+          <div ref={transcriptEl} className="watch-transcript" role="region" aria-label="Video transcript" tabIndex={0}>
             {lines.map((l,i)=>{
               const b=bd[i],on=i===active;
               return (
