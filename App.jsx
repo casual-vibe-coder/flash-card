@@ -7,6 +7,7 @@ import WatchProgress, { LevelOptions } from "./WatchProgress.jsx";
 import { PlaybackTracker, createWatchSession, mergeWatchStudyLog, progressSummary, timeLabel } from "./watch-progress.js";
 import { matchesLevel, levelInfo, levelEvidence, assessmentFingerprint, buildLevelPrompt, parseLevelAssessment } from "./watch-levels.js";
 import WatchCosts from "./WatchCosts.jsx";
+import { BREADTH_CARD_BENCHMARK, vocabCards, statusCounts, vocabBreadth, skillSelfRatings, performanceInsights } from "./analytics-stats.js";
 import { filterVideos, searchQuery, normalizeBreakdown, prepareWatchLesson } from "./watch-library.js";
 import { requestTranscript } from "./watch-transcript.js";
 import { playbackPosition, lineEnd, captionTime, videoTime as captionVideoTime, alignedWordTimes } from "./watch-timing.js";
@@ -359,69 +360,6 @@ function getLast7DaysData(log){
     days.push({date:key,label:d.toLocaleDateString(undefined,{weekday:"short"}),app,manual,total:app+manual});
   }
   return days;
-}
-
-// B2 benchmark: ~4000-5000 known words
-const B2_WORD_TARGET = 4500;
-
-/** Get module skill scores from master-session ratings only */
-function getModuleSkillScores(studyLog) {
-  const scores = { vocab: [], reading: [], listening: [], speaking: [] };
-  for (const e of (studyLog.entries || [])) {
-    if (!e.rating || !e.master) continue; // Only count master sessions
-    if (scores[e.module]) scores[e.module].push(e.rating);
-  }
-  const result = {};
-  for (const [mod, ratings] of Object.entries(scores)) {
-    if (!ratings.length) { result[mod] = null; continue; }
-    // Weighted average — recent ratings count more
-    const weighted = ratings.map((r, i) => ({ r, w: 1 + i * 0.3 }));
-    const sum = weighted.reduce((s, x) => s + x.r * x.w, 0);
-    const wSum = weighted.reduce((s, x) => s + x.w, 0);
-    result[mod] = Math.round(sum / wSum * 10) / 10;
-  }
-  return result;
-}
-
-/** Get vocab breadth as percentage toward B2 — based on total cards in decks, not just mastered */
-function getVocabProgress(cardStates) {
-  const all = Object.values(cardStates).flat().filter(c => c.wordType !== "grammar"); // grammar rules aren't vocabulary words
-  const total = all.length;
-  const known = all.filter(c => c.status === "known").length;
-  return { total, known, target: B2_WORD_TARGET, pct: Math.min(100, Math.round(total / B2_WORD_TARGET * 100)) };
-}
-
-/** Generate a performance interpretation from card data and study log */
-function getPerformanceInsights(cardStates,studyLog){
-  const allCards=Object.values(cardStates).flat();
-  const total=allCards.length;if(!total) return [];
-  const known=allCards.filter(c=>c.status==="known").length;
-  const weak=allCards.filter(c=>c.status==="weak").length;
-  const newC=allCards.filter(c=>c.status==="new"||!c.status).length;
-  const knownPct=Math.round(known/total*100);
-  const weakPct=Math.round(weak/total*100);
-  const weekEntries=getEntriesForWeek(studyLog);
-  const weekMin=sumMinutes(weekEntries);
-  const byMod=minutesByModule(weekEntries);
-  const insights=[];
-
-  if(knownPct>=70) insights.push({icon:"🌟",text:"Strong vocabulary foundation — "+knownPct+"% of cards known.",type:"success"});
-  else if(knownPct>=40) insights.push({icon:"📈",text:"Improving steadily — "+knownPct+"% known, keep going.",type:"info"});
-  else insights.push({icon:"🌱",text:"Early stage — "+knownPct+"% known. Focus on daily review.",type:"info"});
-
-  if(weakPct>20) insights.push({icon:"⚠️",text:"Weak card load is high ("+weakPct+"%). Prioritize weak card review.",type:"warning"});
-  if(weak>0&&known>weak*3) insights.push({icon:"💪",text:"Good ratio — knowing "+known+" vs "+weak+" weak cards.",type:"success"});
-
-  const maxMod=Object.entries(byMod).filter(([k])=>k!=="manual").sort((a,b)=>b[1]-a[1])[0];
-  const minMod=Object.entries(byMod).filter(([k])=>k!=="manual"&&byMod[k]!==undefined).sort((a,b)=>a[1]-b[1])[0];
-  if(maxMod&&minMod&&maxMod[1]>0&&minMod[1]===0) insights.push({icon:"📊",text:`${maxMod[0]} is your strongest module. Consider more ${minMod[0]} practice.`,type:"info"});
-
-  const target=studyLog?.targets?.weeklyMinutes||150;
-  if(weekMin>=target) insights.push({icon:"✅",text:`On track — ${Math.round(weekMin)} min this week (target: ${target} min).`,type:"success"});
-  else if(weekMin>=target*0.5) insights.push({icon:"🔄",text:`${Math.round(weekMin)} of ${target} min target this week — ${Math.round(weekMin/target*100)}% done.`,type:"info"});
-  else if(weekMin>0) insights.push({icon:"⏰",text:`Behind target — only ${Math.round(weekMin)} of ${target} min this week.`,type:"warning"});
-
-  return insights.slice(0,4);
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -8775,7 +8713,7 @@ CRITICAL: Every Arabic phrase must have full tashkeel.`,
 
   const submitScore=()=>{
     const score=finalScore;
-    if(onLogStudy) onLogStudy({type:"app",module:"speaking",minutes:0,rating:sessionRating||3,master:!!master,
+    if(onLogStudy) onLogStudy({type:"app",module:"speaking",minutes:0,...(sessionRating?{rating:sessionRating}:{}),master:!!master,
       speakingScore:score,missionWordsUsed:usedMissionWords.size,missionWordsTotal:missionWords.length,corrections:corrections.length});
     if(onFinish) onFinish();
     else onBack();
@@ -9928,13 +9866,9 @@ function BarChart({data,maxVal,color1="var(--accent)",color2="var(--info)"}){
 // ─────────────────────────────────────────────────────────────
 // PROGRESS / ANALYTICS DASHBOARD
 // ─────────────────────────────────────────────────────────────
-function ProgressScreen({cardStates,studyLog,onBack,onLogManual,watchProgress}) {
-  const allCards=Object.values(cardStates).flat();
-  const known=allCards.filter(c=>c.status==="known").length;
-  const weak=allCards.filter(c=>c.status==="weak").length;
-  const newC=allCards.filter(c=>c.status==="new"||!c.status).length;
-  const total=allCards.length;
-  const knownPct=total?Math.round(known/total*100):0;
+function ProgressScreen({decks,cardStates,studyLog,onBack,onLogManual,watchProgress}) {
+  const cards=vocabCards(decks,cardStates);
+  const {known,weak,newC,knownPct}=statusCounts(cards);
 
   const todayEntries=getEntriesForDate(studyLog,TODAY_KEY());
   const todayMin=sumMinutes(todayEntries);
@@ -9943,11 +9877,9 @@ function ProgressScreen({cardStates,studyLog,onBack,onLogManual,watchProgress}) 
   const weekByMod=minutesByModule(getEntriesForWeek(studyLog));
   const dailyTarget=studyLog?.targets?.dailyMinutes||30;
   const weeklyTarget=studyLog?.targets?.weeklyMinutes||150;
-  const insights=getPerformanceInsights(cardStates,studyLog);
-
-  // Skill scores from master sessions only
-  const skillScores=getModuleSkillScores(studyLog);
-  const vocabProgress=getVocabProgress(cardStates);
+  const insights=performanceInsights(cards,{weekMin,byMod:weekByMod,weeklyTarget});
+  const skillScores=skillSelfRatings(studyLog);
+  const breadth=vocabBreadth(cards);
 
   const [showLog,setShowLog]=useState(false);
   const [manualMin,setManualMin]=useState("");
@@ -9977,35 +9909,38 @@ function ProgressScreen({cardStates,studyLog,onBack,onLogManual,watchProgress}) 
 
         {tab==="performance"&&(
           <>
-            {/* B2 Vocab Progress */}
+            {/* Vocabulary breadth: a card count, not proven words or a CEFR level */}
             <div style={{background:"var(--surface)",border:"1.5px solid var(--border)",borderRadius:"var(--r)",padding:"16px"}}>
               <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
-                <div className="sec" style={{margin:0}}>Vocabulary → B2 Level</div>
-                <span style={{fontSize:13,fontWeight:700,color:"var(--accent)"}}>{vocabProgress.pct}%</span>
+                <div className="sec" style={{margin:0}}>Vocabulary breadth</div>
+                <span style={{fontSize:13,fontWeight:700,color:"var(--accent)"}}>{breadth.pct}%</span>
               </div>
               <div className="progress-track" style={{height:10,marginBottom:8}}>
-                <div className="progress-fill" style={{width:`${vocabProgress.pct}%`,background:"linear-gradient(90deg, var(--accent), var(--know))"}}/>
+                <div className="progress-fill" style={{width:`${breadth.pct}%`,background:"linear-gradient(90deg, var(--accent), var(--know))"}}/>
               </div>
-              <div style={{display:"flex",justifyContent:"space-between",fontSize:12}}>
-                <span style={{color:"var(--accent)",fontWeight:600}}>{vocabProgress.total} cards <span style={{color:"var(--text3)",fontWeight:400}}>· {vocabProgress.known} known</span></span>
-                <span style={{color:"var(--text3)"}}>B2 target: ~{B2_WORD_TARGET.toLocaleString()} words</span>
+              <div style={{fontSize:12}}>
+                <span style={{color:"var(--accent)",fontWeight:600}}>{breadth.cards.toLocaleString()} vocabulary cards</span>
+                <span style={{color:"var(--text3)"}}> of a {BREADTH_CARD_BENCHMARK.toLocaleString()}-card benchmark · {breadth.known.toLocaleString()} known</span>
               </div>
               <div style={{fontSize:11,color:"var(--text3)",marginTop:6,lineHeight:1.5}}>
-                {vocabProgress.pct>=80?"Approaching B2 vocabulary level! Focus on mastery.":
-                 vocabProgress.pct>=50?"Solid progress. Over halfway to B2 vocab.":
-                 vocabProgress.pct>=20?"Building foundation. Keep adding and reviewing.":
-                 "Early stage. Every word counts at this point."}
+                Counts cards in your vocabulary decks, not words you have proven you know. It is not a CEFR level.
+              </div>
+              <div style={{fontSize:11,color:"var(--text3)",marginTop:4,lineHeight:1.5}}>
+                {breadth.pct>=100?"You have passed the card benchmark. Keep reviewing so the cards stay known.":
+                 breadth.pct>=50?"Over halfway to the card benchmark.":
+                 breadth.pct>=20?"Building your decks. Keep adding and reviewing cards.":
+                 "Early stage. Each card you add counts toward the benchmark."}
               </div>
             </div>
 
-            {/* Skill Scores from master sessions */}
+            {/* Self-ratings from master sessions only */}
             <div style={{background:"var(--surface)",border:"1.5px solid var(--border)",borderRadius:"var(--r)",padding:"16px"}}>
-              <div className="sec">Skill Scores (Master Sessions Only)</div>
+              <div className="sec">Skill self-ratings</div>
               <div style={{fontSize:11,color:"var(--text3)",marginBottom:12,lineHeight:1.5}}>
-                Based on your session ratings when using all vocabulary. Cherry-picked sessions don't count here.
+                Your own 1–5 rating after a Master Reading, Listening or Speaking session. Other sessions don't count.
               </div>
               <div style={{display:"flex",gap:8}}>
-                {[["vocab","Vocab",BookOpen,"var(--accent)"],["reading","Reading",FileText,"var(--read)"],["listening","Listen",Headphones,"var(--listen)"],["speaking","Speak",MessageCircle,"var(--accent)"]].map(([key,label,Icon,color])=>{
+                {[["reading","Reading",FileText,"var(--read)"],["listening","Listen",Headphones,"var(--listen)"],["speaking","Speak",MessageCircle,"var(--accent)"]].map(([key,label,Icon,color])=>{
                   const score=skillScores[key];
                   return (
                     <div key={key} className="stat-card" style={{padding:"10px 8px"}}>
@@ -12512,7 +12447,7 @@ export default function App() {
     masterListening:<ListeningScreen {...commonProps} master={true} masterPool={masterPool} onBack={()=>go("masterReview")} onFinish={()=>{saveScreen("masterListening",null);saveSession(null);go("home");setSessionRating({module:"listening",master:true});}} onAddToFlashcard={addToFlashcard} onLogStudy={logStudy}/>,
     masterSpeaking:<ConversationScreen {...commonProps} master={true} masterPool={masterPool} onBack={()=>go("masterReview")} onFinish={()=>{saveScreen("masterSpeaking",null);saveSession(null);go("home");setSessionRating({module:"speaking",master:true});}} onLogStudy={logStudy} onAddToFlashcard={addToFlashcard}/>,
     conversation:<ConversationScreen {...commonProps} onBack={()=>go("home")} onFinish={()=>{saveScreen("conversation",null);saveSession(null);go("home");setSessionRating({module:"speaking"});}} onLogStudy={logStudy} onAddToFlashcard={addToFlashcard}/>,
-    progress:<ProgressScreen watchProgress={watchProgress} cardStates={cardStates} studyLog={mergeWatchStudyLog(studyLog,watchProgress.records)} onBack={()=>go("home")} onLogManual={(e)=>logStudy(e)}/>,
+    progress:<ProgressScreen watchProgress={watchProgress} decks={decks} cardStates={cardStates} studyLog={mergeWatchStudyLog(studyLog,watchProgress.records)} onBack={()=>go("home")} onLogManual={(e)=>logStudy(e)}/>,
     masterReview:<MasterReviewScreen decks={decks} cardStates={cardStates} onBack={()=>go("home")} onSwipeCard={handleMasterSwipe} onUndoSwipe={restoreCard} onDeckTouched={touchDeck} onToggleWeakForm={toggleWeakForm} trackUsage={trackUsage} onAddToFlashcard={addToFlashcard} studyLog={studyLog} onLogStudy={logStudy} onSaveAid={saveCardAid}
       poolThresholdDays={getPoolThresholdDays(settings)} newPoolDaily={newPoolDailyToday} onNewPoolDeckDone={markNewPoolDeckDone}
       newCardsPerDayEnabled={settings.newCardsPerDayEnabled!==false} newCardsPerDayLimit={settings.newCardsPerDayLimit??20} newCardsIntroducedToday={newCardsIntroducedTodayCount} maxReviewsPerDayEnabled={!!settings.maxReviewsPerDayEnabled} maxReviewsPerDay={settings.maxReviewsPerDay??100} reviewsDoneToday={reviewsDoneTodayCount} onReviewLogged={logReviewToday}
