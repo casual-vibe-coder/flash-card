@@ -51,11 +51,11 @@ test('actual player heartbeat excludes paused, hidden and seeked playback',async
  const tracker=new progressHelpers.PlaybackTracker(progressHelpers.createWatchSession({id:'s',owner:'device',videoId:'video'}));h.refs[0].current=tracker;
  let time=0,position=0,state=1,events;const timers=[],saved=[];
  const player={getCurrentTime:()=>position,getPlaybackRate:()=>1,getPlayerState:()=>state,setPlaybackRate(){},destroy(){}};
- Object.assign(h.context,{performance:{now:()=>time},document:{visibilityState:'visible',hasFocus:()=>true},window:{addEventListener(){},removeEventListener(){}},setInterval:(fn,ms)=>{timers.push({fn,ms});return timers.length;},clearInterval(){},loadYouTubeApi:async()=>({Player:function(_,options){events=options.events;return player;}})});
+ Object.assign(h.context,{performance:{now:()=>time},document:{visibilityState:'visible',hasFocus:()=>true,addEventListener(){},removeEventListener(){}},window:{addEventListener(){},removeEventListener(){}},auth:{currentUser:null},localStorage:{getItem:()=>null,setItem(){}},posKey:id=>'watch:pos:'+id,newerPos:(a,b)=>b||a,resumeFrom:()=>0,showToast(){},fmtDur:String,setInterval:(fn,ms)=>{timers.push({fn,ms});return timers.length;},clearInterval(){},loadYouTubeApi:async()=>({Player:function(_,options){events=options.events;return player;}})});
  h.refs[1].current={owner:'device',records:[],save:r=>saved.push(r)};
  // React normally assigns the player container ref during the commit.
  function mount(node){if(!node||typeof node!=='object')return;if(Array.isArray(node)){node.forEach(mount);return;}if(node.ref&&node.type==='div')node.ref.current={};mount(node.props?.children);}mount(h.tree);
- const effect=h.effects.find(fn=>fn.toString().includes('loadYouTubeApi'));assert(effect);const cleanup=effect();await Promise.resolve();events.onReady();
+ const effect=h.effects.find(fn=>fn.toString().includes('loadYouTubeApi'));assert(effect);const cleanup=effect();await new Promise(r=>setTimeout(r,0));events.onReady();
  const tick=()=>{time+=1000;timers.find(t=>t.ms===1000).fn();};tick();position=1;tick();assert.equal(tracker.record.seconds,1);
  state=2;events.onStateChange();tick();assert.equal(tracker.record.seconds,1);
  state=1;events.onStateChange();position=80;tick();assert.equal(tracker.record.seconds,1);

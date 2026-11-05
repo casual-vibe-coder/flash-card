@@ -15,6 +15,7 @@ import { useState, useRef, useEffect, useCallback } from "react";
 import { auth, googleProvider, db, storage } from "./firebase.js";
 import { signInWithPopup, signOut, onAuthStateChanged } from "firebase/auth";
 import { indexCards, mergeDeckCards } from "./card-merge.js";
+import { posKey, newerPos, resumeFrom } from "./watch-position.js";
 import { doc, getDoc, setDoc, updateDoc, deleteDoc, deleteField, collection, getDocs, runTransaction } from "firebase/firestore";
 import { ref as storageRef, uploadString, getDownloadURL } from "firebase/storage";
 import { fsrs, generatorParameters, createEmptyCard, Rating, State, StrategyMode, GenSeedStrategyWithCardId } from "ts-fsrs";
@@ -2486,6 +2487,23 @@ function WatchScreen({onBack,onAddToFlashcard,decks,trackUsage,user,watchProgres
     try{ localStorage.setItem(`watch:sync:${videoId}`,String(offset)); }catch{}
   };
   const [sel,setSel]=useState(null);
+  // Tapping a word shows the breakdown's quick gloss at once, then fetches a
+  // context-aware lookup (root, meaning in THIS sentence, usage note).
+  const [lk,setLk]=useState({status:"idle"});
+  const [lkTry,setLkTry]=useState(0);
+  useEffect(()=>{
+    if(!sel?.ar){ setLk({status:"idle"}); return; }
+    let off=false;
+    setLk({status:"loading"});
+    (async()=>{
+      try{
+        const raw=await callClaude(lookupPrompt(sel.ar,sel.sentence||""),1200,"wordLookup",trackUsage,30000);
+        const data=parseLookup(raw,sel.ar,extractJSON);
+        if(!off) setLk({status:"done",data});
+      }catch(e){ if(!off) setLk({status:"error",error:e?.message||"Lookup failed"}); }
+    })();
+    return ()=>{off=true;};
+  },[sel,lkTry]);
   const [deckId,setDeckId]=useState("");
   const [added,setAdded]=useState(false);
   // explore
@@ -2506,7 +2524,7 @@ function WatchScreen({onBack,onAddToFlashcard,decks,trackUsage,user,watchProgres
   const [library,setLibrary]=useState(null);
   const [libErr,setLibErr]=useState("");
   const [libSaved,setLibSaved]=useState(false);
-  const playerRef=useRef(null),playerDiv=useRef(null),linesRef=useRef([]),loopRef=useRef(false),activeRef=useRef(0),activeEl=useRef(null),transcriptEl=useRef(null),bdRef=useRef([]),wordRef=useRef(-1),vidMetaRef=useRef(null),titleRef=useRef("");
+  const resyncRef=useRef(null),playerRef=useRef(null),playerDiv=useRef(null),linesRef=useRef([]),loopRef=useRef(false),activeRef=useRef(0),activeEl=useRef(null),transcriptEl=useRef(null),bdRef=useRef([]),wordRef=useRef(-1),vidMetaRef=useRef(null),titleRef=useRef("");
   vidMetaRef.current=vidMeta;titleRef.current=title;
   linesRef.current=lines;loopRef.current=loopLine;bdRef.current=bd;
 
@@ -2758,32 +2776,68 @@ Return ONLY valid JSON, no commentary: [{"i":0,"t":"translation","w":[{"a":"..",
     let cancelled=false,timer=null,heartbeat=null,ticks=0;
     const sample=()=>{const p=playerRef.current;if(!p)return;try{trackerRef.current?.sample({wallMs:performance.now(),at:Date.now(),position:p.getCurrentTime(),rate:p.getPlaybackRate(),playing:p.getPlayerState()===1,visible:document.visibilityState==='visible',focused:document.hasFocus()});}catch{}};
     const reset=()=>{flushWatch();trackerRef.current?.reset();sample();};
+    // Recompute the active caption line/word from the player's clock. Runs on
+    // the 50ms timer AND immediately on seeks, rate changes and returning to
+    // the tab (timers are throttled while hidden), and never throws, so one
+    // bad transcript line can't freeze the highlight for the rest of the video.
+    const update=()=>{
+      try{
+        const p=playerRef.current;
+        if(!p||!p.getCurrentTime) return;
+        const t=captionTime(p.getCurrentTime(),syncOffsetRef.current),ls=linesRef.current;
+        if(loopRef.current){
+          const L=ls[activeRef.current];
+          if(L?.start!=null&&t>=lineEnd(ls,activeRef.current)){ trackerRef.current?.reset();p.seekTo(captionVideoTime(L.start,syncOffsetRef.current),true); return; }
+        }
+        let pos;
+        try{ pos=playbackPosition(ls,bdRef.current,t); }
+        catch{ pos=playbackPosition(ls,[],t); }
+        const {index:idx,word:wi}=pos;
+        if(idx!==activeRef.current){ activeRef.current=idx;setActive(idx); }
+        if(wi!==wordRef.current){ wordRef.current=wi;setActiveWord(wi); }
+      }catch{}
+    };
+    document.addEventListener("visibilitychange",update);
+    resyncRef.current=()=>{ activeRef.current=-2;wordRef.current=-2;update(); };
     const signals=['visibilitychange','focus','blur','pagehide'];signals.forEach(name=>window.addEventListener(name,reset));
-    loadYouTubeApi().then(YT=>{
+    // Resume position: newest of this device's copy and the cloud copy.
+    const uid=auth.currentUser?.uid;
+    const savePos=(cloud)=>{
+      const p=playerRef.current;if(!p||!p.getCurrentTime) return;
+      try{
+        const t=p.getCurrentTime(),st=p.getPlayerState();
+        if(!Number.isFinite(t)||t<1||st===-1||st===3) return;
+        const rec={t:st===0?0:Math.floor(t),at:Date.now()};
+        localStorage.setItem(posKey(videoId),JSON.stringify(rec));
+        if(cloud&&uid) setDoc(doc(db,"users",uid,"watchPos",videoId),rec).catch(()=>{});
+      }catch{}
+    };
+    const loadPos=async()=>{
+      let local=null;try{local=JSON.parse(localStorage.getItem(posKey(videoId))||"null");}catch{}
+      if(!uid) return local;
+      try{
+        const snap=await Promise.race([getDoc(doc(db,"users",uid,"watchPos",videoId)),new Promise((_,no)=>setTimeout(no,1500))]);
+        return newerPos(local,snap.exists()?snap.data():null);
+      }catch{return local;}
+    };
+    const onHide=()=>savePos(true);
+    window.addEventListener("pagehide",onHide);
+    Promise.all([loadYouTubeApi(),loadPos()]).then(([YT,rec])=>{
       if(cancelled||!playerDiv.current) return;
+      const startAt=resumeFrom(rec,vidMetaRef.current?.durationSec);
+      if(startAt>0) showToast(`Resumed at ${fmtDur(startAt)}`,"info");
       playerRef.current=new YT.Player(playerDiv.current,{
         videoId,width:"100%",height:"100%",
-        playerVars:{playsinline:1,rel:0,cc_load_policy:0,modestbranding:1},
-        events:{onStateChange:()=>{sample();reset();},onPlaybackRateChange:event=>{reset();if(Number.isFinite(event.data)&&event.data>0)setRate(event.data);},onReady:()=>{
+        playerVars:{playsinline:1,rel:0,cc_load_policy:0,modestbranding:1,...(startAt>0?{start:startAt}:{})},
+        events:{onStateChange:()=>{sample();reset();update();savePos(true);},onPlaybackRateChange:event=>{reset();update();if(Number.isFinite(event.data)&&event.data>0)setRate(event.data);},onReady:()=>{
           if(cancelled) return;
           try{playerRef.current?.setPlaybackRate?.(rateRef.current);}catch{}
-          heartbeat=setInterval(()=>{sample();if(++ticks%5===0)flushWatch(ticks%15===0);},1000);
-          timer=setInterval(()=>{
-            const p=playerRef.current;
-            if(!p||!p.getCurrentTime) return;
-            const t=captionTime(p.getCurrentTime(),syncOffsetRef.current),ls=linesRef.current;
-            if(loopRef.current){
-              const L=ls[activeRef.current];
-              if(L?.start!=null&&t>=lineEnd(ls,activeRef.current)){ trackerRef.current?.reset();p.seekTo(captionVideoTime(L.start,syncOffsetRef.current),true); return; }
-            }
-            const {index:idx,word:wi}=playbackPosition(ls,bdRef.current,t);
-            if(idx!==activeRef.current){ activeRef.current=idx;setActive(idx); }
-            if(wi!==wordRef.current){ wordRef.current=wi;setActiveWord(wi); }
-          },50);
+          heartbeat=setInterval(()=>{sample();if(++ticks%3===0)savePos(ticks%15===0);if(ticks%5===0)flushWatch(ticks%15===0);},1000);
+          timer=setInterval(update,50);
         }},
       });
     });
-    return()=>{ flushWatch();trackerRef.current?.reset();signals.forEach(name=>window.removeEventListener(name,reset));if(heartbeat)clearInterval(heartbeat);cancelled=true; if(timer) clearInterval(timer); try{playerRef.current?.destroy();}catch{} playerRef.current=null; };
+    return()=>{ savePos(true);window.removeEventListener("pagehide",onHide);document.removeEventListener("visibilitychange",update);resyncRef.current=null;flushWatch();trackerRef.current?.reset();signals.forEach(name=>window.removeEventListener(name,reset));if(heartbeat)clearInterval(heartbeat);cancelled=true; if(timer) clearInterval(timer); try{playerRef.current?.destroy();}catch{} playerRef.current=null; };
   },[videoId,lines.length,ready,lessonEntered,watchProgress.owner]);
   useEffect(()=>{ try{playerRef.current?.setPlaybackRate?.(rate);}catch{} },[rate,videoId,ready]);
   useEffect(()=>{
@@ -2816,7 +2870,7 @@ Return ONLY valid JSON, no commentary: [{"i":0,"t":"translation","w":[{"a":"..",
     if(!sel||!deckId) return;
     const isVerb=sel.pos==="verb";
     const ar=sel.lemma||sel.ar;
-    const card={id:`c${Date.now()}`,wordType:isVerb?"verb":"noun",english:sel.en,arabicBase:ar,
+    const card={id:`c${Date.now()}`,wordType:isVerb?"verb":"noun",english:(lk.status==="done"&&lk.data.meaning)||sel.en,arabicBase:ar,
       forms:isVerb?{past:ar}:{singular:ar},status:"new",
       watchContext:{sentence:sel.sentence,translation:sel.tr||"",videoId,t:sel.t??null}};
     onAddToFlashcard(deckId,card);
@@ -2963,6 +3017,7 @@ Return ONLY valid JSON, no commentary: [{"i":0,"t":"translation","w":[{"a":"..",
               <button className="chip" onClick={()=>adjustSync(-0.25)}>Text earlier −0.25s</button>
               <button className="chip" onClick={()=>adjustSync(0.25)}>Text later +0.25s</button>
               {syncOffset!==0&&<button className="chip" onClick={()=>adjustSync(-syncOffset)}>Reset</button>}
+              <button className="chip" onClick={()=>resyncRef.current?.()}>Re-sync now</button>
               <span>Audio ahead of the text? Choose Text earlier. Word timing is estimated without matching caption timestamps.</span>
             </div>}
             {bdErr&&bdProgress>=lines.length&&(
@@ -3007,7 +3062,14 @@ Return ONLY valid JSON, no commentary: [{"i":0,"t":"translation","w":[{"a":"..",
         <div className="overlay" onClick={()=>setSel(null)}>
           <div onClick={e=>e.stopPropagation()} style={{background:"var(--surface)",borderRadius:"var(--r) var(--r) 0 0",padding:"18px 20px 26px",width:"100%",maxWidth:520}}>
             <div className="ar" style={{fontSize:30,textAlign:"center"}}>{sel.ar}</div>
-            <div style={{textAlign:"center",fontSize:15,fontWeight:600,marginTop:2}}>{sel.en}</div>
+            <div style={{textAlign:"center",fontSize:15,fontWeight:600,marginTop:2}}>{lk.status==="done"?lk.data.meaning:sel.en}</div>
+            {lk.status==="loading"&&<div style={{textAlign:"center",fontSize:11.5,color:"var(--text3)",marginTop:6}}>Looking up in context…</div>}
+            {lk.status==="error"&&<div style={{textAlign:"center",fontSize:12,color:"var(--weak)",marginTop:6}}>{lk.error} <button className="chip" onClick={()=>setLkTry(n=>n+1)}>Retry</button></div>}
+            {lk.status==="done"&&(lk.data.root||lk.data.partOfSpeech||lk.data.note)&&<div style={{marginTop:8,fontSize:12.5,color:"var(--text2)",textAlign:"center",lineHeight:1.6}}>
+              {lk.data.root&&<div>Root: <span className="ar" style={{fontSize:17}}>{lk.data.root}</span>{lk.data.rootMeaning?` — ${lk.data.rootMeaning}`:""}</div>}
+              {lk.data.partOfSpeech&&<div style={{textTransform:"capitalize"}}>{lk.data.partOfSpeech}</div>}
+              {lk.data.note&&<div>💡 {lk.data.note}</div>}
+            </div>}
             {sel.lemma&&sel.lemma!==sel.ar&&<div style={{textAlign:"center",fontSize:12.5,color:"var(--text3)",marginTop:4}}>Base form: <span className="ar" style={{fontSize:16}}>{sel.lemma}</span></div>}
             <div style={{fontSize:12,color:"var(--text3)",marginTop:10,lineHeight:1.5,textAlign:"center"}}>{sel.tr}</div>
             {vocabDecks.length>0?(<>
