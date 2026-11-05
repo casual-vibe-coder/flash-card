@@ -14,7 +14,8 @@ import { playbackPosition, lineEnd, captionTime, videoTime as captionVideoTime, 
 import { useState, useRef, useEffect, useCallback } from "react";
 import { auth, googleProvider, db, storage } from "./firebase.js";
 import { signInWithPopup, signOut, onAuthStateChanged } from "firebase/auth";
-import { doc, getDoc, setDoc, updateDoc, deleteDoc, deleteField, collection, getDocs } from "firebase/firestore";
+import { indexCards, mergeDeckCards } from "./card-merge.js";
+import { doc, getDoc, setDoc, updateDoc, deleteDoc, deleteField, collection, getDocs, runTransaction } from "firebase/firestore";
 import { ref as storageRef, uploadString, getDownloadURL } from "firebase/storage";
 import { fsrs, generatorParameters, createEmptyCard, Rating, State, StrategyMode, GenSeedStrategyWithCardId } from "ts-fsrs";
 import {
@@ -10142,10 +10143,10 @@ const _sessionSyncTimers={};
 let _writeInFlight=false;
 const _pendingWrites={}; // key -> {ref,data}
 const _pendingCallbacks={}; // key -> [{onSuccess,onError}]
-function queueFirestoreWrite(key,ref,data,{onSuccess,onError}={}){
+function queueFirestoreWrite(key,ref,data,{onSuccess,onError,cardMerge}={}){
   if(!ref) return;
   const existing=_pendingWrites[key];
-  _pendingWrites[key]={ref,data:{...(existing?.data),...data}};
+  _pendingWrites[key]={ref,data:{...(existing?.data),...data},cardMerge:cardMerge||existing?.cardMerge};
   if(onSuccess||onError){
     (_pendingCallbacks[key]=_pendingCallbacks[key]||[]).push({onSuccess,onError});
   }
@@ -10155,7 +10156,7 @@ function pumpWriteQueue(){
   if(_writeInFlight) return;
   const key=Object.keys(_pendingWrites)[0];
   if(!key) return;
-  const {ref,data}=_pendingWrites[key];
+  const {ref,data,cardMerge}=_pendingWrites[key];
   delete _pendingWrites[key];
   const callbacks=_pendingCallbacks[key]||[];
   delete _pendingCallbacks[key];
@@ -10171,7 +10172,20 @@ function pumpWriteQueue(){
   // to setDoc only to create it on this account's very first-ever write.
   (async()=>{
     try {
-      try {
+      if(cardMerge){
+        // A deck's cards are written as one whole array, so a device holding
+        // stale cards (phone resumed after a long desktop session) used to
+        // overwrite every review made elsewhere. Merge against the cloud copy
+        // inside a transaction instead — see mergeDeckCards.
+        let merged;
+        await runTransaction(db,async tx=>{
+          const snap=await tx.get(ref);
+          const cloud=snap.exists()?(snap.data().cards||[]):[];
+          merged=mergeDeckCards(data.cards,cloud,cardMerge.getSeen());
+          tx.set(ref,{cards:merged});
+        });
+        cardMerge.onMerged?.(merged);
+      } else try {
         await updateDoc(ref,data);
       } catch(e){
         if(e.code!=="not-found") throw e;
@@ -10195,6 +10209,17 @@ function pumpWriteQueue(){
 // of retry/timing logic able to help — the doc is just too big to write.
 function deckCardsRef(uid,deckId){ return doc(db,"users",uid,"deckCards",deckId); }
 function mainDocRef(uid){ return doc(db,"users",uid); }
+// Per-card merge for a deck's cards array: whichever copy of a card was
+// reviewed most recently wins, so progress made on one device is never rolled
+// back by a device that simply hadn't seen it yet.
+//   seen: Map(cardId -> srsLastReview) as of this device's last contact with
+//   the cloud. A cloud copy that differs from what we last saw AND is newer
+//   was made elsewhere -> it wins. If the cloud copy is what we already knew
+//   about, our local copy is a deliberate change (answer, undo, edit) -> local.
+//   Cloud-only cards: kept if never seen (added elsewhere), dropped if seen
+//   (deleted here). Local-only cards are kept (new here).
+// Returns `cloud` itself (same reference) when nothing local differs from it.
+
 // Writes each deck's cards to its own doc BEFORE clearing the legacy field
 // on the main doc, sequentially (not one batch) — so if this account has one
 // single deck whose cards alone are still too big for one document, that
@@ -11497,6 +11522,44 @@ export default function App() {
   // this file replaces a touched deck's array with a new one (`{...p,[id]:
   // ...}`), so a reference change reliably means "this deck was touched."
   const prevCardStatesRef=useRef({});
+  // Latest cardStates (for async callbacks) and, per deck, which cards (and
+  // their srsLastReview) this tab last saw in the cloud — input to
+  // mergeDeckCards.
+  const cardStatesRef=useRef({});
+  const cloudSeenRef=useRef({});
+  cardStatesRef.current=cardStates;
+  // Fold cards fetched from the cloud into local state per card (newest
+  // review wins) instead of replacing everything, so reviews done here but not
+  // yet saved survive a refresh, and reviews done elsewhere always arrive.
+  // prevCardStatesRef becomes the cloud copy, so any deck where a local card
+  // won shows up as "changed" and gets written back by the autosave.
+  const applyCloudCards=(cleaned)=>{
+    const seen=cloudSeenRef.current;
+    setCardStates(p=>{
+      const next={};
+      for(const k of Object.keys(cleaned)) next[k]=p[k]?mergeDeckCards(p[k],cleaned[k],seen[k]):cleaned[k];
+      return next;
+    });
+    const nextSeen={}; for(const k of Object.keys(cleaned)) nextSeen[k]=indexCards(cleaned[k]);
+    cloudSeenRef.current=nextSeen;
+    prevCardStatesRef.current=cleaned;
+  };
+  // Options for queueFirestoreWrite on a deck's cards doc (see pumpWriteQueue).
+  const deckMergeOpts=(id)=>({
+    getSeen:()=>cloudSeenRef.current[id],
+    onMerged:(merged)=>{
+      cloudSeenRef.current={...cloudSeenRef.current,[id]:indexCards(merged)};
+      const cur=cardStatesRef.current[id];
+      if(!cur) return;
+      const next=mergeDeckCards(cur,merged,indexCards(merged));
+      if(next===merged||next===cur) return;
+      // Cloud had newer cards than this tab (the stale-device case): pull
+      // them in. Only mark as saved if no newer local edit is still pending.
+      const pending=prevCardStatesRef.current[id]!==cur;
+      setCardStates(p=>p[id]===cur?{...p,[id]:next}:p);
+      if(!pending) prevCardStatesRef.current={...prevCardStatesRef.current,[id]:next};
+    },
+  });
   // Same idea, for deck metadata: which deck OBJECTS (by reference) changed
   // since the last save. `decks` itself is written per-key (decksById.<id>,
   // see mainDocRef writes below), never as one whole array field — a device
@@ -11591,10 +11654,7 @@ export default function App() {
                 for(const [k,v] of Object.entries(merged)){
                   if(deckIds.has(k)) cleaned[k]=v;
                 }
-                if(mounted){
-                  setCardStates(cleaned);
-                  prevCardStatesRef.current=cleaned;
-                }
+                if(mounted) applyCloudCards(cleaned);
                 // One-time migration: a legacy account still has ALL decks'
                 // cards embedded in this one main doc under `cardStates`. That
                 // is exactly what grew past Firestore's hard 1MB-per-document
@@ -11697,7 +11757,7 @@ export default function App() {
       const prev=prevCardStatesRef.current;
       for(const id of Object.keys(cardStates)){
         if(cardStates[id]!==prev[id]){
-          queueFirestoreWrite("deck:"+user.uid+":"+id,deckCardsRef(user.uid,id),{cards:cardStates[id]});
+          queueFirestoreWrite("deck:"+user.uid+":"+id,deckCardsRef(user.uid,id),{cards:cardStates[id]},{cardMerge:deckMergeOpts(id)});
         }
       }
       for(const id of Object.keys(prev)){
@@ -11750,7 +11810,9 @@ export default function App() {
         hydrateDeckIdxFromCloud(d,savedIdx);
         const flatDecksById=extractPrefixedFields(d,"decksById.");
         if(!Array.isArray(d.decks)&&!(d.decksById&&typeof d.decksById==="object")&&!Object.keys(flatDecksById).length) return;
-        if((d.updatedAt||0)<=lastSyncRef.current) return;
+        // !== not <=: a device with a fast clock must not hide another
+        // device's newer save. Re-pulling is safe now (per-card merge).
+        if((d.updatedAt||0)===lastSyncRef.current) return;
         const legacyArr=Array.isArray(d.decks)?d.decks:[];
         const decksByIdCloud=d.decksById||{};
         const mergedDecks={...flatDecksById};
@@ -11775,8 +11837,7 @@ export default function App() {
         for(const [k,v] of Object.entries(merged)){
           if(deckIds.has(k)) cleaned[k]=v;
         }
-        setCardStates(cleaned);
-        prevCardStatesRef.current=cleaned;
+        applyCloudCards(cleaned);
         lastSyncRef.current=d.updatedAt;
       }).catch(e=>console.error("Refresh error:",e));
     };
@@ -11898,6 +11959,7 @@ export default function App() {
       queueFirestoreWrite("deck:"+user.uid+":"+id,deckCardsRef(user.uid,id),{cards:newCardStates[id]},{
         onSuccess:resolve,
         onError:reject,
+        cardMerge:deckMergeOpts(id),
       });
     }));
     prevCardStatesRef.current=newCardStates;
