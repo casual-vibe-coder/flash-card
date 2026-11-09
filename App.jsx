@@ -3220,6 +3220,7 @@ function ServiceCredits({orKey}) {
     setBusy(false);
   };
   useEffect(()=>{ load(); },[]);
+  const TOPUP={openrouter:"https://openrouter.ai/settings/credits",supadata:"https://dash.supadata.ai",deepgram:"https://console.deepgram.com/billing",openai:"https://platform.openai.com/settings/organization/billing/overview",google:"https://console.cloud.google.com/billing"};
   const money=n=>"$"+Number(n).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
   const amount=(sv,n)=>sv.unit==="usd"?money(n):Number(n).toLocaleString()+" credits";
   return (
@@ -3232,7 +3233,7 @@ function ServiceCredits({orKey}) {
       <div style={{display:"flex",flexDirection:"column",gap:10,marginTop:10}}>
         {(data?.services||[]).filter(sv=>!(sv.status==="not_configured")).map(sv=>(
           <div key={sv.id} style={{fontSize:13,lineHeight:1.5}}>
-            <div style={{fontWeight:600}}>{sv.name}</div>
+            <div style={{fontWeight:600}}>{sv.name} {TOPUP[sv.id]&&<a href={TOPUP[sv.id]} target="_blank" rel="noreferrer" style={{fontWeight:500,fontSize:12,color:"var(--accent)"}}>{sv.exhausted?"Top up ↗":"Billing ↗"}</a>}</div>
             {sv.status==="ok"&&<div style={{color:sv.exhausted?"var(--weak)":"var(--text2)"}}>
               {sv.exhausted?"Out of credit — ":""}
               {sv.remaining!=null?<>{amount(sv,sv.remaining)} left{sv.total!=null?` of ${amount(sv,sv.total)}`:""}</>:<>{amount(sv,sv.used)} used</>}
