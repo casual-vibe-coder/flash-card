@@ -4613,7 +4613,7 @@ Return ONLY valid JSON: {"sentence":"...","translation":"...","imagePrompt":"...
                 </>
               ):(
                 <>
-                  <div className="sec" style={{marginBottom:16}}>{isGrammar?<>Grammar · <span className="ar">قَوَاعِد</span></>:testForm?`English · Give the ${FORM_LABELS[testForm]||testForm}`:"English"}</div>
+                  <div className="sec" style={{marginBottom:16}}>{isGrammar?<>Grammar · <span className="ar">قَوَاعِد</span></>:testForm?`${_learnerLang} · Give the ${FORM_LABELS[testForm]||testForm}`:_learnerLang}</div>
                   <div style={{fontFamily:"Lora,serif",fontSize:isGrammar?(card.english.length>40?22:28):38,fontWeight:600,lineHeight:1.25}}>{card.english}</div>
                   {isGrammar&&card.arabicBase&&<div className="ar" style={{fontSize:24,color:"var(--harf)",marginTop:10}}>{card.arabicBase}</div>}
                   <div style={{fontSize:12,color:"var(--text3)",marginTop:20,fontWeight:500}}>{isGrammar?"Recall the rule, then tap to check ↓":testForm?`Tap to reveal the ${FORM_LABELS[testForm]||testForm} ↓`:"Tap to reveal Arabic ↓"}</div>
@@ -5513,7 +5513,7 @@ REMINDERS:
                 <div className={`chk ${settings.showArabicDefault?"on":""}`} onClick={()=>setSetting("showArabicDefault",!settings.showArabicDefault)}>{settings.showArabicDefault&&<Check size={11} color="white"/>}</div>
               </div>
               <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-                <span style={{fontSize:13.5,color:"var(--text2)"}}>Show English by default</span>
+                <span style={{fontSize:13.5,color:"var(--text2)"}}>Show {_learnerLang} by default</span>
                 <div className={`chk ${settings.showEnglishDefault?"on":""}`} onClick={()=>setSetting("showEnglishDefault",!settings.showEnglishDefault)}>{settings.showEnglishDefault&&<Check size={11} color="white"/>}</div>
               </div>
               <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
@@ -5686,7 +5686,7 @@ function GlobalSearch({decks,cardStates,onClose,onSelectCard}) {
     <div className="search-overlay">
       <div className="search-header">
         <Search size={18} color="var(--text3)"/>
-        <input ref={inputRef} className="input" placeholder="Search all cards (English or Arabic)…" value={query} onChange={e=>setQuery(e.target.value)}
+        <input ref={inputRef} className="input" placeholder={`Search all cards (${_learnerLang} or Arabic)…`} value={query} onChange={e=>setQuery(e.target.value)}
           style={{border:"none",padding:"8px 0",fontSize:16,background:"transparent",flex:1}}/>
         <button className="btn btn-ghost" onClick={onClose} style={{width:32,height:32}}><X size={14}/></button>
       </div>
@@ -8295,7 +8295,7 @@ const CONTEXT_FIELDS=[
   {key:"goals",label:"Your specific goal",type:"textarea",placeholder:"e.g. read the Qur'an with understanding, talk with my in-laws"},
   {key:"dailyGoal",label:"Daily study time",type:"select",options:["5–10 min","15–30 min","30–60 min","60+ min"]},
   {key:"region",label:"Region / country",type:"text",placeholder:"e.g. Canada"},
-  {key:"nativeLanguage",label:"Native language",type:"text",placeholder:"e.g. English"},
+  {key:"nativeLanguage",label:"Native language",type:"text",placeholder:"e.g. English, Bengali (বাংলা)"},
 ];
 const emptyContext=()=>Object.fromEntries(CONTEXT_FIELDS.map(f=>[f.key,""]));
 
@@ -9760,7 +9760,7 @@ Return ONLY valid JSON: {"sentence":"...","translation":"...","imagePrompt":"...
                   </>
                 ):(
                   <>
-                    <div className="sec" style={{marginBottom:16}}>{testForm?`English · Give the ${FORM_LABELS[testForm]||testForm}`:"English"}</div>
+                    <div className="sec" style={{marginBottom:16}}>{testForm?`${_learnerLang} · Give the ${FORM_LABELS[testForm]||testForm}`:_learnerLang}</div>
                     <div style={{fontFamily:"Lora,serif",fontSize:36,fontWeight:600,lineHeight:1.2}}>{card.english}</div>
                     <div style={{fontSize:12,color:"var(--text3)",marginTop:20}}>Tap to reveal · <span className="kbd">Space</span></div>
                   </>
