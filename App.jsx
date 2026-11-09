@@ -2409,7 +2409,9 @@ function ProfilePanel({profile,setProfile,onRetake}) {
           {CONTEXT_FIELDS.map(f=>(
             <div key={f.key}>
               <label className="lbl" style={{marginBottom:3}}>{f.label}</label>
-              {f.type==="select"
+              {f.type==="language"
+                ? <LanguageField value={local.personalContext[f.key]||""} onChange={v=>setCtxNow(f.key,v)}/>
+                : f.type==="select"
                 ? <select className="input" value={local.personalContext[f.key]||""} onChange={e=>setCtxNow(f.key,e.target.value)}>
                     <option value="">Select…</option>
                     {f.options.map(o=><option key={o} value={o}>{o}</option>)}
@@ -3443,6 +3445,8 @@ function SettingsScreen({settings,setSettings,onBack,usage,user,onSignOut,onRepl
     for(const k of new Set([...Object.keys(local),...Object.keys(baseRef.current)])) if(JSON.stringify(local[k])!==JSON.stringify(baseRef.current[k])) edited[k]=local[k];
     baseRef.current=local;
     setSettings(s=>({...s,...edited}));
+    // Same language lives on the profile (onboarding / Profile panel): keep both in step.
+    if("nativeLanguage" in edited&&setProfile) setProfile(p=>p?{...p,nativeLanguage:edited.nativeLanguage,personalContext:{...(p.personalContext||{}),nativeLanguage:edited.nativeLanguage}}:p);
     setSaved(true);setTimeout(()=>setSaved(false),2500);
     showToast("Settings saved","success");
   };
@@ -8359,6 +8363,23 @@ function downloadPresets(pds){
   return total;
 }
 
+// Native-language picker: a list that includes Bengali, with a text box for
+// anything else. The stored value is the English name (what the prompts use).
+const LANGUAGE_LABELS={Bengali:"Bengali (বাংলা)",Urdu:"Urdu (اردو)",Hindi:"Hindi (हिन्दी)",Turkish:"Turkish (Türkçe)",Indonesian:"Indonesian (Bahasa)",Spanish:"Spanish (Español)",French:"French (Français)"};
+function LanguageField({value,onChange}) {
+  const known=NATIVE_LANGUAGE_OPTIONS.filter(o=>o!=="Other");
+  const [other,setOther]=useState(()=>!!value&&!known.includes(value));
+  const selected=other?"Other":(value||"English");
+  return (
+    <div style={{display:"flex",flexDirection:"column",gap:6}}>
+      <select className="input" value={selected} onChange={e=>{ if(e.target.value==="Other"){setOther(true);onChange("");} else {setOther(false);onChange(e.target.value);} }}>
+        {known.map(o=><option key={o} value={o}>{LANGUAGE_LABELS[o]||o}</option>)}
+        <option value="Other">Other…</option>
+      </select>
+      {other&&<input className="input" value={value||""} placeholder="Type your language (e.g. Tamil)" onChange={e=>onChange(e.target.value)}/>}
+    </div>
+  );
+}
 const CONTEXT_FIELDS=[
   {key:"occupation",label:"Occupation",type:"text",placeholder:"e.g. Software engineer"},
   {key:"ageBand",label:"Age band",type:"select",options:["Under 18","18–24","25–34","35–44","45–54","55+"]},
@@ -8368,7 +8389,7 @@ const CONTEXT_FIELDS=[
   {key:"goals",label:"Your specific goal",type:"textarea",placeholder:"e.g. read the Qur'an with understanding, talk with my in-laws"},
   {key:"dailyGoal",label:"Daily study time",type:"select",options:["5–10 min","15–30 min","30–60 min","60+ min"]},
   {key:"region",label:"Region / country",type:"text",placeholder:"e.g. Canada"},
-  {key:"nativeLanguage",label:"Native language",type:"text",placeholder:"e.g. English, Bengali (বাংলা)"},
+  {key:"nativeLanguage",label:"Native language (cards and translations are written in this)",type:"language"},
 ];
 const emptyContext=()=>Object.fromEntries(CONTEXT_FIELDS.map(f=>[f.key,""]));
 
@@ -8504,7 +8525,9 @@ function Onboarding({onComplete,initialProfile}) {
           {CONTEXT_FIELDS.map(f=>(
             <div key={f.key} style={{marginBottom:12}}>
               <label className="lbl" style={{marginBottom:3}}>{f.label}</label>
-              {f.type==="select"
+              {f.type==="language"
+                ? <LanguageField value={ctx[f.key]} onChange={v=>setField(f.key,v)}/>
+                : f.type==="select"
                 ? <select className="input" value={ctx[f.key]} onChange={e=>setField(f.key,e.target.value)}>
                     <option value="">Select…</option>
                     {f.options.map(o=><option key={o} value={o}>{o}</option>)}
@@ -12531,6 +12554,13 @@ export default function App() {
     window.addEventListener("importDecks",handler);
     return ()=>window.removeEventListener("importDecks",handler);
   },[decks,cardStates,user,settings,usage,studyLog,profile]);
+
+  // Onboarding / Profile panel choose the learner's language; mirror it into settings
+  // (which is what the generators read) so a new Bengali learner gets Bengali output at once.
+  useEffect(()=>{
+    const pl=profile?.nativeLanguage;
+    if(pl&&pl!==settings.nativeLanguage) setSettings(s=>({...s,nativeLanguage:pl}));
+  },[profile?.nativeLanguage]);
 
   // Small widgets (e.g. the writing-style chips) change global settings by event.
   useEffect(()=>{
