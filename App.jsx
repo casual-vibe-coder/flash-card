@@ -15,7 +15,7 @@ import { useState, useRef, useEffect, useCallback } from "react";
 import { auth, googleProvider, db, storage } from "./firebase.js";
 import { signInWithPopup, signOut, onAuthStateChanged } from "firebase/auth";
 import { indexCards, mergeDeckCards } from "./card-merge.js";
-import { STYLES, styleById, styleBlock, SENTENCE_LENGTHS, sentenceSpec } from "./writing-styles.js";
+import { STYLES, styleById, buildStyleBlock, normalizeMix, WEIGHT_LABELS, SENTENCE_LENGTHS, sentenceSpec } from "./writing-styles.js";
 import { emptyGame, levelInfo as gameLevelInfo, collectWord, award, QUEST_TARGET, XP } from "./watch-game.js";
 import { smartWordPool } from "./practice-words.js";
 import { settingsPatch, mergeCloudSettings } from "./settings-sync.js";
@@ -606,10 +606,14 @@ const TAG_TO_IMAGE_MODEL = {
 const STYLE_FILES = import.meta.glob("./style-guides/*.md",{query:"?raw",import:"default",eager:true});
 const STYLE_DEFAULTS = Object.fromEntries(Object.entries(STYLE_FILES).map(([p,t])=>[p.replace(/^.*\//,"").replace(/\.md$/,""),t]));
 let _learnerLang = "English"; // language glosses/translations are written in
-let _styleId = "bayna";
+let _styleId = "";            // legacy single-author choice
+let _styleMix = null;         // {bayna,nadawi,madinah}: 0-3 weights (null = default blend)
+let _styleAuto = false;       // true = original behaviour, the model infers the style
+let _styleLevels = {};        // where the learner is in each series
+let _styleFocus = "";         // what the learner is studying right now
 let _styleOverrides = {};
 let _sentenceLength = "short";
-function currentStyle(){ return styleBlock({id:_styleId,overrides:_styleOverrides,defaults:STYLE_DEFAULTS,fallback:BAYNA_YADAYK_STYLE}); }
+function currentStyle(){ return buildStyleBlock({mix:_styleMix,legacyId:_styleId,auto:_styleAuto,levels:_styleLevels,focus:_styleFocus,overrides:_styleOverrides,defaults:STYLE_DEFAULTS,fallback:BAYNA_YADAYK_STYLE}); }
 // App-settings mirror so small widgets deep in a screen can read/write a few
 // global settings without prop-drilling (App owns the real state).
 let _appSettingsMirror = {};
@@ -622,15 +626,24 @@ function useAppSetting(key,fallback){
   },[key]);
   return [v,val=>window.dispatchEvent(new CustomEvent("setAppSetting",{detail:{key,val}}))];
 }
-// Quick style picker for the practice screens.
-function StyleChips({accent="--accent"}){
-  const [styleId,setStyle]=useAppSetting("writingStyle","bayna");
+// Quick style picker for the practice screens: tap authors to blend them
+// (the first tap on an unused author turns it on at Medium), or "Auto" to let
+// the AI infer the style as before. Fine-tuning lives in Settings.
+function StyleChips(){
+  const [mixRaw,setMix]=useAppSetting("styleMix",null);
+  const [legacy]=useAppSetting("writingStyle","");
+  const [auto,setAuto]=useAppSetting("styleAuto",false);
+  const mix=normalizeMix(mixRaw,legacy);
+  const toggle=id=>{ setAuto(false); setMix({...mix,[id]:mix[id]>0?0:2}); };
+  const names=STYLES.filter(st=>mix[st.id]>0).map(st=>st.label);
   return (
     <div style={{display:"flex",flexDirection:"column",gap:6}}>
       <div style={{fontSize:11.5,fontWeight:700,color:"var(--text3)",letterSpacing:".08em",textTransform:"uppercase"}}>Writing style</div>
       <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
-        {STYLES.map(st=><button key={st.id} className={`chip ${styleId===st.id?"chip-on":""}`} title={st.blurb} onClick={()=>setStyle(st.id)}>{st.label}</button>)}
+        {STYLES.map(st=><button key={st.id} className={`chip ${!auto&&mix[st.id]>0?"chip-on":""}`} title={st.blurb} onClick={()=>toggle(st.id)}>{st.label}</button>)}
+        <button className={`chip ${auto?"chip-on":""}`} title="Let the AI infer the style, as before" onClick={()=>setAuto(true)}>Auto</button>
       </div>
+      <div style={{fontSize:11.5,color:"var(--text3)"}}>{auto?"AI chooses the style.":names.length>1?`Blending ${names.join(" + ")} — fine-tune in Settings.`:names.length===1?`Writing like ${names[0]}.`:"AI chooses the style."}</div>
     </div>
   );
 }
@@ -3337,24 +3350,50 @@ function ServiceCredits({orKey}) {
 // example sentences are, and edit each author's style guide.
 function WritingStylePanel({local,set}) {
   const overrides=local.styleOverrides||{};
-  const active=local.writingStyle||"bayna";
+  const mix=normalizeMix(local.styleMix,local.writingStyle);
+  const levels=local.styleLevels||{};
+  const auto=!!local.styleAuto;
+  const total=STYLES.reduce((n,st)=>n+mix[st.id],0);
+  const label={fontSize:11.5,fontWeight:700,color:"var(--text3)",letterSpacing:".08em",textTransform:"uppercase",margin:"14px 0 6px"};
   return (
     <div style={{background:"var(--surface)",border:"1.5px solid var(--border)",borderRadius:"var(--r)",padding:"15px 17px"}}>
       <div className="sec">Writing style</div>
-      <div style={{fontSize:12.5,color:"var(--text2)",lineHeight:1.6,marginBottom:10}}>Generated readings, listening, conversations and example sentences imitate this author. You can change it any time, and edit the guides below.</div>
-      <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:12}}>
-        {STYLES.map(st=><button key={st.id} className={`chip ${active===st.id?"chip-on":""}`} onClick={()=>set("writingStyle",st.id)}>{st.label}</button>)}
+      <div style={{fontSize:12.5,color:"var(--text2)",lineHeight:1.6,marginBottom:10}}>Generated readings, listening, conversations and example sentences can imitate the authors of your books. Blend them, or switch to Auto and let the AI decide.</div>
+      <div style={{display:"flex",gap:6,marginBottom:4}}>
+        <button className={`chip ${!auto?"chip-on":""}`} onClick={()=>set("styleAuto",false)}>Blend authors</button>
+        <button className={`chip ${auto?"chip-on":""}`} onClick={()=>set("styleAuto",true)}>Auto (AI decides)</button>
       </div>
-      <div style={{fontSize:11.5,fontWeight:700,color:"var(--text3)",letterSpacing:".08em",textTransform:"uppercase",marginBottom:6}}>Example sentence length</div>
+      {!auto&&<>
+        <div style={label}>How much of each</div>
+        {STYLES.map(st=>(
+          <div key={st.id} style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap",marginBottom:6}}>
+            <div style={{width:110,fontSize:13,fontWeight:600}}>{st.label}</div>
+            {WEIGHT_LABELS.map((w,i)=><button key={w} className={`chip ${mix[st.id]===i?"chip-on":""}`} onClick={()=>set("styleMix",{...mix,[st.id]:i})}>{w}</button>)}
+            <span style={{fontSize:11.5,color:"var(--text3)"}}>{total&&mix[st.id]?Math.round(mix[st.id]/total*100)+"%":""}</span>
+          </div>
+        ))}
+        <div style={label}>Where I am in each series</div>
+        {STYLES.map(st=>(
+          <div key={st.id} style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap",marginBottom:6}}>
+            <div style={{width:110,fontSize:13,fontWeight:600}}>{st.label}</div>
+            <button className={`chip ${!levels[st.id]?"chip-on":""}`} onClick={()=>set("styleLevels",{...levels,[st.id]:0})}>All</button>
+            {Array.from({length:st.levels},(_,i)=>i+1).map(n=><button key={n} className={`chip ${levels[st.id]===n?"chip-on":""}`} onClick={()=>set("styleLevels",{...levels,[st.id]:n})}>{st.id==="nadawi"?`Part ${n}`:`Book ${n}`}</button>)}
+          </div>
+        ))}
+      </>}
+      <div style={label}>What I'm studying right now</div>
+      <textarea className="input" rows={3} placeholder="e.g. Book 2 Unit 7 — past tense questions, family and food vocabulary. Update this as you go." value={local.styleFocus||""} onChange={e=>set("styleFocus",e.target.value)} style={{fontSize:13,width:"100%",minHeight:70}}/>
+      <div style={{fontSize:11.5,color:"var(--text3)",marginTop:4}}>Added to every generation so content follows your lessons.</div>
+      <div style={label}>Example sentence length</div>
       <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:6}}>
         {SENTENCE_LENGTHS.map(l=><button key={l.id} className={`chip ${(local.sentenceLength||"short")===l.id?"chip-on":""}`} onClick={()=>set("sentenceLength",l.id)}>{l.label}</button>)}
       </div>
-      <div style={{fontSize:11.5,color:"var(--text3)",marginBottom:12}}>Used when generating the sentence on each flashcard: {sentenceSpec(local.sentenceLength||"short")}.</div>
+      <div style={{fontSize:11.5,color:"var(--text3)",marginBottom:12}}>Used for the sentence on each flashcard: {sentenceSpec(local.sentenceLength||"short")}.</div>
       {STYLES.map(st=>(
         <details key={st.id} style={{marginTop:6}}>
-          <summary style={{cursor:"pointer",fontSize:13,fontWeight:600}}>{st.label} guide {overrides[st.id]?.trim()?"· edited":""}</summary>
-          <div style={{fontSize:11.5,color:"var(--text3)",margin:"6px 0"}}>{st.blurb}. Leave empty to use the built-in guide.</div>
-          <textarea className="input" rows={10} value={overrides[st.id]??STYLE_DEFAULTS[st.file]??""} onChange={e=>set("styleOverrides",{...overrides,[st.id]:e.target.value})} style={{fontSize:12.5,lineHeight:1.55,width:"100%"}}/>
+          <summary style={{cursor:"pointer",fontSize:13,fontWeight:600}}>Edit the {st.label} guide {overrides[st.id]?.trim()?"· edited":""}</summary>
+          <div style={{fontSize:11.5,color:"var(--text3)",margin:"6px 0"}}>{st.blurb}. Sections titled "Level N" are used for your level; "Quick summary" is used when blending. Reset to go back to the built-in guide.</div>
+          <textarea className="input" rows={12} value={overrides[st.id]??STYLE_DEFAULTS[st.file]??""} onChange={e=>set("styleOverrides",{...overrides,[st.id]:e.target.value})} style={{fontSize:12.5,lineHeight:1.55,width:"100%"}}/>
           <button className="chip" style={{marginTop:6}} onClick={()=>{const n={...overrides};delete n[st.id];set("styleOverrides",n);}}>Reset to built-in</button>
         </details>
       ))}
@@ -5242,7 +5281,7 @@ REMINDERS — non-negotiable:
           </div>
         )}
 
-        <StyleChips accent="--read"/>
+        <StyleChips/>
         {!master&&<WordSource profile={profile} customWords={customWords} setCustomWords={v=>{setCustomWords(v);setPassage(null);setTopics([]);setActiveTopic("");}} count={selCardIds.size} accentVar="--read" accentBgVar="--read-bg" accentBorderVar="--read-border">
           <MultiDeckCardSelector
             decks={decks} cardStates={cardStates}
@@ -5524,7 +5563,7 @@ REMINDERS:
           </div>
         )}
 
-        <StyleChips accent="--listen"/>
+        <StyleChips/>
         {!master&&<WordSource profile={profile} customWords={customWords} setCustomWords={v=>{setCustomWords(v);setContent(null);setTopics([]);setActiveTopic("");}} count={selCardIds.size} accentVar="--listen" accentBgVar="--listen-bg" accentBorderVar="--listen-border">
           <MultiDeckCardSelector
             decks={decks} cardStates={cardStates}
@@ -12436,13 +12475,17 @@ export default function App() {
     _convSilenceMs = typeof settings.convSilenceMs==="number"?settings.convSilenceMs:2500;
     _convFuzzyThreshold = typeof settings.convFuzzyThreshold==="number"?settings.convFuzzyThreshold:0.8;
     _autoGenerateImage = !!settings.autoGenerateImage;
-    _styleId = settings.writingStyle||"bayna";
+    _styleId = settings.writingStyle||"";
+    _styleMix = settings.styleMix||null;
+    _styleAuto = !!settings.styleAuto;
+    _styleLevels = settings.styleLevels||{};
+    _styleFocus = settings.styleFocus||"";
     _learnerLang = settings.nativeLanguage||profile?.nativeLanguage||"English";
     _styleOverrides = settings.styleOverrides||{};
     _sentenceLength = settings.sentenceLength||"short";
     _appSettingsMirror = settings;
     window.dispatchEvent(new Event("appSettingsMirror"));
-  },[profile?.nativeLanguage,settings.nativeLanguage,settings.writingStyle,settings.styleOverrides,settings.sentenceLength,settings.model,settings.models,settings.imageModel,settings.orKey,settings.gKey,settings.ttsKey,settings.ttsVoice,settings.ttsSpeed,settings.sttKey,settings.sttEnabled,settings.convSilenceMs,settings.convFuzzyThreshold,settings.autoGenerateImage]);
+  },[profile?.nativeLanguage,settings.nativeLanguage,settings.writingStyle,settings.styleMix,settings.styleAuto,settings.styleLevels,settings.styleFocus,settings.styleOverrides,settings.sentenceLength,settings.model,settings.models,settings.imageModel,settings.orKey,settings.gKey,settings.ttsKey,settings.ttsVoice,settings.ttsSpeed,settings.sttKey,settings.sttEnabled,settings.convSilenceMs,settings.convFuzzyThreshold,settings.autoGenerateImage]);
   const go=s=>setScreen(s);
 
   // Usage tracker function passed to all Claude calls
