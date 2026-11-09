@@ -830,16 +830,16 @@ button.module-card{font-family:inherit;color:var(--text)}
 .chip:hover:not(.chip-on){border-color:var(--accent);color:var(--accent)}
 .chip-on{background:var(--accent);border-color:var(--accent);color:#fff}
 .input{width:100%;border:1.5px solid var(--border);border-radius:var(--rs);padding:11px 13px;font-family:'Outfit','Noto Sans Bengali',sans-serif;font-size:14px;color:var(--text);background:var(--surface);outline:none;transition:border-color .15s;appearance:none}
-.input:focus{border-color:var(--accent)}
+.input:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-bg)}
 textarea.input{resize:vertical;min-height:110px;line-height:1.7}
 .lbl{font-size:12px;font-weight:600;color:var(--text2);display:block;margin-bottom:7px}
 .ar{direction:rtl;font-family:'Scheherazade New','Amiri','Traditional Arabic',serif;line-height:1.6}
 .ar-word{cursor:pointer;border-radius:4px;padding:1px 3px;transition:background .12s;display:inline}
 .ar-word:hover{background:rgba(155,58,12,.14)}
 .ar-word.hl{background:rgba(155,58,12,.18);font-weight:600}
-.card-row{display:flex;align-items:flex-start;background:var(--surface);border:1.5px solid var(--border);border-radius:var(--rs);padding:13px 14px;gap:11px;transition:background .15s}
+.card-row{box-shadow:var(--shadow-sm);display:flex;align-items:flex-start;background:var(--surface);border:1.5px solid var(--border);border-radius:var(--rs);padding:13px 14px;gap:11px;transition:background .15s}
 .card-row:hover{background:#F8F4EE}
-.progress-track{height:3px;background:var(--surface2);border-radius:100px;overflow:hidden}
+.progress-track{height:5px;background:var(--surface2);border-radius:100px;overflow:hidden}
 .progress-fill{height:100%;border-radius:100px;transition:width .5s ease}
 .tag{display:inline-flex;align-items:center;padding:2px 8px;border-radius:100px;font-size:11px;font-weight:600}
 .tag-weak{background:var(--weak-bg);color:var(--weak);border:1px solid var(--weak-border)}
@@ -860,7 +860,7 @@ textarea.input{resize:vertical;min-height:110px;line-height:1.7}
 .flip-card{perspective:1400px;width:100%;cursor:pointer}
 .flip-card-inner{position:relative;width:100%;min-height:230px;transition:transform .65s cubic-bezier(.2,.6,.25,1);transform-style:preserve-3d}
 .flip-card.is-flipped .flip-card-inner{transform:rotateY(180deg)}
-.flip-card-face{position:absolute;top:0;left:0;width:100%;min-height:230px;backface-visibility:hidden;-webkit-backface-visibility:hidden;background:var(--surface);border:1.5px solid var(--border);border-radius:var(--r);box-shadow:0 5px 24px rgba(0,0,0,0.08);display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:30px 22px}
+.flip-card-face{box-shadow:var(--shadow-md);position:absolute;top:0;left:0;width:100%;min-height:230px;backface-visibility:hidden;-webkit-backface-visibility:hidden;background:var(--surface);border:1.5px solid var(--border);border-radius:var(--r);box-shadow:0 5px 24px rgba(0,0,0,0.08);display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:30px 22px}
 .flip-card-back{transform:rotateY(180deg)}
 .watch-lesson{height:calc(100dvh - 76px);min-height:400px;display:flex;flex-direction:column}
 .watch-player-panel{flex-shrink:0;background:var(--bg);padding:6px 12px 8px}
@@ -873,12 +873,25 @@ textarea.input{resize:vertical;min-height:110px;line-height:1.7}
 @media(max-width:480px){.watch-player-panel .chip{padding:5px 8px!important;font-size:11px!important}.watch-lesson{min-height:320px}}
 .overlay{position:fixed;inset:0;background:rgba(0,0,0,.44);z-index:100;display:flex;align-items:flex-end;justify-content:center;animation:ovIn .2s ease}
 @keyframes ovIn{from{opacity:0}to{opacity:1}}
-.drawer{background:var(--surface);border-radius:20px 20px 0 0;width:100%;max-width:680px;padding:22px 20px 36px;animation:drIn .25s cubic-bezier(.2,0,.2,1)}
+.drawer{position:relative;background:var(--surface);box-shadow:0 -10px 40px rgba(0,0,0,.18);border-radius:26px 26px 0 0;width:100%;max-width:680px;padding:22px 20px 36px;animation:drIn .25s cubic-bezier(.2,0,.2,1)}
+.drawer::before{content:"";display:block;width:38px;height:4px;border-radius:100px;background:var(--border);margin:-10px auto 14px}
 @keyframes drIn{from{transform:translateY(40px);opacity:0}to{transform:translateY(0);opacity:1}}
 .seg{display:flex;background:var(--surface2);border-radius:var(--rs);padding:3px;gap:2px}
 .seg-opt{flex:1;text-align:center;padding:7px 4px;font-size:12px;font-weight:500;border-radius:8px;cursor:pointer;transition:all .15s;color:var(--text2);border:none;background:transparent;font-family:'Outfit','Noto Sans Bengali',sans-serif}
 .seg-opt.on{background:var(--surface);color:var(--text);font-weight:600;box-shadow:0 1px 4px rgba(0,0,0,.1)}
-.module-card{border-radius:var(--r);padding:16px 18px;border:1.5px solid;cursor:pointer;transition:all .15s;display:flex;align-items:center;gap:14px;background:var(--surface)}
+.module-card{box-shadow:var(--shadow-sm);border-radius:var(--r);padding:16px 18px;border:1.5px solid;cursor:pointer;transition:all .15s;display:flex;align-items:center;gap:14px;background:var(--surface)}
+.hero{background:linear-gradient(135deg,var(--accent) 0%,var(--accent2) 100%);color:#fff;border-radius:22px;padding:18px 18px 14px;box-shadow:0 8px 28px rgba(155,58,12,.28)}
+[data-theme="dark"] .hero{background:linear-gradient(135deg,#7a3412 0%,#a8481c 100%);box-shadow:0 8px 28px rgba(0,0,0,.45)}
+.hero-top{display:flex;justify-content:space-between;align-items:flex-end;gap:12px}
+.hero-kicker{font-size:11px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;opacity:.8}
+.hero-num{font-family:Lora,serif;font-size:44px;font-weight:600;line-height:1.05;margin-top:2px}
+.hero-sub{font-size:13px;opacity:.9;margin-top:2px}
+.hero-cta{background:#fff;color:var(--accent);font-weight:700;font-size:14px;padding:12px 16px;border-radius:14px;box-shadow:0 2px 10px rgba(0,0,0,.18)}
+.hero-cta:hover{background:#fff8f2}
+.hero-bar{height:6px;border-radius:100px;background:rgba(255,255,255,.25);margin-top:14px;overflow:hidden}
+.hero-bar>span{display:block;height:100%;border-radius:100px;background:#fff;transition:width .6s ease}
+.hero-stats{display:flex;gap:14px;flex-wrap:wrap;margin-top:10px;font-size:12px;opacity:.92}
+.hero-stats b{font-weight:700}
 .tile-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin-bottom:12px}
 @media(min-width:480px){.tile-grid{grid-template-columns:repeat(3,1fr)}}
 .tile{display:flex;flex-direction:column;align-items:flex-start;gap:3px;text-align:left;padding:14px;border-radius:var(--r);border:1.5px solid var(--border);background:var(--surface);box-shadow:var(--shadow-sm);cursor:pointer;font-family:inherit;color:var(--text);transition:transform .15s,box-shadow .15s,border-color .15s;min-height:104px}
@@ -893,7 +906,7 @@ textarea.input{resize:vertical;min-height:110px;line-height:1.7}
 .scene-stars{position:absolute;inset:0;background-image:radial-gradient(circle,rgba(255,255,255,.15) 1px,transparent 1px);background-size:20px 20px;opacity:.4}
 ::-webkit-scrollbar{width:3px}::-webkit-scrollbar-track{background:transparent}::-webkit-scrollbar-thumb{background:var(--border);border-radius:4px}
 .toast-container{position:fixed;top:16px;left:50%;transform:translateX(-50%);z-index:200;display:flex;flex-direction:column;gap:8px;max-width:400px;width:calc(100% - 32px);pointer-events:none}
-.toast{padding:12px 16px;border-radius:var(--rs);font-size:13px;font-weight:500;pointer-events:auto;animation:toastIn .3s ease;box-shadow:0 4px 16px rgba(0,0,0,.15);display:flex;align-items:center;gap:8px}
+.toast{padding:13px 17px;border-radius:14px;backdrop-filter:blur(8px);font-size:13px;font-weight:500;pointer-events:auto;animation:toastIn .3s ease;box-shadow:0 4px 16px rgba(0,0,0,.15);display:flex;align-items:center;gap:8px}
 .toast-success{background:var(--know-bg);color:var(--know);border:1px solid var(--know-border)}
 .toast-error{background:var(--weak-bg);color:var(--weak);border:1px solid var(--weak-border)}
 .toast-info{background:var(--info-bg);color:var(--info);border:1px solid var(--info-border)}
@@ -910,7 +923,7 @@ textarea.input{resize:vertical;min-height:110px;line-height:1.7}
 .chat-bubble{padding:12px 15px;border-radius:16px;max-width:85%;line-height:1.6;font-size:14px;animation:gIn .2s ease}
 .chat-ai{background:var(--surface);border:1px solid var(--border);border-bottom-left-radius:4px;align-self:flex-start}
 .chat-user{background:var(--accent);color:#fff;border-bottom-right-radius:4px;align-self:flex-end}
-.stat-card{background:var(--surface);border:1.5px solid var(--border);border-radius:var(--rs);padding:12px 14px;text-align:center;flex:1;min-width:0}
+.stat-card{background:var(--surface);box-shadow:var(--shadow-sm);border:1.5px solid var(--border);border-radius:var(--rs);padding:12px 14px;text-align:center;flex:1;min-width:0}
 .stat-num{font-size:22px;font-weight:700;line-height:1}
 .stat-label{font-size:10.5px;color:var(--text3);margin-top:4px;font-weight:500;text-transform:uppercase;letter-spacing:.05em}
 .onboarding-overlay{position:fixed;inset:0;z-index:200;background:rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center;animation:ovIn .3s ease}
@@ -1496,9 +1509,9 @@ Return ONLY valid JSON: {"definition":"..."}`;
 // ─────────────────────────────────────────────────────────────
 function Hdr({title,sub,onBack,right}) {
   return (
-    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"24px 20px 0"}}>
+    <div style={{position:"sticky",top:0,zIndex:30,background:"color-mix(in srgb, var(--bg) 88%, transparent)",backdropFilter:"blur(10px)",WebkitBackdropFilter:"blur(10px)",display:"flex",justifyContent:"space-between",alignItems:"center",padding:"18px 20px 10px"}}>
       <div style={{display:"flex",alignItems:"center",gap:12}}>
-        {onBack&&<button className="btn btn-ghost" onClick={onBack} style={{width:34,height:34,flexShrink:0}}><ArrowLeft size={16}/></button>}
+        {onBack&&<button className="btn btn-ghost" aria-label="Back" onClick={onBack} style={{width:38,height:38,flexShrink:0}}><ArrowLeft size={17}/></button>}
         <div>
           {sub&&<div className="sec" style={{margin:0,marginBottom:3}}>{sub}</div>}
           <div style={{fontFamily:"Lora,serif",fontSize:21,fontWeight:600,lineHeight:1.2}}>{title}</div>
@@ -2014,43 +2027,27 @@ function HomeScreen({watchHours,decks,cardStates,onOpenDeck,onSettings,onCreateD
         )}
       </div>
 
-      {/* Dashboard Stats */}
+      {/* Today hero: what's due, one big button, and where you stand */}
       {totalCards>0&&(
         <div style={{padding:"16px 20px 0"}}>
-          <div style={{display:"flex",gap:8,marginBottom:8}}>
-            <div className="stat-card"><div className="stat-num" style={{color:"var(--text)"}}>{totalCards}</div><div className="stat-label">Cards</div></div>
-            <div className="stat-card"><div className="stat-num" style={{color:"var(--know)"}}>{knownCount}</div><div className="stat-label">Known</div></div>
-            <div className="stat-card"><div className="stat-num" style={{color:"var(--weak)"}}>{weakCount}</div><div className="stat-label">Weak</div></div>
-            <div className="stat-card"><div className="stat-num" style={{color:"var(--text3)"}}>{newCount}</div><div className="stat-label">New</div></div>
-          </div>
-          <div style={{display:"flex",gap:8}}>
-            <div className="stat-card" style={{display:"flex",alignItems:"center",gap:8,textAlign:"left"}}>
-              <Hash size={14} color="var(--accent)"/>
-              <div><div style={{fontSize:14,fontWeight:700,color:"var(--accent)"}}>{totalInstances}</div><div className="stat-label" style={{marginTop:1}}>Word instances</div></div>
-            </div>
-            {dueCount>0&&(
-              <div className="stat-card" style={{display:"flex",alignItems:"center",gap:8,textAlign:"left",borderColor:"var(--info-border)",background:"var(--info-bg)"}}>
-                <Clock size={14} color="var(--info)"/>
-                <div><div style={{fontSize:14,fontWeight:700,color:"var(--info)"}}>{dueCount}</div><div className="stat-label" style={{marginTop:1,color:"var(--info)"}}>Due now</div></div>
+          <div className="hero">
+            <div className="hero-top">
+              <div>
+                <div className="hero-kicker">Today</div>
+                <div className="hero-num">{dueCount>0?dueCount:weakCount>0?weakCount:totalCards}</div>
+                <div className="hero-sub">{dueCount>0?"cards due now":weakCount>0?"weak cards to strengthen":"cards in your decks"}</div>
               </div>
-            )}
+              <button className="btn hero-cta" onClick={onMasterReview}><BookOpen size={17}/> Start review</button>
+            </div>
+            <div className="hero-bar" aria-label={`${Math.round(knownCount/Math.max(1,totalCards)*100)}% known`}><span style={{width:`${Math.round(knownCount/Math.max(1,totalCards)*100)}%`}}/></div>
+            <div className="hero-stats">
+              <span><b>{knownCount}</b> known</span><span><b>{weakCount}</b> weak</span><span><b>{newCount}</b> new</span><span><b>{totalCards}</b> cards</span>
+            </div>
           </div>
         </div>
       )}
 
-      <div style={{padding:"16px 20px 0"}}>
-        {/* Master Review — prominent */}
-        {totalCards>0&&(
-          <div style={{marginBottom:16}}>
-            <button className="btn btn-primary" onClick={onMasterReview} style={{width:"100%",padding:"16px",borderRadius:"var(--r)",fontSize:15,display:"flex",alignItems:"center",justifyContent:"center",gap:10}}>
-              <BookOpen size={18}/> Master Review
-              <span style={{fontSize:12,opacity:.8,marginLeft:4}}>
-                {dueCount>0?`${dueCount} due`:weakCount>0?`${weakCount} weak`:`${totalCards} cards`}
-              </span>
-            </button>
-          </div>
-        )}
-
+      <div style={{padding:"18px 20px 0"}}>
         <div className="sec">Practice</div>
         <div className="tile-grid">
           {[
