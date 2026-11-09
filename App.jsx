@@ -613,6 +613,17 @@ let _styleLevels = {};        // where the learner is in each series
 let _styleFocus = "";         // what the learner is studying right now
 let _styleOverrides = {};
 let _sentenceLength = "short";
+// Where the learner is in each series: explicit choice wins (0 = all levels);
+// otherwise follow the working level from their profile (book1..book4).
+function effectiveStyleLevels(chosen,workingLevel){
+  const n=Number(String(workingLevel||"").replace(/\D/g,""))||0;
+  const out={};
+  for(const st of STYLES){
+    const c=chosen?.[st.id];
+    out[st.id]=c===undefined?(n?Math.min(n,st.levels):0):c;
+  }
+  return out;
+}
 function currentStyle(){ return buildStyleBlock({mix:_styleMix,legacyId:_styleId,auto:_styleAuto,levels:_styleLevels,focus:_styleFocus,overrides:_styleOverrides,defaults:STYLE_DEFAULTS,fallback:BAYNA_YADAYK_STYLE}); }
 // App-settings mirror so small widgets deep in a screen can read/write a few
 // global settings without prop-drilling (App owns the real state).
@@ -3348,10 +3359,11 @@ function ServiceCredits({orKey}) {
 
 // Choose the author whose writing the generated Arabic imitates, how long
 // example sentences are, and edit each author's style guide.
-function WritingStylePanel({local,set}) {
+function WritingStylePanel({local,set,workingLevel}) {
   const overrides=local.styleOverrides||{};
   const mix=normalizeMix(local.styleMix,local.writingStyle);
-  const levels=local.styleLevels||{};
+  const levels=effectiveStyleLevels(local.styleLevels,workingLevel);
+  const chosenLevels=local.styleLevels||{};
   const auto=!!local.styleAuto;
   const total=STYLES.reduce((n,st)=>n+mix[st.id],0);
   const label={fontSize:11.5,fontWeight:700,color:"var(--text3)",letterSpacing:".08em",textTransform:"uppercase",margin:"14px 0 6px"};
@@ -3376,8 +3388,8 @@ function WritingStylePanel({local,set}) {
         {STYLES.map(st=>(
           <div key={st.id} style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap",marginBottom:6}}>
             <div style={{width:110,fontSize:13,fontWeight:600}}>{st.label}</div>
-            <button className={`chip ${!levels[st.id]?"chip-on":""}`} onClick={()=>set("styleLevels",{...levels,[st.id]:0})}>All</button>
-            {Array.from({length:st.levels},(_,i)=>i+1).map(n=><button key={n} className={`chip ${levels[st.id]===n?"chip-on":""}`} onClick={()=>set("styleLevels",{...levels,[st.id]:n})}>{st.id==="nadawi"?`Part ${n}`:`Book ${n}`}</button>)}
+            <button className={`chip ${!levels[st.id]?"chip-on":""}`} onClick={()=>set("styleLevels",{...chosenLevels,[st.id]:0})}>All</button>
+            {Array.from({length:st.levels},(_,i)=>i+1).map(n=><button key={n} className={`chip ${levels[st.id]===n?"chip-on":""}`} onClick={()=>set("styleLevels",{...chosenLevels,[st.id]:n})}>{st.id==="nadawi"?`Part ${n}`:`Book ${n}`}</button>)}
           </div>
         ))}
       </>}
@@ -3441,7 +3453,7 @@ function SettingsScreen({settings,setSettings,onBack,usage,user,onSignOut,onRepl
 
         {/* Pass `local` (the in-edit settings) so cost previews react as you
             change model dropdowns above, before you've hit Save. */}
-        <WritingStylePanel local={local} set={set}/>
+        <WritingStylePanel local={local} set={set} workingLevel={profile?.workingLevel}/>
         <ServiceCredits orKey={local.orKey}/>
         <UsageMeter usage={usage} settings={local} onReset={onResetUsage}/>
 
@@ -12478,14 +12490,14 @@ export default function App() {
     _styleId = settings.writingStyle||"";
     _styleMix = settings.styleMix||null;
     _styleAuto = !!settings.styleAuto;
-    _styleLevels = settings.styleLevels||{};
+    _styleLevels = effectiveStyleLevels(settings.styleLevels,profile?.workingLevel);
     _styleFocus = settings.styleFocus||"";
     _learnerLang = settings.nativeLanguage||profile?.nativeLanguage||"English";
     _styleOverrides = settings.styleOverrides||{};
     _sentenceLength = settings.sentenceLength||"short";
     _appSettingsMirror = settings;
     window.dispatchEvent(new Event("appSettingsMirror"));
-  },[profile?.nativeLanguage,settings.nativeLanguage,settings.writingStyle,settings.styleMix,settings.styleAuto,settings.styleLevels,settings.styleFocus,settings.styleOverrides,settings.sentenceLength,settings.model,settings.models,settings.imageModel,settings.orKey,settings.gKey,settings.ttsKey,settings.ttsVoice,settings.ttsSpeed,settings.sttKey,settings.sttEnabled,settings.convSilenceMs,settings.convFuzzyThreshold,settings.autoGenerateImage]);
+  },[profile?.nativeLanguage,settings.nativeLanguage,settings.writingStyle,settings.styleMix,settings.styleAuto,settings.styleLevels,profile?.workingLevel,settings.styleFocus,settings.styleOverrides,settings.sentenceLength,settings.model,settings.models,settings.imageModel,settings.orKey,settings.gKey,settings.ttsKey,settings.ttsVoice,settings.ttsSpeed,settings.sttKey,settings.sttEnabled,settings.convSilenceMs,settings.convFuzzyThreshold,settings.autoGenerateImage]);
   const go=s=>setScreen(s);
 
   // Usage tracker function passed to all Claude calls
