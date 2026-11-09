@@ -15,7 +15,7 @@ import { useState, useRef, useEffect, useCallback } from "react";
 import { auth, googleProvider, db, storage } from "./firebase.js";
 import { signInWithPopup, signOut, onAuthStateChanged } from "firebase/auth";
 import { indexCards, mergeDeckCards } from "./card-merge.js";
-import { STYLES, styleById, buildStyleBlock, normalizeMix, WEIGHT_LABELS, SENTENCE_LENGTHS, sentenceSpec } from "./writing-styles.js";
+import { STYLES, styleById, buildStyleBlock, normalizeMix, DEFAULT_MIX, WEIGHT_LABELS, SENTENCE_LENGTHS, sentenceSpec } from "./writing-styles.js";
 import { emptyGame, levelInfo as gameLevelInfo, collectWord, award, QUEST_TARGET, XP } from "./watch-game.js";
 import { smartWordPool } from "./practice-words.js";
 import { settingsPatch, mergeCloudSettings } from "./settings-sync.js";
@@ -608,7 +608,7 @@ const STYLE_DEFAULTS = Object.fromEntries(Object.entries(STYLE_FILES).map(([p,t]
 let _learnerLang = "English"; // language glosses/translations are written in
 let _styleId = "";            // legacy single-author choice
 let _styleMix = null;         // {bayna,nadawi,madinah}: 0-3 weights (null = default blend)
-let _styleAuto = false;       // true = original behaviour, the model infers the style
+let _styleAuto = true;        // true (the default) = original behaviour, the model infers the style
 let _styleLevels = {};        // where the learner is in each series
 let _styleFocus = "";         // what the learner is studying right now
 let _styleOverrides = {};
@@ -643,18 +643,25 @@ function useAppSetting(key,fallback){
 function StyleChips(){
   const [mixRaw,setMix]=useAppSetting("styleMix",null);
   const [legacy]=useAppSetting("writingStyle","");
-  const [auto,setAuto]=useAppSetting("styleAuto",false);
+  const [autoRaw,setAuto]=useAppSetting("styleAuto",true);
+  const auto=autoRaw!==false;
   const mix=normalizeMix(mixRaw,legacy);
-  const toggle=id=>{ setAuto(false); setMix({...mix,[id]:mix[id]>0?0:2}); };
+  const toggle=id=>{
+    // From Default, tapping an author means "only this one"; after that, taps add or remove authors.
+    if(auto){ setAuto(false); setMix(Object.fromEntries(STYLES.map(st=>[st.id,st.id===id?3:0]))); return; }
+    const next={...mix,[id]:mix[id]>0?0:2};
+    if(!STYLES.some(st=>next[st.id]>0)){ setAuto(true); return; }
+    setMix(next);
+  };
   const names=STYLES.filter(st=>mix[st.id]>0).map(st=>st.label);
   return (
     <div style={{display:"flex",flexDirection:"column",gap:6}}>
       <div style={{fontSize:11.5,fontWeight:700,color:"var(--text3)",letterSpacing:".08em",textTransform:"uppercase"}}>Writing style</div>
       <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+        <button className={`chip ${auto?"chip-on":""}`} title="The AI chooses the style, as before" onClick={()=>setAuto(true)}>Default</button>
         {STYLES.map(st=><button key={st.id} className={`chip ${!auto&&mix[st.id]>0?"chip-on":""}`} title={st.blurb} onClick={()=>toggle(st.id)}>{st.label}</button>)}
-        <button className={`chip ${auto?"chip-on":""}`} title="Let the AI infer the style, as before" onClick={()=>setAuto(true)}>Auto</button>
       </div>
-      <div style={{fontSize:11.5,color:"var(--text3)"}}>{auto?"AI chooses the style.":names.length>1?`Blending ${names.join(" + ")} — fine-tune in Settings.`:names.length===1?`Writing like ${names[0]}.`:"AI chooses the style."}</div>
+      <div style={{fontSize:11.5,color:"var(--text3)"}}>{auto?"Default — the AI chooses the style. Tap an author to write like them, or tap several to blend.":names.length>1?`Blending ${names.join(" + ")} — fine-tune the mix in Settings.`:`Only ${names[0]}.`}</div>
     </div>
   );
 }
@@ -3364,17 +3371,23 @@ function WritingStylePanel({local,set,workingLevel}) {
   const mix=normalizeMix(local.styleMix,local.writingStyle);
   const levels=effectiveStyleLevels(local.styleLevels,workingLevel);
   const chosenLevels=local.styleLevels||{};
-  const auto=!!local.styleAuto;
+  const auto=local.styleAuto!==false;
+  const activeIds=STYLES.filter(st=>mix[st.id]>0).map(st=>st.id);
+  const only=id=>{ set("styleAuto",false); set("styleMix",Object.fromEntries(STYLES.map(st=>[st.id,st.id===id?3:0]))); };
+  const blend=()=>{ set("styleAuto",false); if(activeIds.length<2) set("styleMix",{...DEFAULT_MIX}); };
   const total=STYLES.reduce((n,st)=>n+mix[st.id],0);
   const label={fontSize:11.5,fontWeight:700,color:"var(--text3)",letterSpacing:".08em",textTransform:"uppercase",margin:"14px 0 6px"};
   return (
     <div style={{background:"var(--surface)",border:"1.5px solid var(--border)",borderRadius:"var(--r)",padding:"15px 17px"}}>
       <div className="sec">Writing style</div>
-      <div style={{fontSize:12.5,color:"var(--text2)",lineHeight:1.6,marginBottom:10}}>Generated readings, listening, conversations and example sentences can imitate the authors of your books. Blend them, or switch to Auto and let the AI decide.</div>
-      <div style={{display:"flex",gap:6,marginBottom:4}}>
-        <button className={`chip ${!auto?"chip-on":""}`} onClick={()=>set("styleAuto",false)}>Blend authors</button>
-        <button className={`chip ${auto?"chip-on":""}`} onClick={()=>set("styleAuto",true)}>Auto (AI decides)</button>
+      <div style={{fontSize:12.5,color:"var(--text2)",lineHeight:1.6,marginBottom:10}}>Generated readings, listening, conversations and example sentences can imitate the authors of your books. Pick one author, blend several, or leave it on Default and let the AI decide.</div>
+      <div style={label}>Mode</div>
+      <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:4}}>
+        <button className={`chip ${auto?"chip-on":""}`} onClick={()=>set("styleAuto",true)}>Default (AI decides)</button>
+        {STYLES.map(st=><button key={st.id} className={`chip ${!auto&&activeIds.length===1&&activeIds[0]===st.id?"chip-on":""}`} onClick={()=>only(st.id)}>{st.label} only</button>)}
+        <button className={`chip ${!auto&&activeIds.length>1?"chip-on":""}`} onClick={blend}>Blend</button>
       </div>
+      <div style={{fontSize:11.5,color:"var(--text3)"}}>{auto?"Nothing changes from before: the AI infers the style and no author guide is used.":activeIds.length>1?"Blending: adjust how much of each author below.":"Writing like one author. Raise another author below to blend."}</div>
       {!auto&&<>
         <div style={label}>How much of each</div>
         {STYLES.map(st=>(
@@ -12489,7 +12502,7 @@ export default function App() {
     _autoGenerateImage = !!settings.autoGenerateImage;
     _styleId = settings.writingStyle||"";
     _styleMix = settings.styleMix||null;
-    _styleAuto = !!settings.styleAuto;
+    _styleAuto = settings.styleAuto!==false; // default: the AI infers the style, as before
     _styleLevels = effectiveStyleLevels(settings.styleLevels,profile?.workingLevel);
     _styleFocus = settings.styleFocus||"";
     _learnerLang = settings.nativeLanguage||profile?.nativeLanguage||"English";
