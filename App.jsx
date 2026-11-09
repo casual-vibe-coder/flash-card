@@ -15,6 +15,7 @@ import { useState, useRef, useEffect, useCallback } from "react";
 import { auth, googleProvider, db, storage } from "./firebase.js";
 import { signInWithPopup, signOut, onAuthStateChanged } from "firebase/auth";
 import { indexCards, mergeDeckCards } from "./card-merge.js";
+import { settingsPatch, mergeCloudSettings } from "./settings-sync.js";
 import { posKey, newerPos, resumeFrom } from "./watch-position.js";
 import { doc, getDoc, setDoc, updateDoc, deleteDoc, deleteField, collection, getDocs, runTransaction } from "firebase/firestore";
 import { ref as storageRef, uploadString, getDownloadURL } from "firebase/storage";
@@ -1479,8 +1480,7 @@ function WordPopup({word,context="",decks=[],cardStates,onClose,onAddToFlashcard
     if(!word){setLoading(false);setError('Choose an Arabic word to look up.');return;}
     (async()=>{
       try {
-        const raw=await callClaude(lookupPrompt(word,context),1200,"wordLookup",trackRef.current,30000);
-        const parsed=parseLookup(raw,word,extractJSON);
+        const parsed=await lookupWord(word,context,trackRef.current);
         if(!cancelled)setData(parsed);
       }catch(e){if(!cancelled)setError(e?.message||'Could not load the meaning. Please retry.');}
       finally{if(!cancelled)setLoading(false);}
@@ -1548,6 +1548,24 @@ function WordPopup({word,context="",decks=[],cardStates,onClose,onAddToFlashcard
       </div>
     </div>
   );
+}
+
+// Word lookups are short structured answers; a "reasoning" model (e.g.
+// gpt-5-mini) spends many seconds thinking first. Use a fast model for them
+// even if a reasoning one is picked in Settings, and remember answers so the
+// same word in the same sentence is instant the second time.
+const LOOKUP_FAST_MODEL="openai/gpt-4o-mini";
+const isReasoningModel=m=>/gpt-5|(^|\/)o[134](-|$)|deepseek-r1|thinking/i.test(m||"");
+async function lookupWord(word,context,trackFn){
+  const ctx=String(context||"").slice(0,300);
+  let h=0;for(let i=0;i<ctx.length;i++)h=(h*31+ctx.charCodeAt(i))|0;
+  const key=`lookup:v1:${word}:${h}`;
+  try{ const hit=JSON.parse(localStorage.getItem(key)||"null"); if(hit?.meaning) return hit; }catch{}
+  const picked=pickModelForTag("wordLookup");
+  const raw=await callClaude(lookupPrompt(word,context),500,"wordLookup",trackFn,20000,isReasoningModel(picked)?LOOKUP_FAST_MODEL:null);
+  const data=parseLookup(raw,word,extractJSON);
+  try{ localStorage.setItem(key,JSON.stringify(data)); }catch{}
+  return data;
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -2497,8 +2515,7 @@ function WatchScreen({onBack,onAddToFlashcard,decks,trackUsage,user,watchProgres
     setLk({status:"loading"});
     (async()=>{
       try{
-        const raw=await callClaude(lookupPrompt(sel.ar,sel.sentence||""),1200,"wordLookup",trackUsage,30000);
-        const data=parseLookup(raw,sel.ar,extractJSON);
+        const data=await lookupWord(sel.ar,sel.sentence||"",trackUsage);
         if(!off) setLk({status:"done",data});
       }catch(e){ if(!off) setLk({status:"error",error:e?.message||"Lookup failed"}); }
     })();
@@ -2516,6 +2533,11 @@ function WatchScreen({onBack,onAddToFlashcard,decks,trackUsage,user,watchProgres
   const [searchErr,setSearchErr]=useState("");
   const [captionsOnly,setCaptionsOnly]=useState(true);
   const [canServiceSearch,setCanServiceSearch]=useState(false);
+  // Transcript-service (Supadata) credit balance, fetched via our server so
+  // the key never reaches the browser. Re-checked when a load fails.
+  const [credits,setCredits]=useState(null);
+  const loadCredits=()=>fetch("/api/supadata-credits").then(r=>r.json()).then(setCredits).catch(()=>setCredits({configured:true,error:"unavailable",detail:"Couldn't check the credit balance."}));
+  useEffect(()=>{ loadCredits(); },[err]);
   const searchRequestRef=useRef(null),searchSnapshotRef=useRef(null);
   const [libraryQuery,setLibraryQuery]=useState("");
   const [libraryLevel,setLibraryLevel]=useState("all");
@@ -2921,6 +2943,14 @@ Return ONLY valid JSON, no commentary: [{"i":0,"t":"translation","w":[{"a":"..",
             </>)}
           </div>)}
 
+          {!videoId&&credits?.configured&&(
+            <div role="status" style={{fontSize:12.5,lineHeight:1.5,padding:"8px 11px",borderRadius:"var(--rxs)",border:`1.5px solid ${credits.exhausted?"var(--weak)":"var(--border)"}`,background:credits.exhausted?"var(--surface2)":"var(--surface)",color:credits.exhausted?"var(--weak)":"var(--text2)"}}>
+              {credits.error?<>Transcript credits: couldn't check — {credits.detail}</>
+                :credits.exhausted?<><b>Transcript credits are used up</b> ({credits.used.toLocaleString()} of {credits.max.toLocaleString()}{credits.plan?`, ${credits.plan} plan`:""}). Videos without free YouTube captions can't load until credits are topped up at supadata.ai.</>
+                :<>Transcript credits: {credits.remaining.toLocaleString()} left of {credits.max.toLocaleString()}{credits.plan?` (${credits.plan})`:""}</>}
+              {" "}<button className="chip" onClick={loadCredits}>Refresh</button>
+            </div>
+          )}
           {!videoId&&tab==="explore"&&(<>
             <details style={{border:"1px solid var(--border)",padding:12,borderRadius:"var(--rs)"}}><summary style={{cursor:"pointer",fontWeight:600}}>Find graded listening · different speakers</summary>
               <p style={{fontSize:12}}>Choose a starting source. Search stays inside this app; each prepared video gets its own AI level estimate. External resource pages do not add tracked hours.</p>
@@ -3180,8 +3210,15 @@ function SettingsScreen({settings,setSettings,onBack,usage,user,onSignOut,onRepl
   const [local,setLocal]=useState(settings);
   const [saved,setSaved]=useState(false);
   const set=(k,v)=>setLocal(p=>({...p,[k]:v}));
+  // What the screen last started from — Save applies only the keys edited
+  // here, so opening Settings before cloud data arrived (or while another
+  // device changed something) can't write stale values back.
+  const baseRef=useRef(settings);
   const save=()=>{
-    setSettings(local);
+    const edited={};
+    for(const k of new Set([...Object.keys(local),...Object.keys(baseRef.current)])) if(JSON.stringify(local[k])!==JSON.stringify(baseRef.current[k])) edited[k]=local[k];
+    baseRef.current=local;
+    setSettings(s=>({...s,...edited}));
     setSaved(true);setTimeout(()=>setSaved(false),2500);
     showToast("Settings saved","success");
   };
@@ -11589,6 +11626,8 @@ export default function App() {
   // mergeDeckCards.
   const cardStatesRef=useRef({});
   const cloudSeenRef=useRef({});
+  // Settings as the cloud last had them — saves send only keys that differ.
+  const settingsSyncedRef=useRef({});
   cardStatesRef.current=cardStates;
   // Fold cards fetched from the cloud into local state per card (newest
   // review wins) instead of replacing everything, so reviews done here but not
@@ -11731,7 +11770,7 @@ export default function App() {
                   migrateLegacyCardStates(u.uid,d.cardStates,deckIds);
                 }
               }
-              if(d.settings) setSettings(s=>({...s,...migrateSettingsModelIds(d.settings)}));
+              if(d.settings){ settingsSyncedRef.current=d.settings; setSettings(s=>({...s,...migrateSettingsModelIds(d.settings)})); }
               if(d.profile) setProfile(d.profile);
               if(d.usage?.byTag) setUsage(d.usage);
               if(d.studyLog) setStudyLog(sl=>({...initStudyLog(),...d.studyLog}));
@@ -11792,7 +11831,9 @@ export default function App() {
         return;
       }
       const stamp=Date.now();
-      const payload={settings:stripUndefined(settings),usage,studyLog,updatedAt:stamp,...(profile?{profile}:{})};
+      const payload={usage,studyLog,updatedAt:stamp,...(profile?{profile}:{})};
+      const sPatch=settingsPatch(settingsSyncedRef.current,settings);
+      for(const [k,v] of Object.entries(sPatch)) payload[`settings.${k}`]=stripUndefined(v);
       // `decks` is written per-key (decksById.<id>), never as one whole array
       // field — see prevDecksRef comment: only the deck(s) that actually
       // changed get named here, so a stale copy of this tab's decks can never
@@ -11809,6 +11850,7 @@ export default function App() {
       queueFirestoreWrite("main:"+user.uid,mainDocRef(user.uid),payload,{
         onSuccess:()=>{ lastSyncRef.current=stamp; },
       });
+      settingsSyncedRef.current={...settingsSyncedRef.current,...sPatch};
       prevDecksRef.current=decks;
       // Cards live in their own deckCards/{deckId} doc, not on the main doc
       // (see migrateLegacyCardStates) — only write the deck(s) whose array
@@ -11870,6 +11912,11 @@ export default function App() {
         // other device's resume position.
         hydrateSessionsFromCloud(d);
         hydrateDeckIdxFromCloud(d,savedIdx);
+        if(d.settings){
+          const prevSynced=settingsSyncedRef.current;
+          settingsSyncedRef.current=d.settings;
+          setSettings(s=>mergeCloudSettings(s,migrateSettingsModelIds(d.settings),prevSynced));
+        }
         const flatDecksById=extractPrefixedFields(d,"decksById.");
         if(!Array.isArray(d.decks)&&!(d.decksById&&typeof d.decksById==="object")&&!Object.keys(flatDecksById).length) return;
         // !== not <=: a device with a fast clock must not hide another
@@ -12009,7 +12056,10 @@ export default function App() {
     // — see prevDecksRef comment. Only the deck(s) this specific import
     // touched are named, same reasoning as the main autosave effect.
     const newById={}; for(const dk of newDecks) newById[dk.id]=dk;
-    const payload={settings:stripUndefined(settings),usage,studyLog,updatedAt:stamp,...(profile?{profile}:{})};
+    const payload={usage,studyLog,updatedAt:stamp,...(profile?{profile}:{})};
+    const sPatch=settingsPatch(settingsSyncedRef.current,settings);
+    for(const [k,v] of Object.entries(sPatch)) payload[`settings.${k}`]=stripUndefined(v);
+    settingsSyncedRef.current={...settingsSyncedRef.current,...sPatch};
     for(const id of touchedDeckIds){ if(newById[id]) payload[`decksById.${id}`]=newById[id]; }
     const mainPromise=new Promise((resolve,reject)=>{
       queueFirestoreWrite("main:"+user.uid,mainDocRef(user.uid),payload,{
