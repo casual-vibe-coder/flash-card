@@ -3205,6 +3205,49 @@ function SpreadBacklogPanel({decks,cardStates,setCardStates}) {
   );
 }
 
+// Live balances for the paid services behind the app (read server-side).
+function ServiceCredits({orKey}) {
+  const [data,setData]=useState(null);
+  const [busy,setBusy]=useState(false);
+  const [failed,setFailed]=useState(false);
+  const load=async()=>{
+    setBusy(true);setFailed(false);
+    try{
+      const r=await fetch("/api/service-credits",{headers:orKey?.trim()?{"x-or-key":orKey.trim()}:{}});
+      if(!r.ok) throw new Error("HTTP "+r.status);
+      setData(await r.json());
+    }catch{ setFailed(true); }
+    setBusy(false);
+  };
+  useEffect(()=>{ load(); },[]);
+  const money=n=>"$"+Number(n).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
+  const amount=(sv,n)=>sv.unit==="usd"?money(n):Number(n).toLocaleString()+" credits";
+  return (
+    <div style={{background:"var(--surface)",border:"1.5px solid var(--border)",borderRadius:"var(--r)",padding:"15px 17px"}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+        <div className="sec" style={{margin:0}}>Service credits</div>
+        <button className="chip" onClick={load} disabled={busy}>{busy?"Checking…":"Refresh"}</button>
+      </div>
+      {failed&&<div style={{fontSize:12.5,color:"var(--weak)",marginTop:8}}>Couldn't check balances. Try Refresh.</div>}
+      <div style={{display:"flex",flexDirection:"column",gap:10,marginTop:10}}>
+        {(data?.services||[]).filter(sv=>!(sv.status==="not_configured")).map(sv=>(
+          <div key={sv.id} style={{fontSize:13,lineHeight:1.5}}>
+            <div style={{fontWeight:600}}>{sv.name}</div>
+            {sv.status==="ok"&&<div style={{color:sv.exhausted?"var(--weak)":"var(--text2)"}}>
+              {sv.exhausted?"Out of credit — ":""}
+              {sv.remaining!=null?<>{amount(sv,sv.remaining)} left{sv.total!=null?` of ${amount(sv,sv.total)}`:""}</>:<>{amount(sv,sv.used)} used</>}
+              {sv.note?<span style={{color:"var(--text3)"}}> · {sv.note}</span>:null}
+            </div>}
+            {sv.status==="error"&&<div style={{color:"var(--weak)"}}>{sv.detail}</div>}
+            {sv.status==="no_api"&&<div style={{color:"var(--text3)"}}>{sv.note} <a href={sv.url} target="_blank" rel="noreferrer" style={{color:"var(--accent)"}}>Check billing</a></div>}
+          </div>
+        ))}
+        {!data&&!failed&&<div style={{fontSize:12.5,color:"var(--text3)"}}>Checking…</div>}
+      </div>
+    </div>
+  );
+}
+
 function SettingsScreen({settings,setSettings,onBack,usage,user,onSignOut,onReplayOnboarding,profile,setProfile,studyLog,onUpdateTargets,decks,cardStates,setCardStates,trackUsage,onResetUsage,onResumeBulkFill,isBulkAllowlisted}) {
   const [bulkFillRunning,setBulkFillRunning]=useState(false);
   const [local,setLocal]=useState(settings);
@@ -3244,6 +3287,7 @@ function SettingsScreen({settings,setSettings,onBack,usage,user,onSignOut,onRepl
 
         {/* Pass `local` (the in-edit settings) so cost previews react as you
             change model dropdowns above, before you've hit Save. */}
+        <ServiceCredits orKey={local.orKey}/>
         <UsageMeter usage={usage} settings={local} onReset={onResetUsage}/>
 
         {/* AI Models — default + per-feature overrides */}
