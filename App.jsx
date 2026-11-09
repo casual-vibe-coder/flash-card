@@ -1002,9 +1002,10 @@ async function callClaude(prompt, maxTokens=1500, tag="other", trackFn=null, tim
   const ctrl = timeoutMs ? new AbortController() : null;
   const timer = ctrl ? setTimeout(()=>ctrl.abort(), timeoutMs) : null;
   try {
+    let idToken=""; try{ if(auth.currentUser) idToken=await auth.currentUser.getIdToken(); }catch{}
     const res = await fetch("/api/claude", {
       method:"POST",
-      headers:{"Content-Type":"application/json"},
+      headers:{"Content-Type":"application/json",...(idToken?{Authorization:`Bearer ${idToken}`}:{})},
       body:JSON.stringify({
         model: modelOverride || pickModelForTag(tag),
         // Bengali etc. tokenize ~2x heavier than English, so give gloss-writing features more room
@@ -1042,9 +1043,10 @@ async function callClaude(prompt, maxTokens=1500, tag="other", trackFn=null, tim
 // receive the images as-is. Used by the Grammar Import feature to read
 // screenshot pages of the learner's notes.
 async function callClaudeVision(content, maxTokens=3000, tag="other", trackFn=null) {
+  let idToken=""; try{ if(auth.currentUser) idToken=await auth.currentUser.getIdToken(); }catch{}
   const res = await fetch("/api/claude", {
     method:"POST",
-    headers:{"Content-Type":"application/json"},
+    headers:{"Content-Type":"application/json",...(idToken?{Authorization:`Bearer ${idToken}`}:{})},
     body:JSON.stringify({
       model: pickModelForTag(tag),
       max_tokens: maxTokens,
