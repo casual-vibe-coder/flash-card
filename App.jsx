@@ -1276,7 +1276,7 @@ async function synthesizeArabic(rawText,opts={}){
   const cacheKey=ttsHash(`${voice}|${speed}|${text}`);
   const cached=ttsCacheRead(cacheKey);
   const play=(src)=>{
-    if(!isCurrent()){onEnd?.();return;}
+    if(!isCurrent()) return; // superseded: the newer request owns the callbacks
     const a=new Audio(src); _ttsAudioEl=a;
     a.onplay=()=>{if(isCurrent()) onStart?.();};
     a.onended=()=>{if(isCurrent()){_ttsAudioEl=null;onEnd?.();}};
@@ -8674,6 +8674,8 @@ function ConversationScreen({profile,decks,cardStates,onBack,onFinish,trackUsage
   const listeningRef=useRef(false);
   const loadingRef=useRef(false);
   const handsFreeAbortedRef=useRef(false); // set when user manually stops mid-chain
+  const emptyRetryRef=useRef(0);           // consecutive "heard nothing" re-listens
+  const startListeningRef=useRef(null);
   useEffect(()=>{voiceModeRef.current=voiceMode;},[voiceMode]);
   useEffect(()=>{phaseRef.current=phase;},[phase]);
   useEffect(()=>{listeningRef.current=listening;},[listening]);
@@ -8699,6 +8701,8 @@ function ConversationScreen({profile,decks,cardStates,onBack,onFinish,trackUsage
   // Pulled from settings (synced via module refs) so the sliders in Settings
   // take effect on the next mic press without remounting this screen.
   const SILENCE_MS=_convSilenceMs||2500;
+  const NO_SPEECH_MS=8000;   // how long to wait for the learner to START speaking
+  const MAX_UTTERANCE_MS=45000;
   const FUZZY_THRESHOLD=_convFuzzyThreshold||0.8;
 
   const SpeechRecognition=window.SpeechRecognition||window.webkitSpeechRecognition;
@@ -8754,15 +8758,29 @@ function ConversationScreen({profile,decks,cardStates,onBack,onFinish,trackUsage
   // feedback — works identically.
   const [transcribing,setTranscribing]=useState(false);
   const clearSilenceTimer=()=>{if(silenceTimerRef.current){clearTimeout(silenceTimerRef.current);silenceTimerRef.current=null;}};
-  const armSilenceTimer=()=>{
+  // Hands-free must never just stall: if nothing was heard (or a recording was
+  // too short to use), open the mic again — twice at most, then hand control
+  // back with a hint so a quiet room or a broken mic can't loop forever.
+  const rearmListening=(msg)=>{
+    if(!voiceModeRef.current||phaseRef.current!=="chat"||handsFreeAbortedRef.current) return;
+    if(emptyRetryRef.current>=2){ emptyRetryRef.current=0; showToast("Tap the mic when you're ready to speak","info",3000); return; }
+    emptyRetryRef.current++;
+    if(msg) showToast(msg,"info",2200);
+    setTimeout(()=>{
+      if(voiceModeRef.current&&phaseRef.current==="chat"&&!listeningRef.current&&!loadingRef.current&&!handsFreeAbortedRef.current) startListeningRef.current?.();
+    },700);
+  };
+  const armSilenceTimer=(ms=SILENCE_MS)=>{
     clearSilenceTimer();
     silenceTimerRef.current=setTimeout(()=>{
+      silenceTimerRef.current=null;
       const t=voiceTranscriptRef.current.trim();
       try{recognitionRef.current?.stop();}catch{}
       setListening(false);
-      if(t) sendMessage(t,{fromVoice:true});
       voiceTranscriptRef.current="";
-    },SILENCE_MS);
+      if(t) sendMessage(t,{fromVoice:true});
+      else rearmListening("I didn't hear anything — listening again…");
+    },ms);
   };
   // ── Pipeline 2: MediaRecorder → /api/stt (OpenAI Whisper)
   // Uses an AudioContext analyser to watch RMS volume; once the user has
@@ -8779,7 +8797,8 @@ function ConversationScreen({profile,decks,cardStates,onBack,onFinish,trackUsage
     analyser.fftSize = 512;
     source.connect(analyser);
     const buf = new Uint8Array(analyser.fftSize);
-    const SILENCE_RMS = 0.018; // empirical — below this counts as silence
+    let SILENCE_RMS = 0.018; // replaced by a threshold measured from the room's noise floor
+    const floorSamples = [];
 
     // Pick a supported MIME type. webm/opus is widely supported; Safari needs mp4.
     const tryTypes = ["audio/webm;codecs=opus","audio/webm","audio/mp4","audio/ogg;codecs=opus"];
@@ -8790,6 +8809,7 @@ function ConversationScreen({profile,decks,cardStates,onBack,onFinish,trackUsage
 
     let stopped = false;
     let speechDetected = false;
+    let heardNothing = false;
     let silenceStartedAt = null;
     const recordingStartedAt = Date.now();
     const cleanup = () => {
@@ -8808,7 +8828,7 @@ function ConversationScreen({profile,decks,cardStates,onBack,onFinish,trackUsage
       setListening(false);
       const blob = new Blob(chunks, { type: recorder.mimeType || mimeType || "audio/webm" });
       const durationSec = (Date.now() - recordingStartedAt) / 1000;
-      if (blob.size < 800) return; // user didn't really say anything
+      if (heardNothing || !speechDetected || blob.size < 800) { rearmListening("I didn't hear anything — listening again…"); return; }
       setTranscribing(true);
       try {
         const result = await transcribeAudio(blob, durationSec);
@@ -8819,7 +8839,8 @@ function ConversationScreen({profile,decks,cardStates,onBack,onFinish,trackUsage
         } else if (result.disabled || result.noKey) {
           showToast("Enhanced STT is off or missing an OpenAI key — enable it in Settings","error",5000);
         } else {
-          showToast("Couldn't transcribe — no speech detected, try again","error");
+          showToast("Couldn't make that out — try again","info",2500);
+          rearmListening();
         }
       } finally { setTranscribing(false); }
     };
@@ -8833,11 +8854,25 @@ function ConversationScreen({profile,decks,cardStates,onBack,onFinish,trackUsage
       let sum = 0;
       for (let i=0; i<buf.length; i++) { const v=(buf[i]-128)/128; sum += v*v; }
       const rms = Math.sqrt(sum / buf.length);
+      const elapsed = Date.now() - recordingStartedAt;
+      // First ~0.5s: learn the room's noise floor so a fan or street noise
+      // doesn't read as endless speech (which kept the mic open forever).
+      if (elapsed < 500) {
+        floorSamples.push(rms);
+        if (floorSamples.length > 5) {
+          const sorted = [...floorSamples].sort((a,b)=>a-b);
+          const floor = sorted[Math.floor(sorted.length/2)];
+          SILENCE_RMS = Math.min(0.06, Math.max(0.014, floor*2.5 + 0.006));
+        }
+        requestAnimationFrame(tick); return;
+      }
       if (rms > SILENCE_RMS) { speechDetected = true; silenceStartedAt = null; }
       else if (speechDetected) {
         if (silenceStartedAt === null) silenceStartedAt = Date.now();
         else if (Date.now() - silenceStartedAt >= SILENCE_MS) { stop(); return; }
       }
+      if (!speechDetected && elapsed >= NO_SPEECH_MS) { heardNothing = true; stop(); return; }
+      if (elapsed >= MAX_UTTERANCE_MS) { stop(); return; }
       requestAnimationFrame(tick);
     };
     requestAnimationFrame(tick);
@@ -8850,7 +8885,7 @@ function ConversationScreen({profile,decks,cardStates,onBack,onFinish,trackUsage
     if(!showVoiceTranscript) setInput("");
     const r=new SpeechRecognition();recognitionRef.current=r;
     r.lang="ar-SA";r.interimResults=true;r.continuous=true;r.maxAlternatives=1;
-    r.onstart=()=>{setListening(true);armSilenceTimer();};
+    r.onstart=()=>{setListening(true);armSilenceTimer(NO_SPEECH_MS);};
     r.onresult=(e)=>{
       const full=Array.from(e.results).map(x=>x[0].transcript).join("");
       voiceTranscriptRef.current=full;
@@ -8860,10 +8895,17 @@ function ConversationScreen({profile,decks,cardStates,onBack,onFinish,trackUsage
     r.onerror=(e)=>{
       clearSilenceTimer();
       setListening(false);
-      if(e.error==="no-speech") showToast("No speech detected","info");
+      if(e.error==="no-speech") rearmListening("I didn't hear anything — listening again…");
       else if(e.error!=="aborted") showToast(`Mic error: ${e.error}`,"error");
     };
-    r.onend=()=>{clearSilenceTimer();setListening(false);};
+    // The browser can end recognition on its own (long pause, network blip).
+    // Send whatever was captured instead of losing it and stalling the chat.
+    r.onend=()=>{
+      const hadTimer=!!silenceTimerRef.current;
+      clearSilenceTimer();setListening(false);
+      const t=voiceTranscriptRef.current.trim();
+      if(hadTimer&&t){ voiceTranscriptRef.current=""; sendMessage(t,{fromVoice:true}); }
+    };
     r.start();
   };
 
@@ -8888,6 +8930,7 @@ function ConversationScreen({profile,decks,cardStates,onBack,onFinish,trackUsage
     else startWebSpeechListening();
   };
 
+  startListeningRef.current=startListening;
   useEffect(()=>()=>{
     if(window.speechSynthesis) window.speechSynthesis.cancel();
     clearSilenceTimer();
@@ -8966,6 +9009,7 @@ NON-NEGOTIABLE RULES:
       if(voiceMode) speakArabic(raw);
     } catch {
       setMessages([{role:"ai",text:"مَرْحَبًا! هَيَّا نَتَحَدَّثُ.\n\n(Hello! Let's talk.)"}]);
+      rearmListening();
     } finally { setLoading(false);scrollBottom(); }
   };
 
@@ -8976,6 +9020,7 @@ NON-NEGOTIABLE RULES:
     const userMsg=(overrideText||input).trim();
     if(!userMsg||loading) return;
     const fromVoice=!!opts.fromVoice;
+    if(fromVoice) emptyRetryRef.current=0;
     setInput("");
     // hidden=true messages are kept in state for context + scoring but not
     // rendered in the chat list (so the AI doesn't visibly echo the user
@@ -9020,6 +9065,7 @@ NON-NEGOTIABLE RULES:
       if(voiceMode) speakArabic(raw);
     } catch {
       setMessages(p=>[...p,{role:"ai",text:"عُذْرًا، حَدَثَ خَطَأٌ.\n\n(Sorry, an error occurred.)"}]);
+      rearmListening(); // don't strand hands-free mode after a failed reply
     } finally { setLoading(false);scrollBottom(); }
   };
 
