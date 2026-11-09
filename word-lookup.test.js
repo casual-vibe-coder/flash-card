@@ -12,7 +12,7 @@ const start=source.indexOf('function WordPopup('),end=source.indexOf('// USAGE M
 const compiled=transformSync(source.slice(start,end)+'\nglobalThis.Component=WordPopup;',{loader:'jsx',jsxFactory:'React.createElement'}).code;
 function harness(call){
  const states=[],refs=[],deps=[],effects=[],cleanups=[];let cursor=0,refCursor=0,effectCursor=0;
- const ctx={React,...icons,lookupContext,lookupPrompt,parseLookup,extractJSON:JSON.parse,callClaude:call,setTimeout,pickModelForTag:()=>'test/model',localStorage:(()=>{const m={};return {getItem:k=>m[k]??null,setItem:(k,v)=>{m[k]=v;}};})(),
+ const ctx={_learnerLang:'English',React,...icons,lookupContext,lookupPrompt,parseLookup,extractJSON:JSON.parse,callClaude:call,setTimeout,pickModelForTag:()=>'test/model',localStorage:(()=>{const m={};return {getItem:k=>m[k]??null,setItem:(k,v)=>{m[k]=v;}};})(),
  useState:initial=>{const i=cursor++;if(!(i in states))states[i]=initial;return [states[i],value=>{states[i]=typeof value==='function'?value(states[i]):value;}];},
  useRef:initial=>{const i=refCursor++;return refs[i]||(refs[i]={current:initial});},
  useEffect:(fn,next)=>{const i=effectCursor++;if(!deps[i]||next.some((v,n)=>v!==deps[i][n])){deps[i]=next;effects.push(()=>{cleanups[i]?.();cleanups[i]=fn();});}}};
@@ -39,4 +39,10 @@ test('a late response from the previous word cannot overwrite the new lookup',as
  h.render({word:'كتاب'});await h.flush();h.render({word:'بيت'});await h.flush();
  requests[1]('{"meaning":"house"}');await h.flush();assert(html(h.render({word:'بيت'})).includes('house'));
  requests[0]('{"meaning":"book"}');await h.flush();const result=html(h.render({word:'بيت'}));assert(result.includes('house'));assert(!result.includes('>book<'));
+});
+
+test('prompt asks for the learner language and keeps English as the default',()=>{
+ assert(lookupPrompt('كتاب','x').includes('into English'));
+ const bn=lookupPrompt('كتاب','x','Bengali');
+ assert(bn.includes('into Bengali'));assert(bn.includes('"meaning":"Bengali meaning'));assert(bn.includes('English gloss'));
 });

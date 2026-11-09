@@ -15,6 +15,8 @@ import { useState, useRef, useEffect, useCallback } from "react";
 import { auth, googleProvider, db, storage } from "./firebase.js";
 import { signInWithPopup, signOut, onAuthStateChanged } from "firebase/auth";
 import { indexCards, mergeDeckCards } from "./card-merge.js";
+import { STYLES, styleById, styleBlock, SENTENCE_LENGTHS, sentenceSpec } from "./writing-styles.js";
+import { emptyGame, levelInfo as gameLevelInfo, collectWord, award, QUEST_TARGET, XP } from "./watch-game.js";
 import { smartWordPool } from "./practice-words.js";
 import { settingsPatch, mergeCloudSettings } from "./settings-sync.js";
 import { posKey, newerPos, resumeFrom } from "./watch-position.js";
@@ -599,6 +601,40 @@ const TAG_TO_IMAGE_MODEL = {
 // Threaded into every text-generation prompt so the AI mirrors the
 // register, themes, character cast, and level progression of the book.
 // ─────────────────────────────────────────────────────────────
+// Active writing style (chosen in Settings or the quick chips on each practice
+// screen) — mirrors the settings values, like the other module-level config.
+const STYLE_FILES = import.meta.glob("./style-guides/*.md",{query:"?raw",import:"default",eager:true});
+const STYLE_DEFAULTS = Object.fromEntries(Object.entries(STYLE_FILES).map(([p,t])=>[p.replace(/^.*\//,"").replace(/\.md$/,""),t]));
+let _learnerLang = "English"; // language glosses/translations are written in
+let _styleId = "bayna";
+let _styleOverrides = {};
+let _sentenceLength = "short";
+function currentStyle(){ return styleBlock({id:_styleId,overrides:_styleOverrides,defaults:STYLE_DEFAULTS,fallback:BAYNA_YADAYK_STYLE}); }
+// App-settings mirror so small widgets deep in a screen can read/write a few
+// global settings without prop-drilling (App owns the real state).
+let _appSettingsMirror = {};
+function useAppSetting(key,fallback){
+  const [v,setV]=useState(_appSettingsMirror[key]??fallback);
+  useEffect(()=>{
+    const h=()=>setV(_appSettingsMirror[key]??fallback);
+    window.addEventListener("appSettingsMirror",h);h();
+    return ()=>window.removeEventListener("appSettingsMirror",h);
+  },[key]);
+  return [v,val=>window.dispatchEvent(new CustomEvent("setAppSetting",{detail:{key,val}}))];
+}
+// Quick style picker for the practice screens.
+function StyleChips({accent="--accent"}){
+  const [styleId,setStyle]=useAppSetting("writingStyle","bayna");
+  return (
+    <div style={{display:"flex",flexDirection:"column",gap:6}}>
+      <div style={{fontSize:11.5,fontWeight:700,color:"var(--text3)",letterSpacing:".08em",textTransform:"uppercase"}}>Writing style</div>
+      <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+        {STYLES.map(st=><button key={st.id} className={`chip ${styleId===st.id?"chip-on":""}`} title={st.blurb} onClick={()=>setStyle(st.id)}>{st.label}</button>)}
+      </div>
+    </div>
+  );
+}
+
 const BAYNA_YADAYK_STYLE = `STYLE GUIDE — write as if the passage came out of "العربية بين يديك" (Al-Arabiyya Bayna Yadayk) or the readers of Abū al-Ḥasan ʿAlī al-Nadwī (قصص النبيين / القراءة الراشدة). The learner should not be able to tell your output apart from those books.
 
 ═══ NON-NEGOTIABLE RULES ═══
@@ -694,7 +730,7 @@ const SEED_CARDS = {
 // CSS
 // ─────────────────────────────────────────────────────────────
 const CSS = `
-@import url('https://fonts.googleapis.com/css2?family=Lora:wght@400;500;600&family=Outfit:wght@300;400;500;600&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Lora:wght@400;500;600&family=Noto+Sans+Bengali:wght@400;500;600&family=Outfit:wght@300;400;500;600&display=swap');
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 :root{
   --bg:#F2EDE5;--surface:#FDFBF7;--surface2:#EAE4D9;
@@ -707,7 +743,9 @@ const CSS = `
   --listen:#5B2D8B;--listen-bg:#F3EEFE;--listen-border:#C9AEF0;
   --info:#1A6B6B;--info-bg:#EAF6F6;--info-border:#A5D9D9;
   --harf:#6B4A1A;--harf-bg:#FDF5E6;--harf-border:#E8D4A0;
-  --r:14px;--rs:10px;--rxs:8px;
+  --r:18px;--rs:12px;--rxs:9px;
+  --teal:#0F766E;--teal-bg:#E6F4F2;--teal-border:#A6D5D0;
+  --shadow-sm:0 1px 2px rgba(60,40,20,.06),0 1px 8px rgba(60,40,20,.04);--shadow-md:0 4px 18px rgba(60,40,20,.10);
 }
 [data-theme="dark"]{
   --bg:#1A1816;--surface:#252220;--surface2:#302C28;
@@ -720,11 +758,13 @@ const CSS = `
   --listen:#A06CE8;--listen-bg:#241A30;--listen-border:#3C2860;
   --info:#38B0B0;--info-bg:#1A2E2E;--info-border:#285C5C;
   --harf:#D4A852;--harf-bg:#2E2818;--harf-border:#5C4E28;
+  --teal:#3DBDB1;--teal-bg:#17302D;--teal-border:#27534E;
+  --shadow-sm:0 1px 2px rgba(0,0,0,.35);--shadow-md:0 4px 18px rgba(0,0,0,.4);
 }
 @media(prefers-reduced-motion:reduce){
   .card-appear,.gen-appear,.pop-appear,.screen,.spin,.overlay,.drawer{animation:none!important;transition:none!important}
 }
-html,body,#root{height:100%;background:var(--bg);font-family:'Outfit',sans-serif;color:var(--text);-webkit-font-smoothing:antialiased}
+html,body,#root{height:100%;background:var(--bg);font-family:'Outfit','Noto Sans Bengali',sans-serif;color:var(--text);-webkit-font-smoothing:antialiased}
 .app{max-width:520px;margin:0 auto;min-height:100vh}
 @media(min-width:768px){.app{max-width:600px}}
 @media(min-width:1024px){.app{max-width:680px}}
@@ -736,9 +776,12 @@ html,body,#root{height:100%;background:var(--bg);font-family:'Outfit',sans-serif
 @keyframes gIn{from{opacity:0;transform:translateY(5px)}to{opacity:1;transform:translateY(0)}}
 .spin{animation:spin .9s linear infinite}
 @keyframes spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
-.btn{border:none;cursor:pointer;border-radius:var(--rs);font-family:'Outfit',sans-serif;font-weight:500;transition:all .15s;display:inline-flex;align-items:center;justify-content:center;gap:7px}
+.btn{border:none;cursor:pointer;border-radius:var(--rs);font-family:'Outfit','Noto Sans Bengali',sans-serif;font-weight:500;transition:all .15s;display:inline-flex;align-items:center;justify-content:center;gap:7px}
 .btn:active{transform:scale(.97)}
-.btn-primary{background:var(--accent);color:#fff;padding:13px 20px;font-size:14px;font-weight:600}
+.btn:focus-visible,.chip:focus-visible,.tile:focus-visible,.module-card:focus-visible,.input:focus-visible{outline:2.5px solid var(--accent);outline-offset:2px}
+.btn{min-height:40px}
+button.module-card{font-family:inherit;color:var(--text)}
+.btn-primary{background:var(--accent);color:#fff;padding:13px 20px;font-size:14px;font-weight:600;box-shadow:0 2px 10px rgba(155,58,12,.28)}
 .btn-primary:hover{background:var(--accent2)}
 .btn-primary:disabled{opacity:.52;cursor:not-allowed;transform:none}
 .btn-ghost{background:var(--surface2);color:var(--text2);padding:9px;border-radius:50%}
@@ -750,10 +793,10 @@ html,body,#root{height:100%;background:var(--bg);font-family:'Outfit',sans-serif
 .btn-listen{background:var(--listen);color:#fff;font-weight:600}
 .btn-listen:hover{background:#6f38ad}
 .btn-listen:disabled{opacity:.52;cursor:not-allowed}
-.chip{cursor:pointer;border-radius:100px;padding:7px 13px;font-size:12.5px;font-weight:500;border:1.5px solid var(--border);background:var(--surface);color:var(--text2);transition:all .15s;font-family:'Outfit',sans-serif;display:inline-flex;align-items:center;gap:5px;white-space:nowrap}
+.chip{cursor:pointer;border-radius:100px;padding:8px 14px;min-height:34px;font-size:12.5px;font-weight:500;border:1.5px solid var(--border);background:var(--surface);color:var(--text2);transition:all .15s;font-family:'Outfit','Noto Sans Bengali',sans-serif;display:inline-flex;align-items:center;gap:5px;white-space:nowrap}
 .chip:hover:not(.chip-on){border-color:var(--accent);color:var(--accent)}
 .chip-on{background:var(--accent);border-color:var(--accent);color:#fff}
-.input{width:100%;border:1.5px solid var(--border);border-radius:var(--rs);padding:11px 13px;font-family:'Outfit',sans-serif;font-size:14px;color:var(--text);background:var(--surface);outline:none;transition:border-color .15s;appearance:none}
+.input{width:100%;border:1.5px solid var(--border);border-radius:var(--rs);padding:11px 13px;font-family:'Outfit','Noto Sans Bengali',sans-serif;font-size:14px;color:var(--text);background:var(--surface);outline:none;transition:border-color .15s;appearance:none}
 .input:focus{border-color:var(--accent)}
 textarea.input{resize:vertical;min-height:110px;line-height:1.7}
 .lbl{font-size:12px;font-weight:600;color:var(--text2);display:block;margin-bottom:7px}
@@ -800,9 +843,17 @@ textarea.input{resize:vertical;min-height:110px;line-height:1.7}
 .drawer{background:var(--surface);border-radius:20px 20px 0 0;width:100%;max-width:680px;padding:22px 20px 36px;animation:drIn .25s cubic-bezier(.2,0,.2,1)}
 @keyframes drIn{from{transform:translateY(40px);opacity:0}to{transform:translateY(0);opacity:1}}
 .seg{display:flex;background:var(--surface2);border-radius:var(--rs);padding:3px;gap:2px}
-.seg-opt{flex:1;text-align:center;padding:7px 4px;font-size:12px;font-weight:500;border-radius:8px;cursor:pointer;transition:all .15s;color:var(--text2);border:none;background:transparent;font-family:'Outfit',sans-serif}
+.seg-opt{flex:1;text-align:center;padding:7px 4px;font-size:12px;font-weight:500;border-radius:8px;cursor:pointer;transition:all .15s;color:var(--text2);border:none;background:transparent;font-family:'Outfit','Noto Sans Bengali',sans-serif}
 .seg-opt.on{background:var(--surface);color:var(--text);font-weight:600;box-shadow:0 1px 4px rgba(0,0,0,.1)}
 .module-card{border-radius:var(--r);padding:16px 18px;border:1.5px solid;cursor:pointer;transition:all .15s;display:flex;align-items:center;gap:14px;background:var(--surface)}
+.tile-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin-bottom:12px}
+@media(min-width:480px){.tile-grid{grid-template-columns:repeat(3,1fr)}}
+.tile{display:flex;flex-direction:column;align-items:flex-start;gap:3px;text-align:left;padding:14px;border-radius:var(--r);border:1.5px solid var(--border);background:var(--surface);box-shadow:var(--shadow-sm);cursor:pointer;font-family:inherit;color:var(--text);transition:transform .15s,box-shadow .15s,border-color .15s;min-height:104px}
+.tile:hover{transform:translateY(-2px);box-shadow:var(--shadow-md);border-color:var(--tc)}
+.tile:active{transform:scale(.98)}
+.tile-icon{width:38px;height:38px;border-radius:12px;background:var(--tc);display:flex;align-items:center;justify-content:center;margin-bottom:8px}
+.tile-title{font-weight:700;font-size:14.5px;color:var(--text)}
+.tile-hint{font-size:12px;color:var(--text2);line-height:1.35}
 .module-card:hover{transform:translateX(2px)}
 .scene-card{background:linear-gradient(135deg,#1a1a2e,#16213e 50%,#0f3460);border-radius:var(--rs);overflow:hidden;position:relative}
 .scene-inner{padding:18px;position:relative;z-index:1}
@@ -814,8 +865,8 @@ textarea.input{resize:vertical;min-height:110px;line-height:1.7}
 .toast-error{background:var(--weak-bg);color:var(--weak);border:1px solid var(--weak-border)}
 .toast-info{background:var(--info-bg);color:var(--info);border:1px solid var(--info-border)}
 @keyframes toastIn{from{opacity:0;transform:translateY(-10px)}to{opacity:1;transform:translateY(0)}}
-.kbd{display:inline-flex;align-items:center;justify-content:center;min-width:22px;height:20px;padding:0 5px;background:var(--surface2);border:1px solid var(--border);border-radius:4px;font-size:10px;font-weight:600;color:var(--text3);font-family:'Outfit',sans-serif}
-.search-input{width:100%;border:1.5px solid var(--border);border-radius:var(--rs);padding:9px 13px 9px 36px;font-family:'Outfit',sans-serif;font-size:13.5px;color:var(--text);background:var(--surface);outline:none;transition:border-color .15s}
+.kbd{display:inline-flex;align-items:center;justify-content:center;min-width:22px;height:20px;padding:0 5px;background:var(--surface2);border:1px solid var(--border);border-radius:4px;font-size:10px;font-weight:600;color:var(--text3);font-family:'Outfit','Noto Sans Bengali',sans-serif}
+.search-input{width:100%;border:1.5px solid var(--border);border-radius:var(--rs);padding:9px 13px 9px 36px;font-family:'Outfit','Noto Sans Bengali',sans-serif;font-size:13.5px;color:var(--text);background:var(--surface);outline:none;transition:border-color .15s}
 .search-input:focus{border-color:var(--accent)}
 .search-input::placeholder{color:var(--text3)}
 .search-overlay{position:fixed;inset:0;z-index:150;background:var(--bg);animation:sIn .15s ease;display:flex;flex-direction:column}
@@ -1358,7 +1409,7 @@ async function generateImmersionDefinition(card, cardStates, trackFn) {
     // simple Arabic instead of defining a single word.
     const explanation = card.grammar?.explanation || "";
     if (!explanation) return null;
-    prompt = `${BAYNA_YADAYK_STYLE}
+    prompt = `${currentStyle()}
 
 You are rewriting a grammar-rule explanation in simple Arabic for a language learner — NO translation, explain the rule using Arabic itself.
 
@@ -1373,7 +1424,7 @@ Return ONLY valid JSON: {"definition":"..."}`;
   } else {
     const arabicForm = card.arabicBase || Object.values(card.forms || {}).find(Boolean) || "";
     if (!arabicForm) return null;
-    prompt = `${BAYNA_YADAYK_STYLE}
+    prompt = `${currentStyle()}
 
 You are writing a monolingual Arabic dictionary-style definition for a language learner — NO translation, explain the word using Arabic itself.
 
@@ -1556,14 +1607,19 @@ function WordPopup({word,context="",decks=[],cardStates,onClose,onAddToFlashcard
 // even if a reasoning one is picked in Settings, and remember answers so the
 // same word in the same sentence is instant the second time.
 const LOOKUP_FAST_MODEL="openai/gpt-4o-mini";
+const LOOKUP_MULTI_MODEL="google/gemini-2.5-flash";
 const isReasoningModel=m=>/gpt-5|(^|\/)o[134](-|$)|deepseek-r1|thinking/i.test(m||"");
 async function lookupWord(word,context,trackFn){
   const ctx=String(context||"").slice(0,300);
   let h=0;for(let i=0;i<ctx.length;i++)h=(h*31+ctx.charCodeAt(i))|0;
-  const key=`lookup:v1:${word}:${h}`;
+  const lang=_learnerLang||"English";
+  const key=`lookup:v2:${lang}:${word}:${h}`;
   try{ const hit=JSON.parse(localStorage.getItem(key)||"null"); if(hit?.meaning) return hit; }catch{}
   const picked=pickModelForTag("wordLookup");
-  const raw=await callClaude(lookupPrompt(word,context),500,"wordLookup",trackFn,20000,isReasoningModel(picked)?LOOKUP_FAST_MODEL:null);
+  // English: a fast model is plenty. Other languages (e.g. Bengali) need a
+  // stronger multilingual model and roughly 2.5x the output tokens.
+  const model=lang!=="English"?LOOKUP_MULTI_MODEL:(isReasoningModel(picked)?LOOKUP_FAST_MODEL:null);
+  const raw=await callClaude(lookupPrompt(word,context,lang),lang==="English"?500:1100,"wordLookup",trackFn,25000,model);
   const data=parseLookup(raw,word,extractJSON);
   try{ localStorage.setItem(key,JSON.stringify(data)); }catch{}
   return data;
@@ -1950,48 +2006,32 @@ function HomeScreen({watchHours,decks,cardStates,onOpenDeck,onSettings,onCreateD
           </div>
         )}
 
-        <div className="sec">Practice Modules</div>
-        <div style={{display:"flex",flexDirection:"column",gap:9,marginBottom:22}}>
-          <div className="module-card" style={{borderColor:"var(--read-border)",background:"var(--read-bg)"}} onClick={onReading}>
-            <div style={{width:40,height:40,borderRadius:12,background:"var(--read)",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}><FileText size={19} color="white"/></div>
-            <div style={{flex:1}}><div style={{fontWeight:700,fontSize:14.5,color:"var(--read)"}}>Reading</div><div style={{fontSize:12.5,color:"var(--text2)",marginTop:2}}>AI passages from your flashcard vocabulary</div></div>
-            <ChevronRight size={15} color="var(--read)"/>
-          </div>
-          <div className="module-card" style={{borderColor:"var(--info-border)",background:"var(--info-bg)"}} onClick={onWatch}>
-            <div style={{width:40,height:40,borderRadius:12,background:"var(--info)",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}><Play size={19} color="white"/></div>
-            <div style={{flex:1}}><div style={{fontWeight:700,fontSize:14.5,color:"var(--info)"}}>Watch</div><div style={{fontSize:12.5,color:"var(--text2)",marginTop:2}}>YouTube videos with word-for-word breakdown · {watchHours||"0.00"} hours watched</div></div>
-            <ChevronRight size={15} color="var(--info)"/>
-          </div>
-          <div className="module-card" style={{borderColor:"var(--listen-border)",background:"var(--listen-bg)"}} onClick={onListening}>
-            <div style={{width:40,height:40,borderRadius:12,background:"var(--listen)",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}><Headphones size={19} color="white"/></div>
-            <div style={{flex:1}}><div style={{fontWeight:700,fontSize:14.5,color:"var(--listen)"}}>Listening</div><div style={{fontSize:12.5,color:"var(--text2)",marginTop:2}}>Audio practice from your vocabulary</div></div>
-            <ChevronRight size={15} color="var(--listen)"/>
-          </div>
-          <div className="module-card" style={{borderColor:"var(--accent-border)",background:"var(--accent-bg)"}} onClick={onConversation}>
-            <div style={{width:40,height:40,borderRadius:12,background:"var(--accent)",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}><MessageCircle size={19} color="white"/></div>
-            <div style={{flex:1}}><div style={{fontWeight:700,fontSize:14.5,color:"var(--accent)"}}>Conversation</div><div style={{fontSize:12.5,color:"var(--text2)",marginTop:2}}>AI chat practice using your vocabulary</div></div>
-            <ChevronRight size={15} color="var(--accent)"/>
-          </div>
-          <div className="module-card" style={{borderColor:"#0F766E55",background:"#0F766E12"}} onClick={onDictation}>
-            <div style={{width:40,height:40,borderRadius:12,background:"#0F766E",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}><PenLine size={19} color="white"/></div>
-            <div style={{flex:1}}><div style={{fontWeight:700,fontSize:14.5,color:"#0F766E"}}>Dictation</div><div style={{fontSize:12.5,color:"var(--text2)",marginTop:2}}>Listen & write — with word-by-word correction</div></div>
-            <ChevronRight size={15} color="#0F766E"/>
-          </div>
-          <div className="module-card" style={{borderColor:"var(--info-border)",background:"var(--info-bg)"}} onClick={onCapsules}>
-            <div style={{width:40,height:40,borderRadius:12,background:"var(--info)",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}><Globe size={19} color="white"/></div>
-            <div style={{flex:1}}><div style={{fontWeight:700,fontSize:14.5,color:"var(--info)"}}>Immersion Capsules</div><div style={{fontSize:12.5,color:"var(--text2)",marginTop:2}}>Language Island &amp; more — long-form immersion</div></div>
-            <ChevronRight size={15} color="var(--info)"/>
-          </div>
-          <div className="module-card" style={{borderColor:"var(--border)"}} onClick={onProgress}>
-            <div style={{width:40,height:40,borderRadius:12,background:"var(--surface2)",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}><BarChart3 size={19} color="var(--text2)"/></div>
-            <div style={{flex:1}}>
-              <div style={{fontWeight:700,fontSize:14.5}}>Progress & Analytics</div>
-              <div style={{fontSize:12.5,color:"var(--text2)",marginTop:2}}>Performance scores, study time, B2 tracking</div>
-            </div>
-            {studyLog&&(()=>{const t=sumMinutes(getEntriesForDate(studyLog,TODAY_KEY()));return t>0?<span style={{fontSize:12,color:"var(--know)",fontWeight:700}}>{t}m today</span>:null;})()}
-            <ChevronRight size={15} color="var(--text3)"/>
-          </div>
+        <div className="sec">Practice</div>
+        <div className="tile-grid">
+          {[
+            {k:"read",   label:"Reading",   hint:"Stories at your level", icon:FileText,      color:"--read",   on:onReading},
+            {k:"listen", label:"Listening", hint:"Hear it, then read it",  icon:Headphones,    color:"--listen", on:onListening},
+            {k:"speak",  label:"Speaking",  hint:"Chat with a tutor",      icon:MessageCircle, color:"--accent", on:onConversation},
+            {k:"watch",  label:"Watch",     hint:"Videos, word by word",   icon:Play,          color:"--info",   on:onWatch},
+            {k:"dict",   label:"Dictation", hint:"Listen and write",       icon:PenLine,       color:"--teal",   on:onDictation},
+            {k:"immer",  label:"Immersion", hint:"Language Island & more", icon:Globe,         color:"--info",   on:onCapsules},
+          ].map(t=>{const Icon=t.icon;return (
+            <button key={t.k} className="tile" onClick={t.on} style={{"--tc":`var(${t.color})`,"--tbg":`var(${t.color}-bg, var(--surface2))`}}>
+              <span className="tile-icon"><Icon size={20} color="white"/></span>
+              <span className="tile-title">{t.label}</span>
+              <span className="tile-hint">{t.hint}</span>
+            </button>
+          );})}
         </div>
+        <button className="module-card" onClick={onProgress} style={{width:"100%",borderColor:"var(--border)",marginBottom:22,textAlign:"left"}}>
+          <div style={{width:36,height:36,borderRadius:11,background:"var(--surface2)",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}><BarChart3 size={18} color="var(--text2)"/></div>
+          <div style={{flex:1}}>
+            <div style={{fontWeight:700,fontSize:14}}>Progress</div>
+            <div style={{fontSize:12,color:"var(--text2)",marginTop:1}}>Study time, scores and streaks</div>
+          </div>
+          {studyLog&&(()=>{const t=sumMinutes(getEntriesForDate(studyLog,TODAY_KEY()));return t>0?<span style={{fontSize:12,color:"var(--know)",fontWeight:700}}>{t}m today</span>:null;})()}
+          <ChevronRight size={15} color="var(--text3)"/>
+        </button>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
           <div className="sec" style={{margin:0}}>Flashcard Decks</div>
           <div style={{display:"flex",gap:4}}>
@@ -2426,7 +2466,7 @@ function loadYouTubeApi(){
 const WATCH_CHUNK=8;
 // Caption noise (pause markers, music notes, [sound tags]) isn't speech.
 const cleanCaption=(t)=>(t||"").replace(/\*+|♪+|\[[^\]]*\]|\([^)]*\)/g," ").replace(/\s+/g," ").trim();
-const watchCacheKey=(id)=>`watch:v1:${id}`;
+const watchCacheKey=(id)=>_learnerLang==='English'?`watch:v1:${id}`:`watch:v1:${id}:${_learnerLang}`;
 
 const WATCH_CATEGORIES=[
   {k:"all",label:"All",ar:""},
@@ -2438,6 +2478,33 @@ const WATCH_CATEGORIES=[
   {k:"lectures",label:"Lectures",ar:"محاضرة بالعربية الفصحى"},
 ];
 const fmtDur=(s)=>{ if(!s) return ""; const m=Math.floor(s/60),r=s%60; return m>=60?`${Math.floor(m/60)}:${String(m%60).padStart(2,"0")}:${String(r).padStart(2,"0")}`:`${m}:${String(r).padStart(2,"0")}`; };
+
+const GAME_KEY="watch:game:v1";
+const loadGame=()=>{try{return {...emptyGame(),...JSON.parse(localStorage.getItem(GAME_KEY)||"{}")};}catch{return emptyGame();}};
+const todayKey=()=>{const d=new Date();return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;};
+// XP, level, streak and the daily word quest — the "game" layer on Watch.
+function GameBar({game,gain}) {
+  const lv=gameLevelInfo(game.xp);
+  const found=Math.min(game.questWords.length,QUEST_TARGET);
+  return (
+    <div role="status" aria-label="Watch progress" style={{display:"flex",alignItems:"center",gap:10,margin:"8px 0 2px",padding:"8px 10px",borderRadius:"var(--rs)",background:"var(--surface)",border:"1.5px solid var(--border)",position:"relative"}}>
+      <div style={{width:34,height:34,borderRadius:11,background:"var(--info)",color:"#fff",display:"flex",alignItems:"center",justifyContent:"center",fontWeight:800,fontSize:15,flexShrink:0}}>{lv.level}</div>
+      <div style={{flex:1,minWidth:0}}>
+        <div style={{display:"flex",justifyContent:"space-between",fontSize:11.5,color:"var(--text2)",gap:6}}>
+          <b style={{color:"var(--text)",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{lv.title}</b>
+          <span style={{whiteSpace:"nowrap"}}>{game.xp} XP{game.streak>0?` · 🔥 ${game.streak}d`:""}</span>
+        </div>
+        <div className="progress-track" style={{height:5,marginTop:4}}><div className="progress-fill" style={{width:`${lv.pct}%`,background:"var(--info)"}}/></div>
+        <div style={{display:"flex",alignItems:"center",gap:4,marginTop:5,fontSize:11,color:game.questDone?"var(--know)":"var(--text3)"}}>
+          <span>{game.questDone?"Quest done! ":"Word hunt: "}</span>
+          {Array.from({length:QUEST_TARGET},(_,i)=><span key={i} aria-hidden style={{width:9,height:9,borderRadius:"50%",background:i<found?"var(--know)":"var(--surface2)",border:"1px solid var(--border)"}}/>)}
+          <span>{found}/{QUEST_TARGET}</span>
+        </div>
+      </div>
+      {gain>0&&<span key={gain+"-"+game.xp} className="pop-appear" style={{position:"absolute",right:12,top:-8,background:"var(--know)",color:"#fff",borderRadius:100,padding:"2px 9px",fontSize:12,fontWeight:700}}>+{gain}</span>}
+    </div>
+  );
+}
 
 function WatchScreen({onBack,onAddToFlashcard,decks,trackUsage,user,watchProgress}) {
   const [lessonEntered,setLessonEntered]=useState(false);
@@ -2506,6 +2573,18 @@ function WatchScreen({onBack,onAddToFlashcard,decks,trackUsage,user,watchProgres
     try{ localStorage.setItem(`watch:sync:${videoId}`,String(offset)); }catch{}
   };
   const [sel,setSel]=useState(null);
+  const [game,setGame]=useState(loadGame);
+  const [gain,setGain]=useState(0);
+  const gameRef=useRef(game);gameRef.current=game;
+  const giveXp=(fn)=>{
+    const r=fn(rollDayFor(gameRef.current),todayKey());
+    gameRef.current=r.game;setGame(r.game);
+    try{localStorage.setItem(GAME_KEY,JSON.stringify(r.game));}catch{}
+    if(r.gained>0){setGain(r.gained);setTimeout(()=>setGain(0),1600);}
+    if(r.questJustCompleted) showToast(`Word hunt complete! +${XP.quest} XP bonus 🎉`,"success");
+  };
+  const rollDayFor=g=>g;
+  const giveXpRef=useRef(giveXp);giveXpRef.current=giveXp;
   // Tapping a word shows the breakdown's quick gloss at once, then fetches a
   // context-aware lookup (root, meaning in THIS sentence, usage note).
   const [lk,setLk]=useState({status:"idle"});
@@ -2570,9 +2649,9 @@ function WatchScreen({onBack,onAddToFlashcard,decks,trackUsage,user,watchProgres
   useEffect(()=>{ if(tab==="library"&&library===null) loadLibrary(); },[tab]);
 
   // ── My saved videos: this device (instant) + my account (any device) ──
-  const mineKey=(id)=>`watch:v2:${id}`;
+  const mineKey=(id)=>_learnerLang==='English'?`watch:v2:${id}`:`watch:v2:${id}:${_learnerLang}`;
   const saveMine=async(vid,ls,bdArr,meta,ttl)=>{
-    const payload={id:vid,title:ttl||meta?.title||"",channel:meta?.channel||"",thumb:meta?.thumb||`https://i.ytimg.com/vi/${vid}/mqdefault.jpg`,
+    const payload={lang:_learnerLang,id:vid,title:ttl||meta?.title||"",channel:meta?.channel||"",thumb:meta?.thumb||`https://i.ytimg.com/vi/${vid}/mqdefault.jpg`,
       durationSec:meta?.durationSec||0,savedAt:Date.now(),lines:ls,bd:bdArr};
     try{ localStorage.setItem(mineKey(vid),JSON.stringify(payload)); }catch{}
     if(user&&JSON.stringify(payload).length<900000){
@@ -2601,7 +2680,7 @@ function WatchScreen({onBack,onAddToFlashcard,decks,trackUsage,user,watchProgres
     if(!videoId||!lines.length) return;
     try{
       const complete=bdRef.current.length===lines.length&&bdRef.current.every(Boolean);
-      const payload={id:videoId,title:title||vidMeta?.title||"",channel:vidMeta?.channel||"",thumb:vidMeta?.thumb||`https://i.ytimg.com/vi/${videoId}/mqdefault.jpg`,
+      const payload={lang:_learnerLang,id:videoId,title:title||vidMeta?.title||"",channel:vidMeta?.channel||"",thumb:vidMeta?.thumb||`https://i.ytimg.com/vi/${videoId}/mqdefault.jpg`,
         durationSec:vidMeta?.durationSec||0,category:category||"all",addedBy:user?.uid||null,addedAt:Date.now(),
         lines,...(complete?{bd:bdRef.current}:{})};
       if(JSON.stringify(payload).length>900000){ delete payload.bd; }
@@ -2643,7 +2722,7 @@ function WatchScreen({onBack,onAddToFlashcard,decks,trackUsage,user,watchProgres
     setBdProgress(base.filter(Boolean).length);
     let sinceSave=0;
     const work=async(chunk)=>{
-      const prompt=`You are an Arabic teacher. Below are numbered lines of Modern Standard Arabic from a video. For EACH line split it into words (split on spaces; keep attached particles و ب ل ك ف ال attached). Give each word: "a" = the word with full vowel marks (if the line already has vowel marks, copy them exactly), "e" = SHORT English meaning in context (1-3 words), "p" = n (noun) / v (verb) / o (other), "l" = dictionary base form with vowel marks. Also "t" = a natural English translation of the whole line.
+      const prompt=`You are an Arabic teacher. Below are numbered lines of Modern Standard Arabic from a video. For EACH line split it into words (split on spaces; keep attached particles و ب ل ك ف ال attached). Give each word: "a" = the word with full vowel marks (if the line already has vowel marks, copy them exactly), "e" = SHORT ${_learnerLang} meaning in context (1-3 words), "p" = n (noun) / v (verb) / o (other), "l" = dictionary base form with vowel marks. Also "t" = a natural ${_learnerLang} translation of the whole line.
 
 Lines:
 ${chunk.map((u,k)=>`${k}. ${u.t}`).join("\n")}
@@ -2653,7 +2732,7 @@ Return ONLY valid JSON, no commentary: [{"i":0,"t":"translation","w":[{"a":"..",
         if(!current()) return;
         try{
           // attempt 1 uses your chosen model; if it stalls, retry on a fast reliable one
-          const raw=await callClaude(prompt,Math.max(1800,chunk.reduce((n,u)=>n+u.t.split(/\s+/).length,0)*65),"watchBreakdown",trackUsage,40000,attempt>0?"openai/gpt-4o-mini":null,recordWatchCost);
+          const raw=await callClaude(prompt,Math.round(Math.max(1800,chunk.reduce((n,u)=>n+u.t.split(/\s+/).length,0)*65)*(_learnerLang==='English'?1:2.5)),"watchBreakdown",trackUsage,40000,attempt>0?"openai/gpt-4o-mini":null,recordWatchCost);
           if(!current()) return;
           const arr=extractJSON(raw);
           if(!Array.isArray(arr)||chunk.some((_,i)=>!arr.some(it=>+it.i===i&&Array.isArray(it.w)&&it.w.length))) throw new Error("the AI returned an incomplete breakdown");
@@ -2720,8 +2799,8 @@ Return ONLY valid JSON, no commentary: [{"i":0,"t":"translation","w":[{"a":"..",
     const useSaved=(x,source)=>{if(!current())return false;startWithLines(vid,x.lines,x.title,{...meta,thumb:x.thumb||meta?.thumb,channel:x.channel||meta?.channel,durationSec:x.durationSec||meta?.durationSec},x.bd,source);return true;};
     try{
       try{const x=JSON.parse(localStorage.getItem(mineKey(vid))||'null');if(x?.lines?.length&&x.bd?.length===x.lines.length){useSaved(x,'mine');return;}}catch{}
-      if(user){try{const d=await getDoc(doc(db,'users',user.uid,'watchVideos',vid));if(!current())return;if(d.exists()&&d.data().lines?.length){useSaved(d.data(),'mine');return;}}catch{}}
-      try{const d=await getDoc(doc(db,'watchLibrary',vid));if(!current())return;if(d.exists()&&d.data().lines?.length){useSaved(d.data(),'shared');return;}}catch{}
+      if(user){try{const d=await getDoc(doc(db,'users',user.uid,'watchVideos',vid));if(!current())return;if(d.exists()&&d.data().lines?.length&&(d.data().lang||'English')===_learnerLang){useSaved(d.data(),'mine');return;}}catch{}}
+      try{const d=await getDoc(doc(db,'watchLibrary',vid));if(!current())return;if(d.exists()&&d.data().lines?.length&&(d.data().lang||'English')===_learnerLang){useSaved(d.data(),'shared');return;}}catch{}
       if(!current())return;
       try{const x=JSON.parse(localStorage.getItem(`watch:t:${vid}`)||'null');if(x?.lines?.length){startWithLines(vid,x.lines,x.title,meta);return;}}catch{}
       if(readJob(vid)){setGenOffer(true);setCanGenerate(true);setErr("A transcript job was already started. Resume it without starting another paid request.");return;}
@@ -2796,7 +2875,7 @@ Return ONLY valid JSON, no commentary: [{"i":0,"t":"translation","w":[{"a":"..",
   // ── Player (IFrame API): speed, line tracking, loop ───────────────────
   useEffect(()=>{
     if(!videoId||!lines.length||!ready||!lessonEntered) return;
-    let cancelled=false,timer=null,heartbeat=null,ticks=0;
+    let cancelled=false,timer=null,heartbeat=null,ticks=0,playTicks=0;
     const sample=()=>{const p=playerRef.current;if(!p)return;try{trackerRef.current?.sample({wallMs:performance.now(),at:Date.now(),position:p.getCurrentTime(),rate:p.getPlaybackRate(),playing:p.getPlayerState()===1,visible:document.visibilityState==='visible',focused:document.hasFocus()});}catch{}};
     const reset=()=>{flushWatch();trackerRef.current?.reset();sample();};
     // Recompute the active caption line/word from the player's clock. Runs on
@@ -2855,7 +2934,9 @@ Return ONLY valid JSON, no commentary: [{"i":0,"t":"translation","w":[{"a":"..",
         events:{onStateChange:()=>{sample();reset();update();savePos(true);},onPlaybackRateChange:event=>{reset();update();if(Number.isFinite(event.data)&&event.data>0)setRate(event.data);},onReady:()=>{
           if(cancelled) return;
           try{playerRef.current?.setPlaybackRate?.(rateRef.current);}catch{}
-          heartbeat=setInterval(()=>{sample();if(++ticks%3===0)savePos(ticks%15===0);if(ticks%5===0)flushWatch(ticks%15===0);},1000);
+          heartbeat=setInterval(()=>{sample();if(++ticks%3===0)savePos(ticks%15===0);if(ticks%5===0)flushWatch(ticks%15===0);
+            try{ if(playerRef.current?.getPlayerState?.()===1&&document.visibilityState==="visible"&&++playTicks%10===0) giveXpRef.current((g,d)=>award(g,XP.tenSeconds,d)); }catch{}
+          },1000);
           timer=setInterval(update,50);
         }},
       });
@@ -2897,6 +2978,7 @@ Return ONLY valid JSON, no commentary: [{"i":0,"t":"translation","w":[{"a":"..",
       forms:isVerb?{past:ar}:{singular:ar},status:"new",
       watchContext:{sentence:sel.sentence,translation:sel.tr||"",videoId,t:sel.t??null}};
     onAddToFlashcard(deckId,card);
+    giveXp((g,d)=>collectWord(g,sel.ar,d,{added:true}));
     setAdded(true);
     setTimeout(()=>{setSel(null);setAdded(false);},900);
   };
@@ -3037,6 +3119,7 @@ Return ONLY valid JSON, no commentary: [{"i":0,"t":"translation","w":[{"a":"..",
           <div style={{padding:"6px 12px",fontSize:11,flexShrink:0}}>{levelInfo(trackerRef.current?.record.levelId).label} · Listening time saved to Watch → Progress · {watchProgress.status}</div>
           <div className="watch-player-panel">
             <div className="watch-video-frame"><div ref={playerDiv} style={{position:"absolute",inset:0}}/></div>
+            <GameBar game={game} gain={gain}/>
             <div style={{display:"flex",gap:6,alignItems:"center",marginTop:8,flexWrap:"wrap"}}>
               {[0.5,0.75,1,1.25].map(r=>(<button key={r} className={`chip ${rate===r?"chip-on":""}`} onClick={()=>setRate(r)} style={{padding:"6px 10px",fontSize:12}}>{r}×</button>))}
               {timed&&<button className={`chip ${loopLine?"chip-on":""}`} onClick={()=>setLoopLine(v=>!v)} style={{padding:"6px 10px",fontSize:12}}><RotateCcw size={12}/> Loop line</button>}
@@ -3074,7 +3157,7 @@ Return ONLY valid JSON, no commentary: [{"i":0,"t":"translation","w":[{"a":"..",
                   {b?.w?.length?(
                     <div className="ar" dir="rtl" style={{direction:"rtl",display:"flex",flexWrap:"wrap",flexDirection:"row",justifyContent:"flex-start",gap:on?"10px 14px":"6px 10px"}}>
                       {b.w.map((w,k)=>(
-                        <div key={k} onClick={e=>{e.stopPropagation();setSel({...w,sentence:l.text,tr:b.tr,t:l.start});setAdded(false);}} style={{textAlign:"center",cursor:"pointer",padding:"3px 6px",borderRadius:8,background:on&&k===activeWord?"var(--accent)":"transparent",color:on&&k===activeWord?"#fff":"inherit",transition:"none"}}>
+                        <div key={k} onClick={e=>{e.stopPropagation();setSel({...w,sentence:l.text,tr:b.tr,t:l.start});setAdded(false);giveXp((g,d)=>collectWord(g,w.ar,d));}} style={{textAlign:"center",cursor:"pointer",padding:"3px 6px",borderRadius:8,background:on&&k===activeWord?"var(--accent)":"transparent",color:on&&k===activeWord?"#fff":"inherit",transition:"none"}}>
                           <div dir="rtl" lang="ar" style={{fontSize:on?24:19,lineHeight:1.5}}>{w.ar}</div>
                           <div dir="ltr" lang="en" style={{direction:"ltr",fontFamily:"inherit",fontSize:on?13:11.5,fontWeight:500,color:on&&k===activeWord?"#fff":"var(--text2)",lineHeight:1.3}}>{w.en}</div>
                         </div>
@@ -3250,6 +3333,35 @@ function ServiceCredits({orKey}) {
   );
 }
 
+// Choose the author whose writing the generated Arabic imitates, how long
+// example sentences are, and edit each author's style guide.
+function WritingStylePanel({local,set}) {
+  const overrides=local.styleOverrides||{};
+  const active=local.writingStyle||"bayna";
+  return (
+    <div style={{background:"var(--surface)",border:"1.5px solid var(--border)",borderRadius:"var(--r)",padding:"15px 17px"}}>
+      <div className="sec">Writing style</div>
+      <div style={{fontSize:12.5,color:"var(--text2)",lineHeight:1.6,marginBottom:10}}>Generated readings, listening, conversations and example sentences imitate this author. You can change it any time, and edit the guides below.</div>
+      <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:12}}>
+        {STYLES.map(st=><button key={st.id} className={`chip ${active===st.id?"chip-on":""}`} onClick={()=>set("writingStyle",st.id)}>{st.label}</button>)}
+      </div>
+      <div style={{fontSize:11.5,fontWeight:700,color:"var(--text3)",letterSpacing:".08em",textTransform:"uppercase",marginBottom:6}}>Example sentence length</div>
+      <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:6}}>
+        {SENTENCE_LENGTHS.map(l=><button key={l.id} className={`chip ${(local.sentenceLength||"short")===l.id?"chip-on":""}`} onClick={()=>set("sentenceLength",l.id)}>{l.label}</button>)}
+      </div>
+      <div style={{fontSize:11.5,color:"var(--text3)",marginBottom:12}}>Used when generating the sentence on each flashcard: {sentenceSpec(local.sentenceLength||"short")}.</div>
+      {STYLES.map(st=>(
+        <details key={st.id} style={{marginTop:6}}>
+          <summary style={{cursor:"pointer",fontSize:13,fontWeight:600}}>{st.label} guide {overrides[st.id]?.trim()?"· edited":""}</summary>
+          <div style={{fontSize:11.5,color:"var(--text3)",margin:"6px 0"}}>{st.blurb}. Leave empty to use the built-in guide.</div>
+          <textarea className="input" rows={10} value={overrides[st.id]??STYLE_DEFAULTS[st.file]??""} onChange={e=>set("styleOverrides",{...overrides,[st.id]:e.target.value})} style={{fontSize:12.5,lineHeight:1.55,width:"100%"}}/>
+          <button className="chip" style={{marginTop:6}} onClick={()=>{const n={...overrides};delete n[st.id];set("styleOverrides",n);}}>Reset to built-in</button>
+        </details>
+      ))}
+    </div>
+  );
+}
+
 function SettingsScreen({settings,setSettings,onBack,usage,user,onSignOut,onReplayOnboarding,profile,setProfile,studyLog,onUpdateTargets,decks,cardStates,setCardStates,trackUsage,onResetUsage,onResumeBulkFill,isBulkAllowlisted}) {
   const [bulkFillRunning,setBulkFillRunning]=useState(false);
   const [local,setLocal]=useState(settings);
@@ -3259,6 +3371,7 @@ function SettingsScreen({settings,setSettings,onBack,usage,user,onSignOut,onRepl
   // here, so opening Settings before cloud data arrived (or while another
   // device changed something) can't write stale values back.
   const baseRef=useRef(settings);
+  const [otherLang,setOtherLang]=useState(false);
   const save=()=>{
     const edited={};
     for(const k of new Set([...Object.keys(local),...Object.keys(baseRef.current)])) if(JSON.stringify(local[k])!==JSON.stringify(baseRef.current[k])) edited[k]=local[k];
@@ -3289,6 +3402,7 @@ function SettingsScreen({settings,setSettings,onBack,usage,user,onSignOut,onRepl
 
         {/* Pass `local` (the in-edit settings) so cost previews react as you
             change model dropdowns above, before you've hit Save. */}
+        <WritingStylePanel local={local} set={set}/>
         <ServiceCredits orKey={local.orKey}/>
         <UsageMeter usage={usage} settings={local} onReset={onResetUsage}/>
 
@@ -3541,11 +3655,11 @@ function SettingsScreen({settings,setSettings,onBack,usage,user,onSignOut,onRepl
           })()}
           <div style={{marginBottom:14}}>
             <label className="lbl">Your Native Language</label>
-            <select className="input" value={NATIVE_LANGUAGE_OPTIONS.includes(local.nativeLanguage)?local.nativeLanguage:(local.nativeLanguage?"Other":"English")}
-              onChange={e=>set("nativeLanguage",e.target.value==="Other"?"":e.target.value)} style={{fontSize:13}}>
+            <select className="input" value={otherLang?"Other":(NATIVE_LANGUAGE_OPTIONS.includes(local.nativeLanguage)?local.nativeLanguage:(local.nativeLanguage?"Other":"English"))}
+              onChange={e=>{if(e.target.value==="Other"){setOtherLang(true);set("nativeLanguage","");}else{setOtherLang(false);set("nativeLanguage",e.target.value);}}} style={{fontSize:13}}>
               {NATIVE_LANGUAGE_OPTIONS.map(l=><option key={l} value={l}>{l}</option>)}
             </select>
-            {(!NATIVE_LANGUAGE_OPTIONS.includes(local.nativeLanguage))&&(
+            {(otherLang||!NATIVE_LANGUAGE_OPTIONS.includes(local.nativeLanguage))&&(
               <input className="input" placeholder="Type your language" value={local.nativeLanguage||""}
                 onChange={e=>set("nativeLanguage",e.target.value)} style={{marginTop:6,fontSize:13}}/>
             )}
@@ -4401,15 +4515,15 @@ function StudyScreen({cards,currentIndex,onSwipe,onBack,canUndo,onExit,trackUsag
       const learnedPool=Object.values(cardStates).flat().filter(c=>c.status==="known"||c.status==="weak");
       const learnedSample=[...learnedPool].sort(()=>Math.random()-0.5).slice(0,60).map(c=>c.arabicBase).join("، ");
       const raw=await callClaudeWithTashkeel(
-        `${BAYNA_YADAYK_STYLE}
+        `${currentStyle()}
 
 You are creating a flashcard learning aid in this register.
 
 Word: "${card.english}" · Arabic form "${arabicForm}" (${formLabel})
 
 Generate:
-1) ONE short Arabic sentence (6-12 words) using EXACTLY: ${arabicForm}
-2) English translation
+1) ONE Arabic sentence (${sentenceSpec(_sentenceLength)}) using EXACTLY: ${arabicForm}
+2) ${_learnerLang} translation
 3) A short mnemonic image idea (1-2 sentences) — ONE single iconic subject that visually captures the word's meaning. Think simple sticker-style flashcard art, not a busy scene. RELIGIOUS CONSTRAINT: do NOT describe people's faces, animal faces, or eyes of any kind. Prefer objects, symbols, scenery, hands, or back-views/silhouettes. Never mention eyes. No Arabic text in the image.${avoidClause}
 
 QUALITY RULES — non-negotiable:
@@ -5063,7 +5177,7 @@ function ReadingScreen({profile,decks,cardStates,onBack,onFinish,onAddToFlashcar
     }).join("\n");
     try {
       const raw=await callClaudeWithTashkeel(
-        `${BAYNA_YADAYK_STYLE}
+        `${currentStyle()}
 
 ═══ PASSAGE BRIEF ═══
 
@@ -5086,7 +5200,7 @@ Return ONLY valid JSON. Put "vocabUsed" FIRST so it survives even if the body is
 {
   "vocabUsed": [...],   // ONLY the base forms (arabicBase) from the REQUIRED VOCABULARY list that you actually used. Do NOT include extra-vocabulary words. Do NOT include bonus-pool words. Used for in-passage highlighting — be precise.
   "arabic": "...",      // The passage itself, fully tashkeel'd, ~${targetLen} words
-  "translation": "..."  // Faithful English translation
+  "translation": "..."  // Faithful ${_learnerLang} translation
 }
 
 REMINDERS — non-negotiable:
@@ -5128,6 +5242,7 @@ REMINDERS — non-negotiable:
           </div>
         )}
 
+        <StyleChips accent="--read"/>
         {!master&&<WordSource profile={profile} customWords={customWords} setCustomWords={v=>{setCustomWords(v);setPassage(null);setTopics([]);setActiveTopic("");}} count={selCardIds.size} accentVar="--read" accentBgVar="--read-bg" accentBorderVar="--read-border">
           <MultiDeckCardSelector
             decks={decks} cardStates={cardStates}
@@ -5184,11 +5299,11 @@ REMINDERS — non-negotiable:
             </div>
             <button className="btn" onClick={()=>setShowTranslation(v=>!v)}
               style={{background:"transparent",color:"var(--read)",border:"1.5px solid var(--read-border)",borderRadius:"var(--rs)",padding:"10px",width:"100%",fontSize:13,fontWeight:600}}>
-              {showTranslation?<><EyeOff size={14}/>Hide Translation</>:<><Globe size={14}/>Show English Translation</>}
+              {showTranslation?<><EyeOff size={14}/>Hide Translation</>:<><Globe size={14}/>Show {_learnerLang} Translation</>}
             </button>
             {showTranslation&&(
               <div className="gen-appear" style={{background:"var(--read-bg)",border:"1px solid var(--read-border)",borderRadius:"var(--rs)",padding:"16px"}}>
-                <div className="sec" style={{margin:0,marginBottom:8,color:"var(--read)"}}>English Translation</div>
+                <div className="sec" style={{margin:0,marginBottom:8,color:"var(--read)"}}>{_learnerLang} Translation</div>
                 <div style={{fontSize:14,color:"var(--text2)",lineHeight:1.75}}>{passage.translation}</div>
               </div>
             )}
@@ -5312,7 +5427,7 @@ function ListeningScreen({profile,decks,cardStates,onBack,onFinish,onAddToFlashc
     }).join("\n");
     try {
       const raw=await callClaudeWithTashkeel(
-        `${BAYNA_YADAYK_STYLE}
+        `${currentStyle()}
 
 ═══ LISTENING-PASSAGE BRIEF (read aloud — write for the ear) ═══
 
@@ -5342,7 +5457,7 @@ Return ONLY valid JSON. Put "vocabUsed" FIRST so it survives even if the body tr
 {
   "vocabUsed": [...],   // ONLY the base forms from REQUIRED VOCABULARY that you actually used. Do NOT include extra-vocabulary or bonus-pool words.
   "arabic": "...",      // Fully tashkeel'd Arabic passage, ~${targetLen} words
-  "translation": "..."  // Faithful English translation
+  "translation": "..."  // Faithful ${_learnerLang} translation
 }
 
 REMINDERS:
@@ -5409,6 +5524,7 @@ REMINDERS:
           </div>
         )}
 
+        <StyleChips accent="--listen"/>
         {!master&&<WordSource profile={profile} customWords={customWords} setCustomWords={v=>{setCustomWords(v);setContent(null);setTopics([]);setActiveTopic("");}} count={selCardIds.size} accentVar="--listen" accentBgVar="--listen-bg" accentBorderVar="--listen-border">
           <MultiDeckCardSelector
             decks={decks} cardStates={cardStates}
@@ -5493,11 +5609,11 @@ REMINDERS:
             )}
             <button className="btn" onClick={()=>setShowEnglish(v=>!v)}
               style={{background:"transparent",color:"var(--text2)",border:"1.5px solid var(--border)",borderRadius:"var(--rs)",padding:"10px",width:"100%",fontSize:13,fontWeight:600}}>
-              {showEnglish?<><EyeOff size={14}/>Hide Translation</>:<><Globe size={14}/>Show English Translation</>}
+              {showEnglish?<><EyeOff size={14}/>Hide Translation</>:<><Globe size={14}/>Show {_learnerLang} Translation</>}
             </button>
             {showEnglish&&(
               <div className="gen-appear" style={{background:"var(--surface2)",border:"1px solid var(--border)",borderRadius:"var(--rs)",padding:"14px 16px"}}>
-                <div className="sec" style={{margin:0,marginBottom:8}}>English Translation</div>
+                <div className="sec" style={{margin:0,marginBottom:8}}>{_learnerLang} Translation</div>
                 <div style={{fontSize:14,color:"var(--text2)",lineHeight:1.75}}>{content.translation}</div>
               </div>
             )}
@@ -8760,7 +8876,7 @@ Return ONLY valid JSON array: ["topic 1","topic 2","topic 3","topic 4"]`,
     const learnedSample=[...learnedPool].sort(()=>Math.random()-0.5).slice(0,60).map(c=>c.arabicBase).join("، ");
     try {
       const raw=await callClaudeWithTashkeel(
-        `${BAYNA_YADAYK_STYLE}
+        `${currentStyle()}
 
 ${levelLine}
 
@@ -8771,7 +8887,7 @@ Key vocabulary the learner should practice (mission words): ${missionList}
 
 Open the conversation about "${topic}" in Arabic. Use 2-3 of the mission words. Keep it 2-3 short, natural sentences a real native speaker would actually say in this situation. If you address the learner, use a vocative like "يَا صَدِيقِي / يَا أَخِي". End by inviting the learner to respond (a question or open prompt).
 
-Then, on a new line, give a short English translation in parentheses.
+Then, on a new line, give a short ${_learnerLang} translation in parentheses.
 
 NON-NEGOTIABLE RULES:
 - Speak like a warm, patient friend — never like a textbook drill. Use cultural specifics from the Arab world where natural (food, family, prayer times, daily routines, places).
@@ -8809,7 +8925,7 @@ NON-NEGOTIABLE RULES:
     const learnedSample=[...learnedPool].sort(()=>Math.random()-0.5).slice(0,60).map(c=>c.arabicBase).join("، ");
     try {
       const raw=await callClaudeWithTashkeel(
-        `${BAYNA_YADAYK_STYLE}
+        `${currentStyle()}
 
 ${levelLine}
 
@@ -8824,7 +8940,7 @@ User: ${userMsg}
 
 DO NOT correct the user inline. Their Arabic may have small errors — just continue the conversation naturally and, where helpful, model the correct form by using it yourself in your reply. No "[تَصْحِيح]", no red-flag callouts, no "خطأ".
 
-Respond in 2-3 short, natural Arabic sentences a real native speaker would say. End with a question or open prompt that invites the learner to keep talking. Then a new line, English translation in parentheses.
+Respond in 2-3 short, natural Arabic sentences a real native speaker would say. End with a question or open prompt that invites the learner to keep talking. Then a new line, ${_learnerLang} translation in parentheses.
 
 NON-NEGOTIABLE RULES:
 - Friend, not teacher. Warmth and curiosity over correction.
@@ -8851,7 +8967,7 @@ NON-NEGOTIABLE RULES:
       const turnsBlock=userTurns.map((t,i)=>`${i+1}. "${t}"`).join("\n");
       const missedList=missionMissedWords.map(m=>`${m.english} (${m.arabicBase})`).join(", ")||"(none)";
       const raw=await callClaudeWithTashkeel(
-        `${BAYNA_YADAYK_STYLE}
+        `${currentStyle()}
 
 ${levelLine}
 
@@ -8956,6 +9072,7 @@ CRITICAL: Every Arabic phrase must have full tashkeel.`,
           {!master&&<button className="chip" onClick={()=>{setCustomWords(true);setPhase("setup");}}>Choose my own words</button>}
           <button className="chip" onClick={()=>{setTopics([]);}} disabled={loading}>↻ New ideas</button>
         </div>
+        <StyleChips/>
         {loading?<div style={{textAlign:"center",padding:20,color:"var(--text3)"}}><RefreshCw size={16} className="spin"/></div>:
           topics.map((t,i)=>(
             <div key={i} className="test-option" onClick={()=>startWithTopic(t)}>
@@ -9538,13 +9655,13 @@ function MasterReviewScreen({decks,cardStates,onBack,onSwipeCard,onUndoSwipe,onD
     const learnedSample=[...learnedPool].sort(()=>Math.random()-0.5).slice(0,60).map(c=>c.arabicBase).join("، ");
     try {
       const raw=await callClaudeWithTashkeel(
-        `${BAYNA_YADAYK_STYLE}
+        `${currentStyle()}
 
 You are creating a master-review sentence aid in this register.
 Word: "${card.english}" · Arabic form "${arabicForm}" (${FORM_LABELS[selForm]||selForm})
 Generate:
-1) ONE short Arabic sentence (6-12 words) using EXACTLY: ${arabicForm}
-2) English translation
+1) ONE Arabic sentence (${sentenceSpec(_sentenceLength)}) using EXACTLY: ${arabicForm}
+2) ${_learnerLang} translation
 3) A short mnemonic image idea (1-2 sentences) — ONE single iconic subject that visually captures the word's meaning. Think simple sticker-style flashcard art, not a busy scene. RELIGIOUS CONSTRAINT: do NOT describe people's faces, animal faces, or eyes of any kind. Prefer objects, symbols, scenery, hands, or back-views/silhouettes. Never mention eyes. No Arabic text in the image.
 
 QUALITY RULES — non-negotiable:
@@ -12296,6 +12413,13 @@ export default function App() {
     return ()=>window.removeEventListener("importDecks",handler);
   },[decks,cardStates,user,settings,usage,studyLog,profile]);
 
+  // Small widgets (e.g. the writing-style chips) change global settings by event.
+  useEffect(()=>{
+    const h=e=>{ const {key,val}=e.detail||{}; if(key) setSettings(s=>({...s,[key]:val})); };
+    window.addEventListener("setAppSetting",h);
+    return ()=>window.removeEventListener("setAppSetting",h);
+  },[]);
+
   // Keep module-level refs in sync — picked up automatically by callClaude /
   // generateImage / synthesizeArabic / transcribeAudio.
   useEffect(()=>{
@@ -12312,7 +12436,13 @@ export default function App() {
     _convSilenceMs = typeof settings.convSilenceMs==="number"?settings.convSilenceMs:2500;
     _convFuzzyThreshold = typeof settings.convFuzzyThreshold==="number"?settings.convFuzzyThreshold:0.8;
     _autoGenerateImage = !!settings.autoGenerateImage;
-  },[settings.model,settings.models,settings.imageModel,settings.orKey,settings.gKey,settings.ttsKey,settings.ttsVoice,settings.ttsSpeed,settings.sttKey,settings.sttEnabled,settings.convSilenceMs,settings.convFuzzyThreshold,settings.autoGenerateImage]);
+    _styleId = settings.writingStyle||"bayna";
+    _learnerLang = settings.nativeLanguage||profile?.nativeLanguage||"English";
+    _styleOverrides = settings.styleOverrides||{};
+    _sentenceLength = settings.sentenceLength||"short";
+    _appSettingsMirror = settings;
+    window.dispatchEvent(new Event("appSettingsMirror"));
+  },[profile?.nativeLanguage,settings.nativeLanguage,settings.writingStyle,settings.styleOverrides,settings.sentenceLength,settings.model,settings.models,settings.imageModel,settings.orKey,settings.gKey,settings.ttsKey,settings.ttsVoice,settings.ttsSpeed,settings.sttKey,settings.sttEnabled,settings.convSilenceMs,settings.convFuzzyThreshold,settings.autoGenerateImage]);
   const go=s=>setScreen(s);
 
   // Usage tracker function passed to all Claude calls
@@ -12701,14 +12831,15 @@ export default function App() {
     go("editCard");
   };
 
+  const learnerLang=settings.nativeLanguage||profile?.nativeLanguage||"English";
   const commonProps={decks,cardStates,trackUsage,profile};
 
   const screens={
     home:<HomeScreen {...commonProps} watchHours={(progressSummary(watchProgress.records).seconds/3600).toFixed(2)} onOpenDeck={openDeck} onSettings={()=>go("settings")} onCreateDeck={()=>go("createDeck")} onReading={()=>go("reading")} onListening={()=>go("listening")} onConversation={()=>go("conversation")} onDictation={()=>go("dictation")} onCapsules={()=>go("capsules")} onSearch={()=>setShowSearch(true)} onWatch={()=>go("watch")} onTranslate={()=>go("translate")} onProgress={()=>go("progress")} onMasterReview={()=>go("masterReview")} onGuide={()=>go("guide")} onPresets={()=>go("preset")} onGrammarImport={()=>{setGrammarTarget(null);go("grammarImport");}} onVocabImport={()=>{setVocabTarget(null);go("vocabImport");}} darkMode={darkMode} onToggleDark={()=>setDarkMode(d=>!d)} studyLog={mergeWatchStudyLog(studyLog,watchProgress.records)} poolThresholdDays={getPoolThresholdDays(settings)} immersionMode={!!settings.immersionMode} immersionNudgeShown={!!settings.immersionNudgeShown} onImmersionNudgeAction={handleImmersionNudge}/>,
     watch:<WatchScreen onBack={()=>go("home")} onAddToFlashcard={addToFlashcard} decks={decks} trackUsage={trackUsage} user={user} watchProgress={watchProgress}/>,
-    translate:<TranslateScreen onBack={()=>go("home")} onAddToFlashcard={addToFlashcard} decks={decks} trackUsage={trackUsage} nativeLanguage={settings.nativeLanguage}/>,
-    grammarImport:<GrammarImportScreen key={grammarTarget?.id||"new"} onBack={()=>{setGrammarTarget(null);go("home");}} trackUsage={trackUsage} onSave={saveGrammarDeck} targetDeck={grammarTarget} nativeLanguage={settings.nativeLanguage}/>,
-    vocabImport:<VocabImportScreen key={vocabTarget?.id||"new"} onBack={()=>{setVocabTarget(null);go("home");}} trackUsage={trackUsage} onSave={saveVocabDeck} targetDeck={vocabTarget} nativeLanguage={settings.nativeLanguage} cardStates={cardStates}/>,
+    translate:<TranslateScreen onBack={()=>go("home")} onAddToFlashcard={addToFlashcard} decks={decks} trackUsage={trackUsage} nativeLanguage={learnerLang}/>,
+    grammarImport:<GrammarImportScreen key={grammarTarget?.id||"new"} onBack={()=>{setGrammarTarget(null);go("home");}} trackUsage={trackUsage} onSave={saveGrammarDeck} targetDeck={grammarTarget} nativeLanguage={learnerLang}/>,
+    vocabImport:<VocabImportScreen key={vocabTarget?.id||"new"} onBack={()=>{setVocabTarget(null);go("home");}} trackUsage={trackUsage} onSave={saveVocabDeck} targetDeck={vocabTarget} nativeLanguage={learnerLang} cardStates={cardStates}/>,
     capsules:<CapsulesScreen profile={profile} onOpen={(s)=>go(s)} onBack={()=>go("home")}/>,
     preset:<PresetLibraryScreen profile={profile} decks={decks} onBack={()=>go("home")}/>,
     guide:<GuideScreen onBack={()=>go("home")} onReplayOnboarding={()=>{setShowOnboarding(true);go("home");}} onResetTips={()=>{resetTips();showToast("Tips reset — they'll show again as you explore.","success");}}/>,
@@ -12716,7 +12847,7 @@ export default function App() {
     dictation:<DictationScreen decks={decks} cardStates={cardStates} profile={profile} trackUsage={trackUsage} onBack={()=>go("home")} onLogStudy={logStudy} onFinish={()=>{go("home");setSessionRating({module:"writing"});}}/>,
     settings:<SettingsScreen settings={settings} setSettings={setSettings} onBack={()=>go("home")} usage={usage} user={user} onSignOut={handleSignOut} onReplayOnboarding={()=>setShowOnboarding(true)} profile={profile} setProfile={setProfile} studyLog={studyLog} onUpdateTargets={(t)=>setStudyLog(sl=>({...sl,targets:t}))} decks={decks} cardStates={cardStates} setCardStates={setCardStates} trackUsage={trackUsage} onResetUsage={resetUsageCounters} onResumeBulkFill={bulkGenerateImmersionDefs} isBulkAllowlisted={IMMERSION_BULK_ALLOWLIST.includes(user?.email)}/>,
     createDeck:<CreateDeckScreen onBack={()=>go("home")} onCreate={createDeck}/>,
-    addCards:activeDeck&&<AddCardsScreen deck={activeDeck} onBack={()=>go("deck")} onSave={saveCards} trackUsage={trackUsage} nativeLanguage={settings.nativeLanguage} cardStates={cardStates}/>,
+    addCards:activeDeck&&<AddCardsScreen deck={activeDeck} onBack={()=>go("deck")} onSave={saveCards} trackUsage={trackUsage} nativeLanguage={learnerLang} cardStates={cardStates}/>,
     deck:activeDeck&&<DeckScreen deck={activeDeck} cards={cardStates[activeDeck.id]||[]} onStartStudy={startStudy} onBack={()=>go("home")} onAddCards={()=>{if(activeDeck.deckType==="grammar"){setGrammarTarget(activeDeck);go("grammarImport");}else go("addCards");}} onImportMore={()=>{setVocabTarget(activeDeck);go("vocabImport");}} onEditCard={c=>{if(c.wordType==="grammar"){showToast("Grammar cards can't be edited yet — remove it and re-import that section.","info");return;}setActiveCard(c);go("editCard");}} onDeleteCard={deleteCard} onRenameDeck={renameDeck} onDeleteDeck={deleteDeck} onSetDeckUnit={setDeckUnit} onSetDeckLastStudied={setDeckLastStudied} onTogglePinnedNew={togglePinnedNew} onGraduateNow={graduateNow} poolThresholdDays={getPoolThresholdDays(settings)} newCardsRemainingToday={newCardsRemainingTodayCount} savedIdx={{all:savedIdx.current[activeDeck.id+"_all"]||0,new:savedIdx.current[activeDeck.id+"_new"]||0,weak:savedIdx.current[activeDeck.id+"_weak"]||0,known:savedIdx.current[activeDeck.id+"_known"]||0,due:savedIdx.current[activeDeck.id+"_due"]||0}}/>,
     editCard:activeCard&&activeDeck&&<EditCardScreen card={activeCard} onBack={()=>go("deck")} onSave={saveEditedCard} trackUsage={trackUsage}/>,
     study:activeDeck&&sessionCards.length>0&&<StudyScreen cards={sessionCards} currentIndex={currentIdx} onSwipe={handleSwipe} onBack={undoStudy} canUndo={studyHistory.current.length>0} onExit={()=>go("deck")} trackUsage={trackUsage} decks={decks} cardStates={cardStates} onAddToFlashcard={addToFlashcard} onToggleWeakForm={(cardId,formKey)=>toggleWeakForm(activeDeck.id,cardId,formKey)} onSaveAid={(cardId,formKey,aid)=>saveCardAid(activeDeck.id,cardId,formKey,aid)} deckId={activeDeck.id} immersionMode={!!settings.immersionMode} grammarImmersionMode={!!settings.grammarImmersionMode} onSaveImmersionDef={(cardId,text)=>saveCardImmersionDef(activeDeck.id,cardId,text)}/>,

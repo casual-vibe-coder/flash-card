@@ -10,6 +10,7 @@ import * as levelHelpers from './watch-levels.js';
 import { arabicSearchQuery } from './watch-search.js';
 import { WATCH_RESOURCES } from './watch-resources.js';
 import * as icons from 'lucide-react';
+import * as gameHelpers from './watch-game.js';
 import { playbackPosition, lineEnd, captionTime, videoTime as captionVideoTime, alignedWordTimes } from './watch-timing.js';
 import { filterVideos, searchQuery, normalizeBreakdown, prepareWatchLesson } from './watch-library.js';
 const source=fs.readFileSync(new URL('./App.jsx',import.meta.url),'utf8');
@@ -18,7 +19,7 @@ const component=source.slice(start,end).replace(/const \[(\w+),(\w+)\]=useState\
 const compiled=transformSync(component+'\nglobalThis.Component=WatchScreen;',{loader:'jsx',jsxFactory:'React.createElement',format:'cjs'}).code;
 function fixture(overrides={},request=async()=>{},harness=null){
  const refs=[],effects=[];
- const context={React,arabicSearchQuery,WATCH_RESOURCES,URLSearchParams,...icons,...progressHelpers,...levelHelpers,WatchProgress:()=>null,LevelOptions:()=>null,AbortController,console,setTimeout,clearTimeout,playbackPosition,lineEnd,captionTime,captionVideoTime,alignedWordTimes,filterVideos,searchQuery,normalizeBreakdown,prepareWatchLesson,requestTranscript:request,
+ const context={React,...gameHelpers,GameBar:()=>null,loadGame:()=>gameHelpers.emptyGame(),todayKey:()=>'2026-11-05',GAME_KEY:'watch:game:v1',_learnerLang:'English',lookupWord:async()=>({meaning:'x'}),arabicSearchQuery,WATCH_RESOURCES,URLSearchParams,...icons,...progressHelpers,...levelHelpers,WatchProgress:()=>null,LevelOptions:()=>null,AbortController,console,setTimeout,clearTimeout,playbackPosition,lineEnd,captionTime,captionVideoTime,alignedWordTimes,filterVideos,searchQuery,normalizeBreakdown,prepareWatchLesson,requestTranscript:request,
   localStorage:{length:0,getItem:()=>null,setItem(){},removeItem(){}},useRef:value=>{const ref={current:value};refs.push(ref);return ref;},useEffect:fn=>effects.push(fn),useNamedState:(key,value)=>[Object.hasOwn(overrides,key)?overrides[key]:typeof value==='function'?value():value,()=>{}],
   WatchCosts:()=>null,Hdr:()=>null,pickModelForTag:()=> 'test',MODEL_PRICES:{},WATCH_CATEGORIES:[{k:'all',label:'All',ar:''}],fmtDur:()=>'',};
  vm.createContext(context);vm.runInContext(compiled,context);const tree=context.Component({decks:[],user:null,watchProgress:{owner:"device",records:[],status:"Saved",save(){}}});if(harness)Object.assign(harness,{context,refs,effects,tree});return tree;
