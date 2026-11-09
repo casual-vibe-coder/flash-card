@@ -5245,6 +5245,8 @@ function ReadingScreen({profile,decks,cardStates,onBack,onFinish,onAddToFlashcar
       const raw=await callClaudeWithTashkeel(
         `${currentStyle()}
 
+${levelPromptLine(profile)}
+
 ═══ PASSAGE BRIEF ═══
 
 Deck: ${deckNames}
@@ -5494,6 +5496,8 @@ function ListeningScreen({profile,decks,cardStates,onBack,onFinish,onAddToFlashc
     try {
       const raw=await callClaudeWithTashkeel(
         `${currentStyle()}
+
+${levelPromptLine(profile)}
 
 ═══ LISTENING-PASSAGE BRIEF (read aloud — write for the ear) ═══
 
@@ -5969,6 +5973,9 @@ const WORKING_LEVELS=[
   {id:"book4",label:"Advanced",cefr:"B2–C1",book:4,desc:"Abstract & advanced topics; near-native phrasing. Book 4 ≈ C1 entry."},
 ];
 const levelById=(id)=>WORKING_LEVELS.find(l=>l.id===id)||WORKING_LEVELS[0];
+// One sentence telling the model the learner's working level; used by every
+// generator that writes Arabic prose so content is pitched at the learner.
+const levelPromptLine=(profile)=>{ const lv=levelById(profile?.workingLevel||"book1"); return `LEARNER LEVEL: ${lv.label} (${lv.cefr}), working through Al-Arabiyya Bayna Yadayk Book ${lv.book}. Keep vocabulary, grammar and sentence length at this level — slightly above is fine, far above is not.`; };
 
 // ─────────────────────────────────────────────────────────────
 // CURRICULUM (Phase 2) — the 64 units (4 books × 16). Derived from the
@@ -8624,7 +8631,7 @@ function ConversationScreen({profile,decks,cardStates,onBack,onFinish,trackUsage
   // The learner's working level shapes every prompt — no one should have to
   // pick a deck to be spoken to at the right level.
   const lvl=levelById(profile?.workingLevel||"book1");
-  const levelLine=`LEARNER LEVEL: ${lvl.label} (${lvl.cefr}), working through Al-Arabiyya Bayna Yadayk Book ${lvl.book}. Keep vocabulary, grammar and sentence length at this level — slightly above is fine, far above is not.`;
+  const levelLine=levelPromptLine(profile);
 
   // Phase: topics → chat → score → review (setup only when customising words
   // or in Master mode). Fresh visits go straight to topics.
