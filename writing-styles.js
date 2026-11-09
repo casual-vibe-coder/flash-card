@@ -8,7 +8,7 @@ export const STYLES = [
   { id: 'madinah', label: 'Madinah Books', blurb: 'Clear dialogues and drills, community life', file: 'madinah', levels: 3 },
 ];
 export const styleById = id => STYLES.find(s => s.id === id) || STYLES[0];
-export const DEFAULT_MIX = { bayna: 2, nadawi: 1, madinah: 1 };      // blended by default
+export const DEFAULT_MIX = { bayna: 2, nadawi: 3, madinah: 1 };      // blended by default, Al-Nadawi leading
 export const WEIGHT_LABELS = ['Off', 'Light', 'Medium', 'Strong'];  // 0..3
 
 // Guides are markdown. "## Level N ..." sections are level-specific; a

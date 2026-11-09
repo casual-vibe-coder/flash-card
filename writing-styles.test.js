@@ -3,9 +3,9 @@ import assert from 'node:assert/strict';
 import { buildStyleBlock, normalizeMix, forLevel, parseGuide, sentenceSpec, styleById, DEFAULT_MIX } from './writing-styles.js';
 const guide = n => `# ${n}\nintro\n\n## Quick summary\nSUM-${n}\n\n## Level 1: easy\nL1-${n}\n\n## Level 2: harder\nL2-${n}\n\n## Do and don't\nRULES-${n}`;
 const defaults = { 'bayna-yadayk': guide('B'), nadawi: guide('N'), madinah: guide('M') };
-test('default is a blend of all three with the stronger first author', () => {
+test('default is a blend of all three, Al-Nadawi leading', () => {
   const out = buildStyleBlock({ defaults, fallback: 'F' });
-  assert.match(out, /BLEND/); assert.match(out, /Bayna Yadayk — 50%/); assert.match(out, /Al-Nadawi — 25%/);
+  assert.match(out, /BLEND/); assert.match(out, /Al-Nadawi — 50%/); assert.match(out, /Bayna Yadayk — 33%/); assert.match(out, /Madinah Books — 17%/);
   assert.match(out, /SUM-B/); assert.ok(!/RULES-B/.test(out));
 });
 test('auto keeps the original model-inferred behaviour', () => {
