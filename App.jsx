@@ -15,6 +15,7 @@ import { useState, useRef, useEffect, useCallback } from "react";
 import { auth, googleProvider, db, storage } from "./firebase.js";
 import { signInWithPopup, signOut, onAuthStateChanged } from "firebase/auth";
 import { indexCards, mergeDeckCards } from "./card-merge.js";
+import { smartWordPool } from "./practice-words.js";
 import { settingsPatch, mergeCloudSettings } from "./settings-sync.js";
 import { posKey, newerPos, resumeFrom } from "./watch-position.js";
 import { doc, getDoc, setDoc, updateDoc, deleteDoc, deleteField, collection, getDocs, runTransaction } from "firebase/firestore";
@@ -4786,6 +4787,37 @@ function CompleteScreen({known,weak,onBack}) {
 // ─────────────────────────────────────────────────────────────
 // SHARED: Multi-deck + multi-card selector (used by Reading & Listening)
 // ─────────────────────────────────────────────────────────────
+// Practice modules choose the words automatically (words you've met, across
+// all vocabulary decks, tuned to your working level). Picking decks/cards is
+// still available under "Customize", but nobody has to.
+function useAutoWords({decks,cardStates,saved,setSelDeckIds,setSelCardIds}) {
+  const [customWords,setCustomWords]=useState(!!saved.customWords);
+  useEffect(()=>{
+    if(customWords) return;
+    const pool=smartWordPool(decks,cardStates);
+    setSelDeckIds(pool.deckIds);setSelCardIds(pool.cardIds);
+  },[customWords,decks,cardStates]);
+  return [customWords,setCustomWords];
+}
+function WordSource({profile,customWords,setCustomWords,count,accentVar,accentBgVar,accentBorderVar,children}) {
+  const lv=levelById(profile?.workingLevel||"book1");
+  return (
+    <div style={{display:"flex",flexDirection:"column",gap:10}}>
+      <div style={{background:`var(${accentBgVar})`,border:`1px solid var(${accentBorderVar})`,borderRadius:"var(--rs)",padding:"12px 14px"}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:10}}>
+          <div>
+            <div style={{fontSize:13.5,fontWeight:700,color:`var(${accentVar})`}}>{customWords?"Your chosen words":"Words picked for you"}</div>
+            <div style={{fontSize:12.5,color:"var(--text2)",marginTop:2,lineHeight:1.5}}>
+              {customWords?`${count} words from the decks you select below`:`${count} words you've met, matched to ${lv.label} · ${lv.cefr}`}
+            </div>
+          </div>
+          <button className="chip" onClick={()=>setCustomWords(v=>!v)}>{customWords?"Use auto":"Customize"}</button>
+        </div>
+      </div>
+      {customWords&&children}
+    </div>
+  );
+}
 function MultiDeckCardSelector({decks:allDecks,cardStates,selDeckIds,setSelDeckIds,selCardIds,setSelCardIds,accentVar,accentBgVar,accentBorderVar,onReset}) {
   // Grammar-rule decks aren't vocabulary — keep them out of the vocab-driven
   // modules (reading/listening/conversation) so passages stay word-grounded.
@@ -4931,7 +4963,7 @@ function MultiDeckCardSelector({decks:allDecks,cardStates,selDeckIds,setSelDeckI
 // ─────────────────────────────────────────────────────────────
 // READING — multi-deck + multi-card pool
 // ─────────────────────────────────────────────────────────────
-function ReadingScreen({decks,cardStates,onBack,onFinish,onAddToFlashcard,trackUsage,onLogStudy,master,masterPool}) {
+function ReadingScreen({profile,decks,cardStates,onBack,onFinish,onAddToFlashcard,trackUsage,onLogStudy,master,masterPool}) {
   const SCREEN_NAME=master?"masterReading":"reading";
   const saved=useRef(loadScreen(SCREEN_NAME)||{}).current;
   const screenStart=useRef(Date.now());
@@ -4947,6 +4979,7 @@ function ReadingScreen({decks,cardStates,onBack,onFinish,onAddToFlashcard,trackU
   const [selDeckIds,setSelDeckIds]=useState(()=>new Set(saved.selDeckIds||decks.map(d=>d.id)));
   const allInitCards=decks.flatMap(d=>(cardStates[d.id]||[]).map(c=>c.id));
   const [selCardIds,setSelCardIds]=useState(()=>new Set(saved.selCardIds||allInitCards));
+  const [customWords,setCustomWords]=useAutoWords({decks,cardStates,saved,setSelDeckIds,setSelCardIds});
 
   const [passage,setPassage]=useState(saved.passage||null);
   const [generating,setGenerating]=useState(false);
@@ -4960,8 +4993,8 @@ function ReadingScreen({decks,cardStates,onBack,onFinish,onAddToFlashcard,trackU
 
   // Persist screen state on change
   useEffect(()=>{
-    saveScreen(SCREEN_NAME,{settings,selDeckIds:[...selDeckIds],selCardIds:[...selCardIds],passage,topics,activeTopic});
-  },[settings,selDeckIds,selCardIds,passage,topics,activeTopic,SCREEN_NAME]);
+    saveScreen(SCREEN_NAME,{settings,customWords,selDeckIds:[...selDeckIds],selCardIds:[...selCardIds],passage,topics,activeTopic});
+  },[settings,customWords,selDeckIds,selCardIds,passage,topics,activeTopic,SCREEN_NAME]);
 
   const handleNextPassage=()=>{
     if(passage){setShowMiniRating(true);} else generateWithTopic(activeTopic);
@@ -5095,13 +5128,15 @@ REMINDERS — non-negotiable:
           </div>
         )}
 
-        {!master&&<MultiDeckCardSelector
-          decks={decks} cardStates={cardStates}
-          selDeckIds={selDeckIds} setSelDeckIds={setSelDeckIds}
-          selCardIds={selCardIds} setSelCardIds={setSelCardIds}
-          accentVar="--read" accentBgVar="--read-bg" accentBorderVar="--read-border"
-          onReset={()=>{setPassage(null);setTopics([]);setActiveTopic("");}}
-        />}
+        {!master&&<WordSource profile={profile} customWords={customWords} setCustomWords={v=>{setCustomWords(v);setPassage(null);setTopics([]);setActiveTopic("");}} count={selCardIds.size} accentVar="--read" accentBgVar="--read-bg" accentBorderVar="--read-border">
+          <MultiDeckCardSelector
+            decks={decks} cardStates={cardStates}
+            selDeckIds={selDeckIds} setSelDeckIds={setSelDeckIds}
+            selCardIds={selCardIds} setSelCardIds={setSelCardIds}
+            accentVar="--read" accentBgVar="--read-bg" accentBorderVar="--read-border"
+            onReset={()=>{setPassage(null);setTopics([]);setActiveTopic("");}}
+          />
+        </WordSource>}
         {master&&<div style={{background:"var(--read-bg)",border:"1px solid var(--read-border)",borderRadius:"var(--rs)",padding:"10px 14px",fontSize:13,color:"var(--read)",fontWeight:500}}>Using {selectedCards.length} {poolLabel} vocabulary words · Master session</div>}
 
         {!topics.length?(
@@ -5191,7 +5226,7 @@ REMINDERS — non-negotiable:
 // ─────────────────────────────────────────────────────────────
 // LISTENING — multi-deck + multi-card pool
 // ─────────────────────────────────────────────────────────────
-function ListeningScreen({decks,cardStates,onBack,onFinish,onAddToFlashcard,trackUsage,onLogStudy,master,masterPool}) {
+function ListeningScreen({profile,decks,cardStates,onBack,onFinish,onAddToFlashcard,trackUsage,onLogStudy,master,masterPool}) {
   const SCREEN_NAME=master?"masterListening":"listening";
   const saved=useRef(loadScreen(SCREEN_NAME)||{}).current;
   const screenStart=useRef(Date.now());
@@ -5206,6 +5241,7 @@ function ListeningScreen({decks,cardStates,onBack,onFinish,onAddToFlashcard,trac
   const [selDeckIds,setSelDeckIds]=useState(()=>new Set(saved.selDeckIds||decks.map(d=>d.id)));
   const allInitCards=decks.flatMap(d=>(cardStates[d.id]||[]).map(c=>c.id));
   const [selCardIds,setSelCardIds]=useState(()=>new Set(saved.selCardIds||allInitCards));
+  const [customWords,setCustomWords]=useAutoWords({decks,cardStates,saved,setSelDeckIds,setSelCardIds});
 
   const [content,setContent]=useState(saved.content||null);
   const [generating,setGenerating]=useState(false);
@@ -5220,8 +5256,8 @@ function ListeningScreen({decks,cardStates,onBack,onFinish,onAddToFlashcard,trac
   const [topicsLoading,setTopicsLoading]=useState(false);
 
   useEffect(()=>{
-    saveScreen(SCREEN_NAME,{settings,selDeckIds:[...selDeckIds],selCardIds:[...selCardIds],content,topics,activeTopic});
-  },[settings,selDeckIds,selCardIds,content,topics,activeTopic,SCREEN_NAME]);
+    saveScreen(SCREEN_NAME,{settings,customWords,selDeckIds:[...selDeckIds],selCardIds:[...selCardIds],content,topics,activeTopic});
+  },[settings,customWords,selDeckIds,selCardIds,content,topics,activeTopic,SCREEN_NAME]);
 
   const handleNextPassage=()=>{if(content){setShowMiniRating(true);}else generateWithTopic(activeTopic);};
   const submitMiniRating=(rating)=>{if(rating&&onLogStudy) onLogStudy({type:"app",module:"listening",minutes:0,rating,master:!!master});setShowMiniRating(false);generateWithTopic(activeTopic);};
@@ -5373,13 +5409,15 @@ REMINDERS:
           </div>
         )}
 
-        {!master&&<MultiDeckCardSelector
-          decks={decks} cardStates={cardStates}
-          selDeckIds={selDeckIds} setSelDeckIds={setSelDeckIds}
-          selCardIds={selCardIds} setSelCardIds={setSelCardIds}
-          accentVar="--listen" accentBgVar="--listen-bg" accentBorderVar="--listen-border"
-          onReset={()=>{setContent(null);setTopics([]);setActiveTopic("");if(window.speechSynthesis) window.speechSynthesis.cancel();setPlaying(false);}}
-        />}
+        {!master&&<WordSource profile={profile} customWords={customWords} setCustomWords={v=>{setCustomWords(v);setContent(null);setTopics([]);setActiveTopic("");}} count={selCardIds.size} accentVar="--listen" accentBgVar="--listen-bg" accentBorderVar="--listen-border">
+          <MultiDeckCardSelector
+            decks={decks} cardStates={cardStates}
+            selDeckIds={selDeckIds} setSelDeckIds={setSelDeckIds}
+            selCardIds={selCardIds} setSelCardIds={setSelCardIds}
+            accentVar="--listen" accentBgVar="--listen-bg" accentBorderVar="--listen-border"
+            onReset={()=>{setContent(null);setTopics([]);setActiveTopic("");if(window.speechSynthesis) window.speechSynthesis.cancel();setPlaying(false);}}
+          />
+        </WordSource>}
         {master&&<div style={{background:"var(--listen-bg)",border:"1px solid var(--listen-border)",borderRadius:"var(--rs)",padding:"10px 14px",fontSize:13,color:"var(--listen)",fontWeight:500}}>Using {selectedCards.length} {poolLabel2} vocabulary words · Master session</div>}
 
         {!topics.length?(
@@ -8389,7 +8427,7 @@ function Onboarding({onComplete,initialProfile}) {
 // ─────────────────────────────────────────────────────────────
 // CONVERSATION MODULE
 // ─────────────────────────────────────────────────────────────
-function ConversationScreen({decks,cardStates,onBack,onFinish,trackUsage,onLogStudy,onAddToFlashcard,master,masterPool}) {
+function ConversationScreen({profile,decks,cardStates,onBack,onFinish,trackUsage,onLogStudy,onAddToFlashcard,master,masterPool}) {
   const SCREEN_NAME=master?"masterSpeaking":"conversation";
   const saved=useRef(loadScreen(SCREEN_NAME)||{}).current;
   const screenStart=useRef(Date.now());
@@ -8400,9 +8438,15 @@ function ConversationScreen({decks,cardStates,onBack,onFinish,trackUsage,onLogSt
   const [selDeckIds,setSelDeckIds]=useState(()=>new Set(saved.selDeckIds||decks.map(d=>d.id)));
   const allInitCards=decks.flatMap(d=>(cardStates[d.id]||[]).map(c=>c.id));
   const [selCardIds,setSelCardIds]=useState(()=>new Set(saved.selCardIds||allInitCards));
+  const [customWords,setCustomWords]=useAutoWords({decks,cardStates,saved,setSelDeckIds,setSelCardIds});
+  // The learner's working level shapes every prompt — no one should have to
+  // pick a deck to be spoken to at the right level.
+  const lvl=levelById(profile?.workingLevel||"book1");
+  const levelLine=`LEARNER LEVEL: ${lvl.label} (${lvl.cefr}), working through Al-Arabiyya Bayna Yadayk Book ${lvl.book}. Keep vocabulary, grammar and sentence length at this level — slightly above is fine, far above is not.`;
 
-  // Phase: setup → topics → mission → chat → score → review
-  const [phase,setPhase]=useState(saved.phase||"setup");
+  // Phase: topics → chat → score → review (setup only when customising words
+  // or in Master mode). Fresh visits go straight to topics.
+  const [phase,setPhase]=useState(()=>master?(saved.phase||"setup"):((saved.phase&&saved.phase!=="setup")?saved.phase:"topics"));
   const [messages,setMessages]=useState(saved.messages||[]);
   const [input,setInput]=useState("");
   const [loading,setLoading]=useState(false);
@@ -8430,12 +8474,12 @@ function ConversationScreen({decks,cardStates,onBack,onFinish,trackUsage,onLogSt
   useEffect(()=>{
     // voiceMode intentionally omitted — see voiceMode useState comment above.
     saveScreen(SCREEN_NAME,{
-      selDeckIds:[...selDeckIds],selCardIds:[...selCardIds],
+      customWords,selDeckIds:[...selDeckIds],selCardIds:[...selCardIds],
       phase,messages,topics,selectedTopic,
       missionWords,usedMissionWords:[...usedMissionWords],corrections,
       sessionFeedback,showVoiceTranscript,
     });
-  },[selDeckIds,selCardIds,phase,messages,topics,selectedTopic,missionWords,usedMissionWords,corrections,sessionFeedback,showVoiceTranscript,SCREEN_NAME]);
+  },[customWords,selDeckIds,selCardIds,phase,messages,topics,selectedTopic,missionWords,usedMissionWords,corrections,sessionFeedback,showVoiceTranscript,SCREEN_NAME]);
   const chatRef=useRef(null);
   const recognitionRef=useRef(null);
   const silenceTimerRef=useRef(null);
@@ -8692,7 +8736,7 @@ function ConversationScreen({decks,cardStates,onBack,onFinish,trackUsage,onLogSt
     setMissionWords(mission);
     try {
       const raw=await callClaude(
-        `Help an Arabic learner pick a conversation topic. Use themes typical of the Al-Arabiyya Bayna Yadayk curriculum — everyday Arab/Muslim life: family, food, masjid, neighbors, market, hospitality, travel, prayer, school, work, holidays. Avoid generic abstractions.
+        `Help an Arabic learner pick a conversation topic. ${levelLine} Use themes typical of the Al-Arabiyya Bayna Yadayk curriculum — everyday Arab/Muslim life: family, food, masjid, neighbors, market, hospitality, travel, prayer, school, work, holidays. Avoid generic abstractions.
 
 Vocabulary available: ${vocabList}
 
@@ -8717,6 +8761,8 @@ Return ONLY valid JSON array: ["topic 1","topic 2","topic 3","topic 4"]`,
     try {
       const raw=await callClaudeWithTashkeel(
         `${BAYNA_YADAYK_STYLE}
+
+${levelLine}
 
 You are a patient native Arabic speaker opening a conversation with a learner in this register.
 
@@ -8765,6 +8811,8 @@ NON-NEGOTIABLE RULES:
       const raw=await callClaudeWithTashkeel(
         `${BAYNA_YADAYK_STYLE}
 
+${levelLine}
+
 You are a patient native Arabic speaker continuing a conversation with a learner in this register.
 
 Topic: "${selectedTopic}"
@@ -8804,6 +8852,8 @@ NON-NEGOTIABLE RULES:
       const missedList=missionMissedWords.map(m=>`${m.english} (${m.arabicBase})`).join(", ")||"(none)";
       const raw=await callClaudeWithTashkeel(
         `${BAYNA_YADAYK_STYLE}
+
+${levelLine}
 
 You are a kind Arabic tutor giving the learner a short, warm end-of-session debrief in this register.
 
@@ -8866,6 +8916,12 @@ CRITICAL: Every Arabic phrase must have full tashkeel.`,
 
   const handleBubbleTap=(msg)=>{if(msg.role==="ai"&&!speaking) speakArabic(msg.text);else if(speaking){window.speechSynthesis.cancel();setSpeaking(false);}};
 
+  // Fresh visit: go straight to topic suggestions built from the auto-picked words.
+  useEffect(()=>{
+    if(master||phase!=="topics"||topics.length||loading||!selectedCards.length) return;
+    generateTopics();
+  },[phase,topics.length,selectedCards.length]);
+
   // ── SETUP PHASE ──
   if(phase==="setup") return (
     <div className="screen" style={{display:"flex",flexDirection:"column",paddingBottom:0}}>
@@ -8879,7 +8935,7 @@ CRITICAL: Every Arabic phrase must have full tashkeel.`,
             <div><div style={{fontSize:13.5,fontWeight:600}}>Voice Mode</div><div style={{fontSize:12,color:"var(--text3)",marginTop:2}}>{hasSpeechRecog?"Mic + audio":"Text-to-speech only"}</div></div>
             <div className={`chk ${voiceMode?"on":""}`} onClick={()=>setVoiceMode(v=>!v)}>{voiceMode&&<Check size={11} color="white"/>}</div>
           </div>
-          {!master&&<MultiDeckCardSelector decks={decks} cardStates={cardStates} selDeckIds={selDeckIds} setSelDeckIds={setSelDeckIds} selCardIds={selCardIds} setSelCardIds={setSelCardIds} accentVar="--accent" accentBgVar="--accent-bg" accentBorderVar="--accent-border" onReset={()=>{}}/>}
+          {!master&&<WordSource profile={profile} customWords={customWords} setCustomWords={setCustomWords} count={selCardIds.size} accentVar="--accent" accentBgVar="--accent-bg" accentBorderVar="--accent-border"><MultiDeckCardSelector decks={decks} cardStates={cardStates} selDeckIds={selDeckIds} setSelDeckIds={setSelDeckIds} selCardIds={selCardIds} setSelCardIds={setSelCardIds} accentVar="--accent" accentBgVar="--accent-bg" accentBorderVar="--accent-border" onReset={()=>{}}/></WordSource>}
           {master&&<div style={{background:"var(--accent-bg)",border:"1px solid var(--accent-border)",borderRadius:"var(--rs)",padding:"10px 14px",fontSize:13,color:"var(--accent)",fontWeight:500}}>Using {selectedCards.length} {poolLabel3} vocabulary words · Master session</div>}
           <button className="btn btn-primary" onClick={generateTopics} disabled={loading||!selectedCards.length} style={{width:"100%",padding:"14px",borderRadius:"var(--r)",fontSize:14}}>
             {loading?<><RefreshCw size={14} className="spin"/>Generating topics…</>:<><MessageCircle size={15}/> Choose Topic & Start</>}
@@ -8892,9 +8948,14 @@ CRITICAL: Every Arabic phrase must have full tashkeel.`,
   // ── TOPIC SELECTION ──
   if(phase==="topics") return (
     <div className="screen" style={{display:"flex",flexDirection:"column",paddingBottom:0}}>
-      <Hdr title="Pick a Topic" sub="Conversation" onBack={()=>setPhase("setup")}/>
+      <Hdr title="Let's talk" sub="Conversation" onBack={master?()=>setPhase("setup"):onBack}/>
       <div style={{padding:"16px 20px",display:"flex",flexDirection:"column",gap:12}}>
-        <div style={{fontSize:13.5,color:"var(--text2)",lineHeight:1.6}}>AI generated these topics based on your vocabulary. Pick one:</div>
+        <div style={{fontSize:13.5,color:"var(--text2)",lineHeight:1.6}}>Pick something to talk about. Topics are matched to your level ({lvl.label} · {lvl.cefr}) and the words you've been learning.</div>
+        <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+          <button className={`chip ${voiceMode?"chip-on":""}`} onClick={()=>setVoiceMode(v=>!v)}>{voiceMode?"🎙 Voice on":"⌨ Typing only"}</button>
+          {!master&&<button className="chip" onClick={()=>{setCustomWords(true);setPhase("setup");}}>Choose my own words</button>}
+          <button className="chip" onClick={()=>{setTopics([]);}} disabled={loading}>↻ New ideas</button>
+        </div>
         {loading?<div style={{textAlign:"center",padding:20,color:"var(--text3)"}}><RefreshCw size={16} className="spin"/></div>:
           topics.map((t,i)=>(
             <div key={i} className="test-option" onClick={()=>startWithTopic(t)}>
@@ -12640,7 +12701,7 @@ export default function App() {
     go("editCard");
   };
 
-  const commonProps={decks,cardStates,trackUsage};
+  const commonProps={decks,cardStates,trackUsage,profile};
 
   const screens={
     home:<HomeScreen {...commonProps} watchHours={(progressSummary(watchProgress.records).seconds/3600).toFixed(2)} onOpenDeck={openDeck} onSettings={()=>go("settings")} onCreateDeck={()=>go("createDeck")} onReading={()=>go("reading")} onListening={()=>go("listening")} onConversation={()=>go("conversation")} onDictation={()=>go("dictation")} onCapsules={()=>go("capsules")} onSearch={()=>setShowSearch(true)} onWatch={()=>go("watch")} onTranslate={()=>go("translate")} onProgress={()=>go("progress")} onMasterReview={()=>go("masterReview")} onGuide={()=>go("guide")} onPresets={()=>go("preset")} onGrammarImport={()=>{setGrammarTarget(null);go("grammarImport");}} onVocabImport={()=>{setVocabTarget(null);go("vocabImport");}} darkMode={darkMode} onToggleDark={()=>setDarkMode(d=>!d)} studyLog={mergeWatchStudyLog(studyLog,watchProgress.records)} poolThresholdDays={getPoolThresholdDays(settings)} immersionMode={!!settings.immersionMode} immersionNudgeShown={!!settings.immersionNudgeShown} onImmersionNudgeAction={handleImmersionNudge}/>,
