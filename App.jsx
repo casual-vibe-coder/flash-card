@@ -958,7 +958,15 @@ let _convSilenceMs = 2500;
 let _convFuzzyThreshold = 0.8;
 let _autoGenerateImage = false; // opt-in per learning aid; off by default
 
-function pickModelForTag(tag){return _modelByTag[tag]||_defaultModel;}
+// gpt-4o-mini is weak at Bengali and other non-English glosses. When the learner's
+// language isn't English and no model was chosen for a gloss-writing feature,
+// use a stronger multilingual model for those features only.
+const MULTILINGUAL_TAGS=new Set(["flashcard","sentence","vocab","grammar","watchBreakdown","reading","listening","other","regen"]);
+function pickModelForTag(tag){
+  if(_modelByTag[tag]) return _modelByTag[tag];
+  if(_learnerLang!=="English"&&_defaultModel==="openai/gpt-4o-mini"&&MULTILINGUAL_TAGS.has(tag)) return "google/gemini-2.5-flash";
+  return _defaultModel;
+}
 
 // A batch-heavy import (many photos in one go) means many sequential /api/claude
 // calls, each individually caught per-batch — but a serverless platform-level
@@ -999,7 +1007,9 @@ async function callClaude(prompt, maxTokens=1500, tag="other", trackFn=null, tim
       headers:{"Content-Type":"application/json"},
       body:JSON.stringify({
         model: modelOverride || pickModelForTag(tag),
-        max_tokens: maxTokens,
+        // Bengali etc. tokenize ~2x heavier than English, so give gloss-writing features more room
+        // (Watch and lookups size their own budgets).
+        max_tokens: (_learnerLang!=="English"&&MULTILINGUAL_TAGS.has(tag)&&tag!=="watchBreakdown")?Math.round(maxTokens*1.8):maxTokens,
         messages:[{role:"user",content:prompt}],
         ..._orKey ? {apiKey:_orKey} : {},
       }),
