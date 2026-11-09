@@ -624,6 +624,8 @@ function effectiveStyleLevels(chosen,workingLevel){
   }
   return out;
 }
+// Style text for server-side generators; empty in Default mode (the model infers it).
+function styleForGateway(){ return _styleAuto&&!String(_styleFocus||"").trim()?"":currentStyle().slice(0,7000); }
 function currentStyle(){ return buildStyleBlock({mix:_styleMix,legacyId:_styleId,auto:_styleAuto,levels:_styleLevels,focus:_styleFocus,overrides:_styleOverrides,defaults:STYLE_DEFAULTS,fallback:BAYNA_YADAYK_STYLE}); }
 // App-settings mirror so small widgets deep in a screen can read/write a few
 // global settings without prop-drilling (App owns the real state).
@@ -10848,7 +10850,7 @@ function DictationScreen({decks,cardStates,profile,onBack,onFinish,trackUsage,on
       else if(topicMode==="vocab"){ vocab=knownVocab(decks,cardStates); stayClose=true; }
       // "random" → no topic; the model picks a level-appropriate everyday theme.
       const level={id:WL.id,guidance:`CEFR ${WL.cefr}. ${WL.desc} Keep each sentence short and dictation-friendly.`};
-      const d=await callGenerate({kind:"dictation",inputs:{level,count,vocab,persona,topic,stayClose,unitVocab},maxTokens:700,tag:"dictation",personalized,trackFn:trackUsage});
+      const d=await callGenerate({kind:"dictation",inputs:{level,count,vocab,persona,topic,stayClose,unitVocab,style:styleForGateway(),lang:_learnerLang},maxTokens:700,tag:"dictation",personalized,trackFn:trackUsage});
       const arr=d.payload;
       if(!arr?.length) throw new Error("No sentences came back — try again.");
       setSentences(arr);setIdx(0);setInput("");setRevealed(false);setShowHint(false);setScores([]);startedAt.current=Date.now();setPhase("practice");

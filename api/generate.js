@@ -17,7 +17,9 @@ import { getAdmin } from "./_firebase.js";
 import { chatComplete } from "./_openrouter.js";
 
 // Dictation (Phase 4): short fully-voweled sentences the learner transcribes.
-function buildDictationPrompt({ level, count, vocab, topic, stayClose }) {
+function buildDictationPrompt({ level, count, vocab, topic, stayClose, style, lang }) {
+  const L = typeof lang === "string" && lang.trim() ? lang.trim().slice(0, 40) : "English";
+  const styleClause = typeof style === "string" && style.trim() ? "\n\n" + style.trim().slice(0, 7000) + "\n(Keep the sentences short enough to dictate, but let the diction and register follow the style above.)\n" : "";
   const vocabClause =
     vocab && vocab.length
       ? "\n- Prefer reusing these words the learner already knows; introduce as few new words as possible" +
@@ -27,12 +29,12 @@ function buildDictationPrompt({ level, count, vocab, topic, stayClose }) {
   const topicClause = topic ? ` about "${topic}"` : " on a natural everyday topic appropriate for the level";
   return (
 `You are an expert Modern Standard Arabic teacher creating DICTATION practice${topicClause}.
-Create ${count} short, natural sentences the learner will hear and write down.
+Create ${count} short, natural sentences the learner will hear and write down.${styleClause}
 - Each sentence one clear idea, easy to say aloud, ${level?.guidance || "intermediate level"}.
 - Put COMPLETE tashkīl (full harakāt on every word).
 - Avoid proper nouns that are hard to spell; keep them dictation-friendly.${vocabClause}
 Return ONLY a compact JSON array and nothing else:
-[{"ar":"<arabic sentence fully voweled>","en":"<short English translation>"}]`
+[{"ar":"<arabic sentence fully voweled>","en":"<short ${L} translation>"}]`
   );
 }
 
