@@ -2370,6 +2370,10 @@ function ProfilePanel({profile,setProfile,onRetake}) {
   // If the profile arrives from Firestore after this panel mounted, sync the
   // edit buffer once (without clobbering in-progress typing).
   useEffect(()=>{ if(profile&&!synced.current){ synced.current=true; setLocal(norm(profile)); } },[profile]);
+  // The language can also be changed from the Settings picker (or onboarding). Pull it
+  // into this buffer, or a later blur-save here would write the stale value back.
+  const profLang=profile?.personalContext?.nativeLanguage||profile?.nativeLanguage||"";
+  useEffect(()=>{ if(profLang) setLocal(p=>p.personalContext?.nativeLanguage===profLang&&p.nativeLanguage===profLang?p:{...p,nativeLanguage:profLang,personalContext:{...p.personalContext,nativeLanguage:profLang}}); },[profLang]);
   // Persist immediately — no separate Save step to forget. (App debounces the
   // Firestore write.) `nativeLanguage` mirrors the context field.
   const persist=(next)=>setProfile({...next,nativeLanguage:next.personalContext?.nativeLanguage||next.nativeLanguage||""});
@@ -3449,6 +3453,14 @@ function SettingsScreen({settings,setSettings,onBack,usage,user,onSignOut,onRepl
   // device changed something) can't write stale values back.
   const baseRef=useRef(settings);
   const [otherLang,setOtherLang]=useState(false);
+  // Language changed elsewhere (Profile panel / onboarding) → show it here too, so this
+  // screen's stale copy can't flip it back on the next Save.
+  useEffect(()=>{
+    const nl=settings.nativeLanguage;
+    if(!nl) return;
+    baseRef.current={...baseRef.current,nativeLanguage:nl};
+    setLocal(p=>p.nativeLanguage===nl?p:{...p,nativeLanguage:nl});
+  },[settings.nativeLanguage]);
   const save=()=>{
     const edited={};
     for(const k of new Set([...Object.keys(local),...Object.keys(baseRef.current)])) if(JSON.stringify(local[k])!==JSON.stringify(baseRef.current[k])) edited[k]=local[k];
