@@ -10199,19 +10199,24 @@ Return ONLY valid JSON: {"sentence":"...","translation":"...","imagePrompt":"...
             </div>
           </div>
         </div>
-        <div className="test-option" onClick={()=>{setMode("rotation");start("rotation");}}>
+        <div className="test-option" onClick={()=>{if(!vocabDeckCount) return;setMode("rotation");start("rotation");}}
+          style={!vocabDeckCount?{opacity:.5,cursor:"default"}:{}}>
           <div style={{width:40,height:40,borderRadius:12,background:"var(--know-bg)",display:"flex",alignItems:"center",justifyContent:"center"}}><RotateCcw size={18} color="var(--know)"/></div>
           <div style={{flex:1}}>
             <div style={{fontWeight:600,fontSize:14}}>Rotation</div>
-            <div style={{fontSize:12,color:"var(--text3)",marginTop:2}}>Cycles every deck evenly, staleest first · {vocabDeckCount} decks{neverStudiedDeckCount?`, ${neverStudiedDeckCount} never studied`:""}</div>
+            <div style={{fontSize:12,color:"var(--text3)",marginTop:2}}>{vocabDeckCount
+              ? `Cycles every deck evenly, staleest first · ${vocabDeckCount} decks${neverStudiedDeckCount?`, ${neverStudiedDeckCount} never studied`:""}`
+              : `Nothing yet — decks join Rotation ${threshold} days after they're created (use Review New until then)`}</div>
           </div>
         </div>
-        {dueCards.length>0&&(
-          <div className="test-option" onClick={()=>{setMode("due");start("due");}}>
-            <div style={{width:40,height:40,borderRadius:12,background:"var(--info-bg)",display:"flex",alignItems:"center",justifyContent:"center"}}><Clock size={18} color="var(--info)"/></div>
-            <div style={{flex:1}}><div style={{fontWeight:600,fontSize:14}}>SRS Review</div><div style={{fontSize:12,color:"var(--text3)",marginTop:2}}>{dueCards.length} cards due — the spaced-repetition queue</div></div>
-          </div>
-        )}
+        <div className="test-option" onClick={()=>{if(!dueCards.length) return;setMode("due");start("due");}}
+          style={!dueCards.length?{opacity:.5,cursor:"default"}:{}}>
+          <div style={{width:40,height:40,borderRadius:12,background:"var(--info-bg)",display:"flex",alignItems:"center",justifyContent:"center"}}><Clock size={18} color="var(--info)"/></div>
+          <div style={{flex:1}}><div style={{fontWeight:600,fontSize:14}}>SRS Review</div><div style={{fontSize:12,color:"var(--text3)",marginTop:2}}>{dueCards.length
+            ? `${dueCards.length} cards due — the spaced-repetition queue`
+            : (()=>{ const nx=vocabAllCards.filter(c=>c.srsLastReview&&c.srsNextReview&&c.srsNextReview>now).reduce((m,c)=>Math.min(m,c.srsNextReview),Infinity);
+                return nx===Infinity?"0 due — rate some cards and they'll be scheduled here":`0 due · next one due in ${Math.max(1,Math.ceil((nx-now)/86400000))} day(s)`; })()}</div></div>
+        </div>
         {weakCards.length>0&&(
           <div className="test-option" onClick={()=>{setMode("weak");start("weak");}}>
             <div style={{width:40,height:40,borderRadius:12,background:"var(--weak-bg)",display:"flex",alignItems:"center",justifyContent:"center"}}><Target size={18} color="var(--weak)"/></div>
