@@ -1,3 +1,4 @@
+import { PublisherAccess, usePublisherAccess } from './publishing/PublisherAccess.jsx';
 import { lookupPrompt, parseLookup } from "./word-lookup.js";
 import DuplicateFinder from "./DuplicateFinder.jsx";
 import { arabicSearchQuery } from "./watch-search.js";
@@ -11978,6 +11979,7 @@ export default function App() {
   const [settings,setSettings]=useState({orKey:"",gKey:"",model:"openai/gpt-4o-mini"});
   const [user,setUser]=useState(undefined); // undefined = loading, null = signed out
   const watchProgress=useWatchProgress(user);
+  const publisherAccess=usePublisherAccess(auth,user);
   const [dataLoaded,setDataLoaded]=useState(false);
   const [loadError,setLoadError]=useState(false);
   const [loadRetryTick,setLoadRetryTick]=useState(0);
@@ -13024,7 +13026,8 @@ export default function App() {
     guide:<GuideScreen onBack={()=>go("home")} onReplayOnboarding={()=>{setShowOnboarding(true);go("home");}} onResetTips={()=>{resetTips();showToast("Tips reset — they'll show again as you explore.","success");}}/>,
     island:<LanguageIslandScreen decks={decks} cardStates={cardStates} profile={profile} trackUsage={trackUsage} onBack={()=>go("capsules")}/>,
     dictation:<DictationScreen decks={decks} cardStates={cardStates} profile={profile} trackUsage={trackUsage} onBack={()=>go("home")} onLogStudy={logStudy} onFinish={()=>{go("home");setSessionRating({module:"writing"});}}/>,
-    settings:<SettingsScreen settings={settings} setSettings={setSettings} onBack={()=>go("home")} usage={usage} user={user} onSignOut={handleSignOut} onReplayOnboarding={()=>setShowOnboarding(true)} profile={profile} setProfile={setProfile} studyLog={studyLog} onUpdateTargets={(t)=>setStudyLog(sl=>({...sl,targets:t}))} decks={decks} cardStates={cardStates} setCardStates={setCardStates} trackUsage={trackUsage} onResetUsage={resetUsageCounters} onResumeBulkFill={bulkGenerateImmersionDefs} isBulkAllowlisted={IMMERSION_BULK_ALLOWLIST.includes(user?.email)}/>,
+    publishing:<PublisherAccess key={user?.uid} access={publisherAccess} user={user} decks={decks} cardStates={cardStates} presets={PRESET_DECKS} loadPresets={async()=>{const snap=await getDocs(collection(db,"preset_decks")); return snap.docs.map(d=>({...d.data(),id:d.id}));}} onBack={()=>go("settings")}/>,
+    settings:<>{publisherAccess.state==="allowed"&&<button className="btn btn-primary" style={{minHeight:48,margin:16}} onClick={()=>go("publishing")}>Shared catalog publishing</button>}<SettingsScreen settings={settings} setSettings={setSettings} onBack={()=>go("home")} usage={usage} user={user} onSignOut={handleSignOut} onReplayOnboarding={()=>setShowOnboarding(true)} profile={profile} setProfile={setProfile} studyLog={studyLog} onUpdateTargets={(t)=>setStudyLog(sl=>({...sl,targets:t}))} decks={decks} cardStates={cardStates} setCardStates={setCardStates} trackUsage={trackUsage} onResetUsage={resetUsageCounters} onResumeBulkFill={bulkGenerateImmersionDefs} isBulkAllowlisted={IMMERSION_BULK_ALLOWLIST.includes(user?.email)}/></>,
     createDeck:<CreateDeckScreen onBack={()=>go("home")} onCreate={createDeck}/>,
     addCards:activeDeck&&<AddCardsScreen deck={activeDeck} onBack={()=>go("deck")} onSave={saveCards} trackUsage={trackUsage} nativeLanguage={learnerLang} cardStates={cardStates}/>,
     deck:activeDeck&&<DeckScreen deck={activeDeck} cards={cardStates[activeDeck.id]||[]} onStartStudy={startStudy} onBack={()=>go("home")} onAddCards={()=>{if(activeDeck.deckType==="grammar"){setGrammarTarget(activeDeck);go("grammarImport");}else go("addCards");}} onImportMore={()=>{setVocabTarget(activeDeck);go("vocabImport");}} onEditCard={c=>{if(c.wordType==="grammar"){showToast("Grammar cards can't be edited yet — remove it and re-import that section.","info");return;}setActiveCard(c);go("editCard");}} onDeleteCard={deleteCard} onRenameDeck={renameDeck} onDeleteDeck={deleteDeck} onSetDeckUnit={setDeckUnit} onSetDeckLastStudied={setDeckLastStudied} onTogglePinnedNew={togglePinnedNew} onGraduateNow={graduateNow} poolThresholdDays={getPoolThresholdDays(settings)} newCardsRemainingToday={newCardsRemainingTodayCount} savedIdx={{all:savedIdx.current[activeDeck.id+"_all"]||0,new:savedIdx.current[activeDeck.id+"_new"]||0,weak:savedIdx.current[activeDeck.id+"_weak"]||0,known:savedIdx.current[activeDeck.id+"_known"]||0,due:savedIdx.current[activeDeck.id+"_due"]||0}}/>,
