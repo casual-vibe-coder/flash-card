@@ -12,7 +12,7 @@ const start=source.indexOf('function WordPopup('),end=source.indexOf('// USAGE M
 const compiled=transformSync(source.slice(start,end)+'\nglobalThis.Component=WordPopup;',{loader:'jsx',jsxFactory:'React.createElement'}).code;
 function harness(call){
  const states=[],refs=[],deps=[],effects=[],cleanups=[];let cursor=0,refCursor=0,effectCursor=0;
- const ctx={_learnerLang:'English',React,...icons,lookupContext,lookupPrompt,parseLookup,extractJSON:JSON.parse,callClaude:call,setTimeout,pickModelForTag:()=>'test/model',localStorage:(()=>{const m={};return {getItem:k=>m[k]??null,setItem:(k,v)=>{m[k]=v;}};})(),
+ const ctx={_learnerLang:'English',React,...icons,lookupContext,lookupPrompt,parseLookup,cardFromLookup,draftCard,findExistingWord,defaultDeckId:d=>d[0]?.id||'',DeckPicker:()=>null,FORM_LABELS:{},extractJSON:JSON.parse,callClaude:call,setTimeout,pickModelForTag:()=>'test/model',localStorage:(()=>{const m={};return {getItem:k=>m[k]??null,setItem:(k,v)=>{m[k]=v;}};})(),
  useState:initial=>{const i=cursor++;if(!(i in states))states[i]=initial;return [states[i],value=>{states[i]=typeof value==='function'?value(states[i]):value;}];},
  useRef:initial=>{const i=refCursor++;return refs[i]||(refs[i]={current:initial});},
  useEffect:(fn,next)=>{const i=effectCursor++;if(!deps[i]||next.some((v,n)=>v!==deps[i][n])){deps[i]=next;effects.push(()=>{cleanups[i]?.();cleanups[i]=fn();});}}};
@@ -45,4 +45,28 @@ test('prompt asks for the learner language and keeps English as the default',()=
  assert(lookupPrompt('كتاب','x').includes('into English'));
  const bn=lookupPrompt('كتاب','x','Bengali');
  assert(bn.includes('into Bengali'));assert(bn.includes('"meaning":"Bengali meaning'));assert(bn.includes('English gloss'));
+});
+import {cardFromLookup,draftCard,lookupWordType} from './word-lookup.js';
+import {findExistingWord} from './card-duplicates.js';
+test('verb lookup becomes a full verb card with preposition, surface and untouched context',()=>{
+ const data=parseLookup(JSON.stringify({word:'يَذْهَبُونَ',baseForm:'ذَهَبَ',meaning:'to go',partOfSpeech:'verb',past:'ذَهَبَ',present:'يَذْهَبُ',imperative:'اِذْهَبْ',preposition:'إِلَى',confidence:'high'}),'يَذْهَبُونَ',JSON.parse);
+ const card=cardFromLookup(data,{surface:'يَذْهَبُونَ',context:'هُمْ يَذْهَبُونَ إِلَى المَدْرَسَةِ',sourceType:'video',sourceName:'Ep 3'});
+ assert.equal(card.wordType,'verb');assert.equal(card.arabicBase,'ذَهَبَ');assert.equal(card.forms.harf,'إِلَى');assert.equal(card.forms.imperative,'اِذْهَبْ');
+ assert.equal(card.source.text,'هُمْ يَذْهَبُونَ إِلَى المَدْرَسَةِ');assert.equal(card.source.name,'Ep 3');assert.equal(card.surface,'يَذْهَبُونَ');
+});
+test('noun lookup keeps singular base and plural; uncertain preposition is flagged, never invented',()=>{
+ const data=parseLookup(JSON.stringify({baseForm:'كِتَاب',meaning:'book',partOfSpeech:'noun',plural:'كُتُب',confidence:'high'}),'الكُتُب',JSON.parse);
+ const card=cardFromLookup(data,{surface:'الكُتُب'});
+ assert.equal(card.forms.singular,'كِتَاب');assert.equal(card.forms.plural,'كُتُب');assert.equal(card.forms.harf,undefined);
+ const v=cardFromLookup(parseLookup(JSON.stringify({baseForm:'رَغِبَ',meaning:'to desire',partOfSpeech:'verb',preposition:'فِي',prepositionUncertain:true}),'x',JSON.parse),{});
+ assert.equal(v.prepositionUncertain,true);
+});
+test('missing base form can never be high confidence; draft cards are marked needsLookup',()=>{
+ assert.notEqual(parseLookup('{"meaning":"x","confidence":"high"}','w',JSON.parse).confidence,'high');
+ const d=draftCard({surface:'قَلَم',context:'ctx'});assert.equal(d.needsLookup,true);assert.equal(d.source.text,'ctx');assert.equal(lookupWordType({partOfSpeech:'adjective'}),'adjective');
+});
+test('add-time duplicate check ignores tashkeel and skips manual/grammar cards',()=>{
+ const decks=[{id:'a',title:'Madinah'}],states={a:[{id:'1',wordType:'noun',arabicBase:'كِتَاب',forms:{}},{id:'2',wordType:'manual',arabicBase:'كتاب',forms:{}}]};
+ const hit=findExistingWord(decks,states,'كتاب');assert.equal(hit.card.id,'1');assert.equal(hit.deckTitle,'Madinah');
+ assert.equal(findExistingWord(decks,states,'قلم'),null);
 });

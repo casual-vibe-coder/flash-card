@@ -9,7 +9,7 @@ export function findDuplicateGroups(decks,cardStates){
  const buckets=new Map();
  for(const deck of decks)for(const card of cardStates[deck.id]||[]){
   // Grammar explanations and blank words need a different kind of review.
-  if(card.wordType==='grammar'||deck.deckType==='grammar'||!card.id)continue;
+  if(card.wordType==='grammar'||card.wordType==='manual'||deck.deckType==='grammar'||!card.id)continue;
   const ar=normalizeDuplicateText(card.arabicBase||card.forms?.singular||card.forms?.past||''),en=normalizeDuplicateText(card.english);
   if(!ar||!en)continue;
   const key=JSON.stringify([card.wordType||'noun',ar,en]);
@@ -57,4 +57,15 @@ export function undoDuplicateChanges(states,changes){
   else next[change.deckId]=cards.map(c=>c.id===change.id&&JSON.stringify(c)===JSON.stringify(change.after)?change.before:c);
  }
  return next;
+}
+
+// Add-time check: is this base word already in any deck? Returns the first match.
+export function findExistingWord(decks,cardStates,arabic,wordType){
+ const key=normalizeDuplicateText(arabic);if(!key)return null;
+ for(const deck of decks)for(const card of cardStates[deck.id]||[]){
+  if(card.wordType==='grammar'||card.wordType==='manual'||deck.deckType==='grammar')continue;
+  const cand=[card.arabicBase,card.forms?.singular,card.forms?.past].map(normalizeDuplicateText);
+  if(cand.includes(key))return {card,deckId:deck.id,deckTitle:deck.title};
+ }
+ return null;
 }

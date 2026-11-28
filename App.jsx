@@ -1,5 +1,6 @@
-import { lookupPrompt, parseLookup } from "./word-lookup.js";
+import { lookupPrompt, parseLookup, cardFromLookup, draftCard } from "./word-lookup.js";
 import DuplicateFinder from "./DuplicateFinder.jsx";
+import {findExistingWord,normalizeDuplicateText} from "./card-duplicates.js";
 import { arabicSearchQuery } from "./watch-search.js";
 import { WATCH_RESOURCES } from "./watch-resources.js";
 import useWatchProgress from "./useWatchProgress.js";
@@ -90,8 +91,16 @@ let _toastId = 0;
 // main-doc save (settings, API keys, decks...). Drop them before writing.
 function stripUndefined(o){ return JSON.parse(JSON.stringify(o)); }
 
-function showToast(message, type = "info", duration = 3000) {
-  const toast = { id: ++_toastId, message, type, duration };
+// Google Cloud Arabic voices (ar-XA). [id, label]. Add more here, or use the custom field in Settings.
+const TTS_VOICES=[
+  {group:"Wavenet (recommended)",voices:[["ar-XA-Wavenet-A","Wavenet-A · female"],["ar-XA-Wavenet-B","Wavenet-B · male"],["ar-XA-Wavenet-C","Wavenet-C · male (default)"],["ar-XA-Wavenet-D","Wavenet-D · female"]]},
+  {group:"Chirp 3 HD (most natural)",voices:[["ar-XA-Chirp3-HD-Charon","Charon · male"],["ar-XA-Chirp3-HD-Fenrir","Fenrir · male"],["ar-XA-Chirp3-HD-Orus","Orus · male"],["ar-XA-Chirp3-HD-Puck","Puck · male"],["ar-XA-Chirp3-HD-Aoede","Aoede · female"],["ar-XA-Chirp3-HD-Kore","Kore · female"],["ar-XA-Chirp3-HD-Leda","Leda · female"],["ar-XA-Chirp3-HD-Zephyr","Zephyr · female"]]},
+  {group:"Neural2",voices:[["ar-XA-Neural2-A","Neural2-A · female"],["ar-XA-Neural2-B","Neural2-B · male"],["ar-XA-Neural2-C","Neural2-C · male"]]},
+  {group:"Standard (cheapest)",voices:[["ar-XA-Standard-A","Standard-A · female"],["ar-XA-Standard-B","Standard-B · male"],["ar-XA-Standard-C","Standard-C · male"],["ar-XA-Standard-D","Standard-D · female"]]},
+];
+
+function showToast(message, type = "info", duration = 3000, action = null) {
+  const toast = { id: ++_toastId, message, type, duration, action };
   _toastListeners.forEach(fn => fn(toast));
 }
 
@@ -109,7 +118,10 @@ function ToastContainer() {
   return (
     <div className="toast-container">
       {toasts.map(t => (
-        <div key={t.id} className={`toast toast-${t.type}`}>{t.message}</div>
+        <div key={t.id} className={`toast toast-${t.type}`} style={t.action?{display:"flex",alignItems:"center",gap:12,pointerEvents:"auto"}:undefined}>
+          <span>{t.message}</span>
+          {t.action&&<button onClick={()=>{ try{t.action.onClick();}finally{ setToasts(prev=>prev.filter(x=>x.id!==t.id)); } }} style={{background:"transparent",border:"none",color:"inherit",fontWeight:700,textDecoration:"underline",cursor:"pointer",padding:"2px 4px"}}>{t.action.label}</button>}
+        </div>
       ))}
     </div>
   );
@@ -1573,42 +1585,297 @@ function ClickableArabic({text,highlightWords=[],onWordClick,fontSize=20}) {
 // ─────────────────────────────────────────────────────────────
 // WORD POPUP
 // ─────────────────────────────────────────────────────────────
-function WordPopup({word,context="",decks=[],cardStates,onClose,onAddToFlashcard,trackUsage}) {
-  const [data,setData]=useState(null);
-  const [loading,setLoading]=useState(true);
-  const [addOpen,setAddOpen]=useState(false);
-  const [targetDeck,setTargetDeck]=useState(decks[0]?.id||"");
-  const [added,setAdded]=useState(false);
+// ─────────────────────────────────────────────────────────────
+// DECK PICKER — shared by every add screen. Defaults to the capture deck,
+// can create a new deck inline (name only), and is searchable for long lists.
+// ─────────────────────────────────────────────────────────────
+let _deckApi={createDeck:null};
+const defaultDeckId=decks=>{
+  const list=(decks||[]).filter(d=>d.deckType!=="grammar");
+  return (list.find(d=>d.isCapture)||list[0]||{}).id||"";
+};
+function DeckPicker({decks=[],value,onChange,label="Deck",allowCreate=true,excludeId=null,includeGrammar=false}) {
+  const [creating,setCreating]=useState(false);
+  const [name,setName]=useState("");
+  const [q,setQ]=useState("");
+  const usable=decks.filter(d=>d.id!==excludeId&&(includeGrammar||d.deckType!=="grammar"));
+  const shown=q.trim()?usable.filter(d=>d.title.toLowerCase().includes(q.trim().toLowerCase())):usable;
+  const create=()=>{
+    const t=name.trim();
+    if(!t||!_deckApi.createDeck) return;
+    const id=_deckApi.createDeck(t);
+    if(id) onChange(id);
+    setName("");setCreating(false);setQ("");
+  };
+  return (
+    <div style={{display:"flex",flexDirection:"column",gap:7}}>
+      {label&&<div className="sec" style={{margin:0}}>{label}</div>}
+      {usable.length>8&&<input className="input" placeholder="Search decks…" value={q} onChange={e=>setQ(e.target.value)} style={{fontSize:12.5}}/>}
+      {!creating?(
+        <select className="input" value={value||""} onChange={e=>{ if(e.target.value==="__new__") setCreating(true); else onChange(e.target.value); }}>
+          {!value&&<option value="">Choose a deck…</option>}
+          {shown.map(d=><option key={d.id} value={d.id}>{d.isCapture?"★ ":""}{d.title}</option>)}
+          {value&&!shown.some(d=>d.id===value)&&usable.some(d=>d.id===value)&&<option value={value}>{usable.find(d=>d.id===value).title}</option>}
+          {allowCreate&&<option value="__new__">＋ New deck…</option>}
+        </select>
+      ):(
+        <div style={{display:"flex",gap:7}}>
+          <input className="input" autoFocus placeholder="New deck name" value={name} onChange={e=>setName(e.target.value)} onKeyDown={e=>{ if(e.key==="Enter") create(); }} style={{flex:1}}/>
+          <button className="btn btn-primary" onClick={create} disabled={!name.trim()} style={{padding:"0 14px"}}>Create</button>
+          <button className="btn" onClick={()=>{setCreating(false);setName("");}} style={{background:"var(--surface2)",color:"var(--text2)",padding:"0 12px"}}>×</button>
+        </div>
+      )}
+    </div>
+  );
+}
 
-  const [error,setError]=useState('');
+// Front/back faces for Hadith / verse cards in review (shown exactly as typed).
+function ManualFace({card,side}) {
+  const txt=side==="front"?(card.front??card.arabicBase):(card.back??card.english);
+  const ar=hasArabicChars(txt);
+  return (
+    <>
+      <div className="sec" style={{marginBottom:12}}>{MANUAL_TYPES[card.cardType]||"Card"} · {side==="front"?"Front":"Back"}</div>
+      <div className={ar?"ar":""} dir="auto" style={{fontSize:ar?(txt.length>120?22:30):(txt.length>160?16:20),lineHeight:1.9,maxHeight:260,overflowY:"auto",padding:"0 6px",whiteSpace:"pre-wrap",fontFamily:ar?undefined:"Lora,serif"}}>{txt}</div>
+      {side==="back"&&card.reference&&<div style={{fontSize:12.5,color:"var(--harf)",marginTop:10,fontWeight:600}}>{card.reference}</div>}
+      {side==="back"&&card.notes&&<div style={{fontSize:12.5,color:"var(--text3)",marginTop:6}}>{card.notes}</div>}
+      <div style={{fontSize:12,color:"var(--text3)",marginTop:14,fontWeight:500}}>{side==="front"?"Tap to flip ↓":"↻ Tap to flip back"}</div>
+    </>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────
+// QUICK ADD — paste a word or a sentence, tap a word, get the smart-add preview.
+// ─────────────────────────────────────────────────────────────
+const SOURCE_TYPES=[["sentence","Sentence"],["video","Video"],["book","Book"],["class","Class"],["other","Other"]];
+function QuickAddScreen({onBack,decks,cardStates,onAddToFlashcard,trackUsage}) {
+  const [text,setText]=useState("");
+  const [sourceType,setSourceType]=useState("sentence");
+  const [sourceName,setSourceName]=useState("");
+  const [popup,setPopup]=useState(null);
+  const words=text.trim().split(/\s+/).filter(Boolean);
+  const isSingle=words.length===1;
+  const lookupNow=()=>{ if(isSingle) setPopup({word:words[0].replace(/[.,،؟!:؛"]/g,""),context:""}); };
+  return (
+    <div className="screen">
+      <Hdr title="Quick add" sub="Paste a word or sentence" onBack={onBack}/>
+      <div style={{padding:"18px 20px 0",display:"flex",flexDirection:"column",gap:14}}>
+        <textarea className="input ar" dir="rtl" rows={3} value={text} onChange={e=>setText(e.target.value)} placeholder="Paste an Arabic word or sentence…" style={{fontSize:22,lineHeight:1.9}}/>
+        <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+          {SOURCE_TYPES.map(([k,l])=><button key={k} className={`chip ${sourceType===k?"chip-on":""}`} onClick={()=>setSourceType(k)} style={{padding:"5px 11px",fontSize:12}}>{l}</button>)}
+        </div>
+        {sourceType!=="sentence"&&<input className="input" value={sourceName} onChange={e=>setSourceName(e.target.value)} placeholder={sourceType==="video"?"Video title (optional)":sourceType==="book"?"Book + page (optional)":"Source name (optional)"}/>}
+        {isSingle?(
+          <button className="btn btn-primary" onClick={lookupNow} style={{padding:"13px",borderRadius:"var(--r)",fontSize:14}}><Search size={15}/> Look up</button>
+        ):words.length>1?(
+          <div>
+            <div className="sec">Tap the word you want to add</div>
+            <div style={{background:"var(--surface)",border:"1.5px solid var(--border)",borderRadius:"var(--r)",padding:"14px 16px"}}>
+              <ClickableArabic text={text.trim()} onWordClick={(word,ctx)=>setPopup({word,context:ctx})} fontSize={26}/>
+            </div>
+          </div>
+        ):null}
+        <div style={{fontSize:12,color:"var(--text3)",lineHeight:1.6}}>Saves to your capture deck unless you pick another. The original sentence is kept exactly as pasted.</div>
+      </div>
+      {popup&&<WordPopup word={popup.word} context={popup.context} sourceType={popup.context?sourceType:(sourceType==="sentence"?"other":sourceType)} sourceName={sourceName} decks={decks} cardStates={cardStates} onClose={()=>setPopup(null)} onAddToFlashcard={onAddToFlashcard} trackUsage={trackUsage}/>}
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────
+// RE-FACTOR — regenerates base form / conjugation / plural / preposition from
+// the surface form + original sentence, shows before/after, and only applies
+// on confirm. Context, notes, review state and aids are never overwritten.
+// ─────────────────────────────────────────────────────────────
+const REFACTOR_FORM_KEYS=["past","present","imperative","singular","plural","masculine","feminine","harf"];
+function refactorMerge(card,next){
+  const merged={...card,wordType:next.wordType,arabicBase:next.arabicBase||card.arabicBase,forms:{...(card.forms||{}),...next.forms}};
+  if(!card.english&&next.english) merged.english=next.english;
+  for(const k of ["root","gender","otherMeanings"]) if(next[k]) merged[k]=next[k];
+  if(next.prepositionUncertain) merged.prepositionUncertain=true; else delete merged.prepositionUncertain;
+  merged.lookupConfidence=next.lookupConfidence;
+  delete merged.needsLookup;
+  return merged;
+}
+function RefactorSheet({card,onApply,onClose,trackUsage}) {
+  const [state,setState]=useState({status:"loading"});
   const [attempt,setAttempt]=useState(0);
-  const trackRef=useRef(trackUsage);
-  trackRef.current=trackUsage;
   useEffect(()=>{
     let cancelled=false;
-    setLoading(true);setData(null);setError('');setAdded(false);setAddOpen(false);
+    setState({status:"loading"});
+    (async()=>{
+      try{
+        const surface=card.surface||card.arabicBase;
+        const ctx=card.source?.text||card.watchContext?.sentence||"";
+        const data=await lookupWord(surface,ctx,trackUsage,true);
+        if(cancelled) return;
+        const next=cardFromLookup(data,{surface,context:ctx});
+        setState({status:"ready",next,data});
+      }catch(e){ if(!cancelled) setState({status:"error",message:e?.message||"Re-factor failed."}); }
+    })();
+    return ()=>{cancelled=true;};
+  },[card.id,attempt]);
+  const rows=[];
+  if(state.status==="ready"){
+    const {next}=state;
+    const add=(label,before,after)=>{ if((before||"")!==(after||"")) rows.push({label,before,after}); };
+    add("Base form",card.arabicBase,next.arabicBase);
+    add("Type",card.wordType,next.wordType);
+    for(const k of REFACTOR_FORM_KEYS) if(next.forms[k]!==undefined) add(FORM_LABELS[k]||k,card.forms?.[k],next.forms[k]);
+  }
+  const low=state.status==="ready"&&(state.data.confidence==="low"||!state.data.baseForm);
+  return (
+    <div className="overlay" onClick={e=>{ if(e.target===e.currentTarget) onClose(); }}>
+      <div className="drawer" style={{maxHeight:"80vh",overflowY:"auto"}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
+          <div className="sec" style={{margin:0}}>Re-factor card</div>
+          <button className="btn btn-ghost" onClick={onClose} style={{width:32,height:32}}><X size={14}/></button>
+        </div>
+        <div className="ar" style={{fontSize:30,color:"var(--accent)",marginBottom:4}}>{card.surface||card.arabicBase}</div>
+        {card.source?.text&&<div className="ar" style={{fontSize:15,color:"var(--text2)",marginBottom:10,lineHeight:1.8}}>{card.source.text}</div>}
+        {state.status==="loading"&&<div style={{display:"flex",alignItems:"center",gap:9,padding:"14px 0",color:"var(--text2)",fontSize:13}}><RefreshCw size={16} className="spin" color="var(--accent)"/>Re-generating base form, conjugation, plural and preposition…</div>}
+        {state.status==="error"&&(
+          <div role="alert" style={{display:"grid",gap:10}}>
+            <p style={{color:"var(--weak)",margin:0,fontSize:13}}>{state.message} Your card was left unchanged.</p>
+            <div style={{display:"flex",gap:8}}><button className="btn btn-primary" onClick={()=>setAttempt(n=>n+1)} style={{flex:1}}>Try again</button><button className="btn" onClick={onClose} style={{flex:1,background:"var(--surface2)",color:"var(--text2)"}}>Cancel</button></div>
+          </div>
+        )}
+        {state.status==="ready"&&(
+          <div style={{display:"flex",flexDirection:"column",gap:10}}>
+            {low&&<div style={{background:"var(--weak-bg)",color:"var(--weak)",borderRadius:"var(--rxs)",padding:"9px 12px",fontSize:12.5,lineHeight:1.55}}>Low confidence — the lookup wasn't sure of the base form. Review the changes carefully, or cancel to keep your card as it is.</div>}
+            {state.next.prepositionUncertain&&<div style={{fontSize:12,color:"var(--text3)"}}>Preposition shown is uncertain — double-check it.</div>}
+            {rows.length===0?(
+              <div style={{fontSize:13,color:"var(--text2)",padding:"6px 0"}}>Nothing to change — the card already matches the regenerated version.</div>
+            ):rows.map(r=>(
+              <div key={r.label} style={{display:"grid",gridTemplateColumns:"84px 1fr 1fr",gap:8,alignItems:"center",fontSize:13}}>
+                <div style={{color:"var(--text3)",fontWeight:600}}>{r.label}</div>
+                <div className="ar" style={{fontSize:17,color:"var(--weak)",textDecoration:"line-through",textDecorationColor:"var(--weak)",opacity:.8}}>{r.before||"—"}</div>
+                <div className="ar" style={{fontSize:17,color:"var(--know)",fontWeight:600}}>{r.after||"—"}</div>
+              </div>
+            ))}
+            <div style={{fontSize:11.5,color:"var(--text3)"}}>Your sentence, notes and review progress are kept.</div>
+            <div style={{display:"flex",gap:8}}>
+              <button className="btn" onClick={onClose} style={{flex:1,background:"var(--surface2)",color:"var(--text2)",padding:"11px"}}>Cancel</button>
+              <button className="btn btn-primary" disabled={rows.length===0} onClick={()=>{ onApply(refactorMerge(card,state.next)); onClose(); }} style={{flex:2,padding:"11px"}}><Check size={14}/> {low?"Apply anyway":"Apply changes"}</button>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────
+// MANUAL CARDS — Hadith / Quran verse. Saved exactly as typed; never auto-generated.
+// ─────────────────────────────────────────────────────────────
+const MANUAL_TYPES={hadith:"Hadith",quran_verse:"Quran verse"};
+const hasArabicChars=t=>/[؀-ۿ]/.test(t||"");
+function buildManualCard(base,{cardType,front,back,reference,notes}){
+  return {...base,wordType:"manual",isManual:true,cardType,front,back,reference:reference||"",notes:notes||"",
+    arabicBase:front,english:back,forms:{},status:base.status||"new"};
+}
+function ManualCardForm({initial=null,decks=[],defaultDeck="",onSave,onBack}) {
+  const editing=!!initial;
+  const [cardType,setCardType]=useState(initial?.cardType||"quran_verse");
+  const [front,setFront]=useState(initial?.front??initial?.arabicBase??"");
+  const [back,setBack]=useState(initial?.back??initial?.english??"");
+  const [reference,setReference]=useState(initial?.reference||"");
+  const [notes,setNotes]=useState(initial?.notes||"");
+  const [deckId,setDeckId]=useState(defaultDeck||defaultDeckId(decks));
+  const ok=front.trim().length>0&&(editing||!!deckId);
+  const save=()=>{
+    if(!ok) return;
+    const base=initial||{id:`c${Date.now()}`,createdAt:Date.now()};
+    onSave(buildManualCard(base,{cardType,front,back,reference,notes}),deckId);
+  };
+  return (
+    <div className="screen" style={{padding:"18px 18px 24px",display:"flex",flexDirection:"column",gap:14,overflowY:"auto"}}>
+      <div style={{display:"flex",alignItems:"center",gap:10}}>
+        <button className="btn btn-ghost" onClick={onBack} style={{width:32,height:32}}><ArrowLeft size={14}/></button>
+        <div style={{fontFamily:"Lora,serif",fontSize:20,fontWeight:600}}>{editing?"Edit":"Add"} Hadith / Verse</div>
+      </div>
+      <div style={{display:"flex",gap:8}}>
+        {Object.entries(MANUAL_TYPES).map(([k,v])=>(
+          <button key={k} className="chip" onClick={()=>setCardType(k)} style={{flex:1,justifyContent:"center",background:cardType===k?"var(--accent-bg)":undefined,borderColor:cardType===k?"var(--accent)":undefined,color:cardType===k?"var(--accent)":undefined,fontWeight:cardType===k?700:500}}>{v}</button>
+        ))}
+      </div>
+      <div><label className="lbl">Front</label>
+        <textarea className={`input${hasArabicChars(front)?" ar":""}`} dir="auto" rows={4} value={front} onChange={e=>setFront(e.target.value)} placeholder="Type or paste the front exactly as you want it shown" style={{fontSize:hasArabicChars(front)?22:15,lineHeight:1.9,resize:"vertical"}}/></div>
+      <div><label className="lbl">Back</label>
+        <textarea className={`input${hasArabicChars(back)?" ar":""}`} dir="auto" rows={4} value={back} onChange={e=>setBack(e.target.value)} placeholder="Translation / answer" style={{fontSize:hasArabicChars(back)?22:15,lineHeight:1.8,resize:"vertical"}}/></div>
+      <div><label className="lbl">Reference (optional)</label>
+        <input className="input" value={reference} onChange={e=>setReference(e.target.value)} placeholder={cardType==="quran_verse"?"e.g. Al-Baqarah 2:255":"e.g. Sahih al-Bukhari 1"}/></div>
+      <div><label className="lbl">Notes (optional)</label>
+        <input className="input" value={notes} onChange={e=>setNotes(e.target.value)}/></div>
+      {!editing&&<DeckPicker decks={decks} value={deckId} onChange={setDeckId}/>}
+      <div style={{fontSize:11.5,color:"var(--text3)"}}>Saved exactly as typed. No conjugation, plural or meaning is generated for these cards.</div>
+      <button className="btn btn-primary" onClick={save} disabled={!ok} style={{padding:"13px",borderRadius:"var(--rs)",fontSize:14}}><Check size={15}/> {editing?"Save changes":"Save card"}</button>
+    </div>
+  );
+}
+
+function WordPopup({word,context="",decks=[],cardStates={},onClose,onAddToFlashcard,trackUsage,sourceType,sourceName=""}) {
+  const [data,setData]=useState(null);
+  const [loading,setLoading]=useState(true);
+  const [targetDeck,setTargetDeck]=useState(()=>defaultDeckId(decks));
+  const [added,setAdded]=useState(false);
+  const [draft,setDraft]=useState(null);      // editable card fields (preview)
+  const [manual,setManual]=useState(false);   // lookup failed -> blank editable card
+  const [dup,setDup]=useState(null);          // existing card when a duplicate is found
+  const [viewDup,setViewDup]=useState(false);
+  const [error,setError]=useState('');
+  const [attempt,setAttempt]=useState(0);
+  const srcType=sourceType||(context?"sentence":"other");
+  const trackRef=useRef(trackUsage);
+  trackRef.current=trackUsage;
+  useEffect(()=>{ if(!targetDeck||!decks.some(d=>d.id===targetDeck)) { const id=defaultDeckId(decks); if(id&&id!==targetDeck) setTargetDeck(id); } },[decks]);
+  useEffect(()=>{
+    let cancelled=false;
+    setLoading(true);setData(null);setError('');setAdded(false);setDraft(null);setManual(false);setDup(null);
     if(!word){setLoading(false);setError('Choose an Arabic word to look up.');return;}
     (async()=>{
       try {
         const parsed=await lookupWord(word,context,trackRef.current);
-        if(!cancelled)setData(parsed);
+        if(!cancelled){ setData(parsed); setDraft(cardFromLookup(parsed,{surface:word,context,sourceType:srcType,sourceName})); }
       }catch(e){if(!cancelled)setError(e?.message||'Could not load the meaning. Please retry.');}
       finally{if(!cancelled)setLoading(false);}
     })();
     return ()=>{cancelled=true;};
   },[word,context,attempt]);
 
-  const doAdd=()=>{
-    if(!data||error||!targetDeck) return;
-    const card={id:`c${Date.now()}`,wordType:data.partOfSpeech?.toLowerCase().includes("verb")?"verb":"noun",english:data.meaning,arabicBase:data.word,forms:{singular:data.word},status:"new"};
-    onAddToFlashcard(targetDeck,card);
-    setAdded(true);
+  const setField=(k,v)=>setDraft(d=>({...d,[k]:v}));
+  const setForm=(k,v)=>setDraft(d=>({...d,forms:{...(d.forms||{}),[k]:v}}));
+  const finish=card=>{
+    onAddToFlashcard(targetDeck,{...card,id:`c${Date.now()}`});
+    setAdded(true);setDup(null);
     setTimeout(onClose,1000);
   };
+  // Duplicate check first; the user decides (View / Add anyway / Cancel). Never silent.
+  const save=()=>{
+    if(!draft||!targetDeck) return;
+    const hit=findExistingWord(decks,cardStates||{},draft.arabicBase||draft.surface);
+    if(hit&&!dup){ setDup(hit); return; }
+    finish(draft);
+  };
+  // Offline / failed lookup: keep the surface form + context as a draft that can be re-factored later.
+  const saveDraft=()=>{
+    if(!targetDeck) return;
+    finish(draftCard({surface:word,context,sourceType:srcType,sourceName}));
+  };
+  const startManual=()=>{ setDraft({...draftCard({surface:word,context,sourceType:srcType,sourceName}),needsLookup:undefined}); setManual(true); };
+  const verbForms=["past","present","imperative"];
+  const nounForms=draft?.wordType==="adjective"?["masculine","plural"]:["singular","plural"];
+  const formKeys=draft?.wordType==="verb"?verbForms:nounForms;
+  const lowConf=!!data&&(data.confidence==="low"||!data.baseForm);
+  const previewable=!!draft&&(data||manual);
+  const fld=(label,value,onChange,ar=true,ph="")=>(
+    <div key={label}><div style={{fontSize:10,fontWeight:700,color:"var(--text3)",letterSpacing:".1em",textTransform:"uppercase",marginBottom:3}}>{label}</div>
+      <input className={`input${ar?" ar":""}`} dir={ar?"rtl":"ltr"} value={value||""} placeholder={ph} onChange={e=>onChange(e.target.value)} style={{fontSize:ar?18:14,padding:"7px 10px"}}/></div>
+  );
 
   return (
     <div className="overlay" onClick={e=>{if(e.target===e.currentTarget)onClose();}}>
-      <div className="drawer" style={{maxHeight:"78vh",overflowY:"auto"}}>
+      <div className="drawer" style={{maxHeight:"84vh",overflowY:"auto"}}>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:16}}>
           <div className="ar" style={{fontSize:38,color:"var(--accent)"}}>{word}</div>
           <button className="btn btn-ghost" onClick={onClose} style={{width:32,height:32}}><X size={14}/></button>
@@ -1616,41 +1883,62 @@ function WordPopup({word,context="",decks=[],cardStates,onClose,onAddToFlashcard
         {loading ? (
           <div style={{display:"flex",flexDirection:"column",alignItems:"center",gap:10,padding:"16px 0"}}>
             <RefreshCw size={18} className="spin" color="var(--accent)"/>
-            <div style={{fontSize:13,color:"var(--text2)",fontWeight:500}}>Looking up root, meaning & usage…</div>
+            <div style={{fontSize:13,color:"var(--text2)",fontWeight:500}}>Looking up base form, conjugation & meaning…</div>
             <div style={{fontSize:11,color:"var(--text3)"}}>Some models take up to 30 seconds</div>
           </div>
-        ) : error ? (
-          <div role="alert" style={{display:'grid',gap:12}}><p style={{color:'var(--weak)',margin:0}}>{error}</p><button className="btn btn-primary" onClick={()=>setAttempt(n=>n+1)}>Retry lookup</button><small>Check the Word lookups model and API key in Settings if this keeps happening.</small></div>
-        ) : data ? (
+        ) : error&&!manual ? (
+          <div role="alert" style={{display:'grid',gap:12}}><p style={{color:'var(--weak)',margin:0}}>{error}</p><button className="btn btn-primary" onClick={()=>setAttempt(n=>n+1)}>Retry lookup</button>
+            <div style={{display:"flex",gap:8}}>
+              <button className="btn" onClick={startManual} style={{flex:1,background:"var(--surface2)",color:"var(--text2)"}}>Fill in manually</button>
+              <button className="btn" onClick={saveDraft} disabled={!targetDeck} style={{flex:1,background:"var(--surface2)",color:"var(--text2)"}}>Save as draft</button>
+            </div>
+            <DeckPicker decks={decks} value={targetDeck} onChange={setTargetDeck} label="Deck for draft"/>
+            <small>Check the Word lookup model in Settings or your connection. A draft keeps the word and sentence, marked "needs lookup", so you can re-factor it later.</small></div>
+        ) : previewable ? (
           <div style={{display:"flex",flexDirection:"column",gap:12}}>
-            {data.root&&(
+            {manual&&<div style={{background:"var(--weak-bg)",color:"var(--weak)",borderRadius:"var(--rxs)",padding:"9px 12px",fontSize:12.5}}>Lookup failed — fill in the card yourself. Nothing is saved until you tap Save.</div>}
+            {lowConf&&!manual&&<div style={{background:"var(--weak-bg)",color:"var(--weak)",borderRadius:"var(--rxs)",padding:"9px 12px",fontSize:12.5,lineHeight:1.55}}>⚠ Low confidence — the base form may be wrong. Check every field below before saving.</div>}
+            {data?.root&&(
               <div style={{background:"var(--accent-bg)",border:"1px solid var(--accent-border)",borderRadius:"var(--rxs)",padding:"10px 13px"}}>
                 <div style={{fontSize:10,fontWeight:700,color:"var(--accent)",letterSpacing:".12em",textTransform:"uppercase",marginBottom:5}}>Root · جذر</div>
                 <div className="ar" style={{fontSize:24,color:"var(--accent)",marginBottom:3}}>{data.root}</div>
                 {data.rootMeaning&&<div style={{fontSize:13,color:"var(--text2)"}}>{data.rootMeaning}</div>}
               </div>
             )}
-            <div>
-              <div style={{fontSize:10,fontWeight:700,color:"var(--text3)",letterSpacing:".12em",textTransform:"uppercase",marginBottom:5}}>Meaning</div>
-              <div style={{fontSize:16,fontWeight:600,color:"var(--text)"}}>{data.meaning}</div>
-              {data.partOfSpeech&&<div style={{fontSize:12,color:"var(--text3)",marginTop:2,textTransform:"capitalize"}}>{data.partOfSpeech}</div>}
+            {fld("Base form",draft.arabicBase,v=>setDraft(d=>({...d,arabicBase:v,forms:{...(d.forms||{}),...(d.wordType==="verb"?{}:{[d.wordType==="adjective"?"masculine":"singular"]:v})}})))}
+            <div style={{display:"flex",gap:8}}>
+              <div style={{flex:1}}><div style={{fontSize:10,fontWeight:700,color:"var(--text3)",letterSpacing:".1em",textTransform:"uppercase",marginBottom:3}}>Type</div>
+                <select className="input" value={draft.wordType} onChange={e=>setField("wordType",e.target.value)} style={{padding:"7px 10px"}}>
+                  <option value="verb">Verb</option><option value="noun">Noun</option><option value="adjective">Adjective</option><option value="other">Particle / phrase / other</option>
+                </select></div>
             </div>
-            {data.note&&<div style={{background:"var(--surface2)",borderRadius:"var(--rxs)",padding:"9px 12px",fontSize:13,color:"var(--text2)",lineHeight:1.65}}>💡 {data.note}</div>}
+            {fld("Meaning",draft.english,v=>setField("english",v),false,"Short English meaning")}
+            {data?.otherMeanings?.length>0&&<div style={{fontSize:12,color:"var(--text3)"}}>Also: {data.otherMeanings.join(" · ")}</div>}
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
+              {formKeys.map(k=>fld(FORM_LABELS[k]||k,draft.forms?.[k],v=>setForm(k,v)))}
+            </div>
+            {fld(`Preposition${draft.prepositionUncertain?" (uncertain)":""}`,draft.forms?.harf,v=>{ setForm("harf",v); setDraft(d=>({...d,prepositionUncertain:false})); },true,"leave blank if none")}
+            {draft.prepositionUncertain&&<div style={{fontSize:11.5,color:"var(--weak)",marginTop:-6}}>The lookup wasn't sure about this preposition — verify or clear it.</div>}
+            {context&&<div><div style={{fontSize:10,fontWeight:700,color:"var(--text3)",letterSpacing:".1em",textTransform:"uppercase",marginBottom:3}}>Original sentence{sourceName?` · ${sourceName}`:""}</div>
+              <div className="ar" style={{fontSize:16,lineHeight:1.9,color:"var(--text2)",background:"var(--surface2)",borderRadius:"var(--rxs)",padding:"8px 11px"}}>{context}</div></div>}
+            {data?.note&&<div style={{background:"var(--surface2)",borderRadius:"var(--rxs)",padding:"9px 12px",fontSize:13,color:"var(--text2)",lineHeight:1.65}}>💡 {data.note}</div>}
             <div className="divider" style={{margin:"4px 0"}}/>
             {added ? (
               <div style={{textAlign:"center",padding:"10px 0",color:"var(--know)",fontWeight:600,fontSize:14}}><Check size={16} style={{marginRight:6}}/>Added!</div>
-            ) : !addOpen ? (
-              <button className="btn btn-primary" onClick={()=>setAddOpen(true)} style={{width:"100%",padding:"12px",borderRadius:"var(--rs)",fontSize:13.5}}><PlusCircle size={14}/> Add to Flashcards</button>
+            ) : dup ? (
+              <div style={{display:"flex",flexDirection:"column",gap:9,background:"var(--weak-bg)",borderRadius:"var(--rs)",padding:"12px 13px"}}>
+                <div style={{fontSize:13.5,fontWeight:600,color:"var(--weak)"}}>This word is already in {dup.deckTitle}</div>
+                {viewDup&&<div style={{fontSize:13,color:"var(--text2)"}}><span className="ar" style={{fontSize:18}}>{dup.card.arabicBase}</span> — {dup.card.english}</div>}
+                <div style={{display:"flex",gap:8}}>
+                  <button className="btn" onClick={()=>setViewDup(v=>!v)} style={{flex:1,background:"var(--surface)",color:"var(--text2)",padding:"10px"}}>{viewDup?"Hide card":"View card"}</button>
+                  <button className="btn btn-primary" onClick={()=>finish(draft)} style={{flex:1,padding:"10px"}}>Add anyway</button>
+                  <button className="btn" onClick={()=>{setDup(null);setViewDup(false);}} style={{flex:1,background:"var(--surface)",color:"var(--text2)",padding:"10px"}}>Cancel</button>
+                </div>
+              </div>
             ) : (
               <div style={{display:"flex",flexDirection:"column",gap:10}}>
-                <div className="sec" style={{margin:0}}>Add to which deck?</div>
-                <select className="input" value={targetDeck} onChange={e=>setTargetDeck(e.target.value)}>
-                  {decks.map(d=><option key={d.id} value={d.id}>{d.title}</option>)}
-                </select>
-                <div style={{display:"flex",gap:8}}>
-                  <button className="btn" onClick={()=>setAddOpen(false)} style={{flex:1,background:"var(--surface2)",color:"var(--text2)",padding:"11px"}}>Cancel</button>
-                  <button className="btn btn-primary" onClick={doAdd} style={{flex:2,padding:"11px",borderRadius:"var(--rs)",fontSize:13.5}}><Check size={14}/> Add Card</button>
-                </div>
+                <DeckPicker decks={decks} value={targetDeck} onChange={setTargetDeck} label="Add to deck"/>
+                <button className="btn btn-primary" onClick={save} disabled={!targetDeck} style={{width:"100%",padding:"12px",borderRadius:"var(--rs)",fontSize:13.5}}><PlusCircle size={14}/> {manual?"Save card":"Add to Flashcards"}</button>
               </div>
             )}
           </div>
@@ -1667,17 +1955,17 @@ function WordPopup({word,context="",decks=[],cardStates,onClose,onAddToFlashcard
 const LOOKUP_FAST_MODEL="openai/gpt-4o-mini";
 const LOOKUP_MULTI_MODEL="google/gemini-2.5-flash";
 const isReasoningModel=m=>/gpt-5|(^|\/)o[134](-|$)|deepseek-r1|thinking/i.test(m||"");
-async function lookupWord(word,context,trackFn){
+async function lookupWord(word,context,trackFn,fresh=false){
   const ctx=String(context||"").slice(0,300);
   let h=0;for(let i=0;i<ctx.length;i++)h=(h*31+ctx.charCodeAt(i))|0;
   const lang=_learnerLang||"English";
-  const key=`lookup:v2:${lang}:${word}:${h}`;
-  try{ const hit=JSON.parse(localStorage.getItem(key)||"null"); if(hit?.meaning) return hit; }catch{}
+  const key=`lookup:v3:${lang}:${word}:${h}`;
+  if(!fresh) try{ const hit=JSON.parse(localStorage.getItem(key)||"null"); if(hit?.meaning) return hit; }catch{}
   const picked=pickModelForTag("wordLookup");
   // English: a fast model is plenty. Other languages (e.g. Bengali) need a
   // stronger multilingual model and roughly 2.5x the output tokens.
   const model=lang!=="English"?LOOKUP_MULTI_MODEL:(isReasoningModel(picked)?LOOKUP_FAST_MODEL:null);
-  const raw=await callClaude(lookupPrompt(word,context,lang),lang==="English"?500:1100,"wordLookup",trackFn,25000,model);
+  const raw=await callClaude(lookupPrompt(word,context,lang),lang==="English"?800:1500,"wordLookup",trackFn,25000,model);
   const data=parseLookup(raw,word,extractJSON);
   try{ localStorage.setItem(key,JSON.stringify(data)); }catch{}
   return data;
@@ -1940,7 +2228,7 @@ function renderDeckCard(deck,cardStates,onOpenDeck,isGrammar=false,poolThreshold
   );
 }
 
-function HomeScreen({watchHours,decks,cardStates,onOpenDeck,onSettings,onCreateDeck,onReading,onListening,onConversation,onDictation,onCapsules,onSearch,onTranslate,onWatch,onProgress,onMasterReview,onGuide,onPresets,onGrammarImport,onVocabImport,darkMode,onToggleDark,studyLog,poolThresholdDays,immersionMode,immersionNudgeShown,onImmersionNudgeAction}) {
+function HomeScreen({watchHours,decks,cardStates,onOpenDeck,onSettings,onCreateDeck,onReading,onListening,onConversation,onDictation,onCapsules,onSearch,onTranslate,onWatch,onProgress,onMasterReview,onGuide,onPresets,onGrammarImport,onVocabImport,onQuickAdd,onAddManual,darkMode,onToggleDark,studyLog,poolThresholdDays,immersionMode,immersionNudgeShown,onImmersionNudgeAction}) {
   const [deckSort,setDeckSort]=useState(()=>localStorage.getItem("arabic_fc_deck_sort")||"newest");
   useEffect(()=>{localStorage.setItem("arabic_fc_deck_sort",deckSort);},[deckSort]);
   const sortDecks=(arr)=>{
@@ -2094,6 +2382,10 @@ function HomeScreen({watchHours,decks,cardStates,onOpenDeck,onSettings,onCreateD
         <button className="btn" onClick={onPresets} style={{width:"100%",marginBottom:12,padding:"12px",borderRadius:"var(--r)",fontSize:13.5,background:"var(--accent-bg)",border:"1.5px solid var(--accent-border)",color:"var(--accent)",fontWeight:600,gap:7}}>
           <Download size={14}/> Browse preset decks
         </button>
+        <div style={{display:"flex",gap:8,marginBottom:12}}>
+          <button className="btn btn-primary" onClick={onQuickAdd} style={{flex:1,padding:"12px",borderRadius:"var(--r)",fontSize:13.5,gap:7}}><Plus size={14}/> Quick add a word</button>
+          <button className="btn" onClick={onAddManual} style={{flex:1,padding:"12px",borderRadius:"var(--r)",fontSize:13.5,background:"var(--surface)",border:"1.5px solid var(--border)",color:"var(--text2)",fontWeight:600,gap:7}}><BookOpen size={14}/> Hadith / Verse</button>
+        </div>
         <button className="btn" onClick={onVocabImport} style={{width:"100%",marginBottom:12,padding:"12px",borderRadius:"var(--r)",fontSize:13.5,background:"var(--know-bg)",border:"1.5px solid var(--know-border)",color:"var(--know)",fontWeight:600,gap:7}}>
           <Upload size={14}/> Import vocabulary (screenshots / PDF)
         </button>
@@ -2554,7 +2846,8 @@ function GameBar({game,gain}) {
   );
 }
 
-function WatchScreen({onBack,onAddToFlashcard,decks,trackUsage,user,watchProgress}) {
+function WatchScreen({onBack,onAddToFlashcard,decks,cardStates={},trackUsage,user,watchProgress}) {
+  const [watchDup,setWatchDup]=useState(null);
   const [lessonEntered,setLessonEntered]=useState(false);
   const [assessment,setAssessment]=useState(null);const [levelBusy,setLevelBusy]=useState(false);const [levelError,setLevelError]=useState("");
   const trackerRef=useRef(null),progressRef=useRef(watchProgress),levelRunRef=useRef(0);
@@ -2679,7 +2972,7 @@ function WatchScreen({onBack,onAddToFlashcard,decks,trackUsage,user,watchProgres
   linesRef.current=lines;loopRef.current=loopLine;bdRef.current=bd;
 
   const vocabDecks=decks.filter(d=>d.deckType!=="grammar");
-  useEffect(()=>{ if(!deckId&&vocabDecks[0]) setDeckId(vocabDecks[0].id); },[decks]);
+  useEffect(()=>{ if((!deckId||!vocabDecks.some(d=>d.id===deckId))&&vocabDecks[0]) setDeckId(defaultDeckId(decks)); },[decks]);
 
   // ── Shared library (Firestore: watchLibrary/{videoId}) ────────────────
   const loadLibrary=async()=>{
@@ -3018,12 +3311,15 @@ Return ONLY valid JSON, no commentary: [{"i":0,"t":"translation","w":[{"a":"..",
   const timed=lines.some(l=>l.start!=null);
   const wordTiming=active>=0&&lines[active]&&bd[active]?.w?alignedWordTimes(lines[active],bd[active].w):null;
 
-  const addWord=()=>{
+  const addWord=(force=false)=>{
     if(!sel||!deckId) return;
     const isVerb=sel.pos==="verb";
     const ar=sel.lemma||sel.ar;
+    if(!force){ const hit=findExistingWord(decks,cardStates||{},ar); if(hit){ setWatchDup(hit); return; } }
+    setWatchDup(null);
     const card={id:`c${Date.now()}`,wordType:isVerb?"verb":"noun",english:(lk.status==="done"&&lk.data.meaning)||sel.en,arabicBase:ar,
-      forms:isVerb?{past:ar}:{singular:ar},status:"new",
+      forms:isVerb?{past:ar}:{singular:ar},status:"new",surface:sel.ar,
+      source:{text:sel.sentence||"",type:"video",name:title||vidMeta?.title||""},
       watchContext:{sentence:sel.sentence,translation:sel.tr||"",videoId,t:sel.t??null}};
     onAddToFlashcard(deckId,card);
     giveXp((g,d)=>collectWord(g,sel.ar,d,{added:true}));
@@ -3235,10 +3531,17 @@ Return ONLY valid JSON, no commentary: [{"i":0,"t":"translation","w":[{"a":"..",
             {sel.lemma&&sel.lemma!==sel.ar&&<div style={{textAlign:"center",fontSize:12.5,color:"var(--text3)",marginTop:4}}>Base form: <span className="ar" style={{fontSize:16}}>{sel.lemma}</span></div>}
             <div style={{fontSize:12,color:"var(--text3)",marginTop:10,lineHeight:1.5,textAlign:"center"}}>{sel.tr}</div>
             {vocabDecks.length>0?(<>
-              <select className="input" value={deckId} onChange={e=>setDeckId(e.target.value)} style={{marginTop:14,fontSize:13,padding:"10px"}}>
-                {vocabDecks.map(d=><option key={d.id} value={d.id}>{d.title}</option>)}
-              </select>
-              <button className="btn btn-primary" onClick={addWord} disabled={added} style={{width:"100%",marginTop:10,padding:"13px",borderRadius:"var(--r)"}}>{added?"Added ✓":"Add to flashcards"}</button>
+              <div style={{marginTop:14}}><DeckPicker decks={decks} value={deckId} onChange={setDeckId} label=""/></div>
+              {watchDup?(
+                <div style={{display:"flex",flexDirection:"column",gap:8,background:"var(--weak-bg)",borderRadius:"var(--rs)",padding:"11px 12px",marginTop:10}}>
+                  <div style={{fontSize:13,fontWeight:600,color:"var(--weak)"}}>This word is already in {watchDup.deckTitle}</div>
+                  <div style={{fontSize:12.5,color:"var(--text2)"}}><span className="ar" style={{fontSize:16}}>{watchDup.card.arabicBase}</span> — {watchDup.card.english}</div>
+                  <div style={{display:"flex",gap:8}}>
+                    <button className="btn btn-primary" onClick={()=>addWord(true)} style={{flex:1,padding:"9px"}}>Add anyway</button>
+                    <button className="btn" onClick={()=>setWatchDup(null)} style={{flex:1,background:"var(--surface)",color:"var(--text2)",padding:"9px"}}>Cancel</button>
+                  </div>
+                </div>
+              ):<button className="btn btn-primary" onClick={()=>addWord()} disabled={added} style={{width:"100%",marginTop:10,padding:"13px",borderRadius:"var(--r)"}}>{added?"Added ✓":"Add to flashcards"}</button>}
             </>):<div style={{fontSize:12.5,color:"var(--text3)",marginTop:12,textAlign:"center"}}>Create a vocabulary deck first to add words.</div>}
           </div>
         </div>
@@ -3365,7 +3668,7 @@ function ServiceCredits({orKey}) {
       <div style={{display:"flex",flexDirection:"column",gap:10,marginTop:10}}>
         {(data?.services||[]).filter(sv=>!(sv.status==="not_configured")).map(sv=>(
           <div key={sv.id} style={{fontSize:13,lineHeight:1.5}}>
-            <div style={{fontWeight:600}}>{sv.name} {TOPUP[sv.id]&&<a href={TOPUP[sv.id]} target="_blank" rel="noreferrer" style={{fontWeight:500,fontSize:12,color:"var(--accent)"}}>{sv.exhausted?"Top up ↗":"Billing ↗"}</a>}</div>
+            <div style={{fontWeight:600}}>{sv.name} {TOPUP[sv.id]&&<a href={TOPUP[sv.id]} target="_blank" rel="noreferrer" style={{fontWeight:500,fontSize:12,color:"var(--accent)"}}>{(sv.exhausted||sv.id==="supadata")?"Top up ↗":"Billing ↗"}</a>}</div>
             {sv.status==="ok"&&<div style={{color:sv.exhausted?"var(--weak)":"var(--text2)"}}>
               {sv.exhausted?"Out of credit — ":""}
               {sv.remaining!=null?<>{amount(sv,sv.remaining)} left{sv.total!=null?` of ${amount(sv,sv.total)}`:""}</>:<>{amount(sv,sv.used)} used</>}
@@ -3443,7 +3746,7 @@ function WritingStylePanel({local,set,workingLevel}) {
   );
 }
 
-function SettingsScreen({settings,setSettings,onBack,usage,user,onSignOut,onReplayOnboarding,profile,setProfile,studyLog,onUpdateTargets,decks,cardStates,setCardStates,trackUsage,onResetUsage,onResumeBulkFill,isBulkAllowlisted}) {
+function SettingsScreen({settings,setSettings,onBack,onSetCaptureDeck,usage,user,onSignOut,onReplayOnboarding,profile,setProfile,studyLog,onUpdateTargets,decks,cardStates,setCardStates,trackUsage,onResetUsage,onResumeBulkFill,isBulkAllowlisted}) {
   const [bulkFillRunning,setBulkFillRunning]=useState(false);
   const [local,setLocal]=useState(settings);
   const [saved,setSaved]=useState(false);
@@ -3599,6 +3902,16 @@ function SettingsScreen({settings,setSettings,onBack,usage,user,onSignOut,onRepl
           </div>
         </div>
 
+        {/* Capture deck */}
+        <div style={{background:"var(--surface)",border:"1.5px solid var(--border)",borderRadius:"var(--r)",padding:"15px 17px"}}>
+          <div style={{display:"flex",alignItems:"center",gap:7,marginBottom:8}}><Star size={14} color="var(--accent)"/><div className="sec" style={{margin:0}}>Capture deck</div></div>
+          <div style={{fontSize:12,color:"var(--text3)",lineHeight:1.6,marginBottom:10}}>Quick adds (tapping a word, Quick add) go here unless you pick another deck. Only one at a time.</div>
+          <select className="input" value={(decks||[]).find(d=>d.isCapture)?.id||""} onChange={e=>onSetCaptureDeck&&onSetCaptureDeck(e.target.value)} style={{fontSize:13}}>
+            <option value="">None (use first deck)</option>
+            {(decks||[]).filter(d=>d.deckType!=="grammar").map(d=><option key={d.id} value={d.id}>{d.title}</option>)}
+          </select>
+        </div>
+
         {/* Voice & STT */}
         <div style={{background:"var(--surface)",border:"1.5px solid var(--border)",borderRadius:"var(--r)",padding:"15px 17px"}}>
           <div style={{display:"flex",alignItems:"center",gap:7,marginBottom:10}}><Volume2 size={14} color="var(--accent)"/><div className="sec" style={{margin:0}}>Voice (TTS & STT)</div></div>
@@ -3610,12 +3923,14 @@ function SettingsScreen({settings,setSettings,onBack,usage,user,onSignOut,onRepl
             <div>
               <label className="lbl" style={{marginBottom:5}}>TTS Voice</label>
               <select className="input" value={local.ttsVoice||"ar-XA-Wavenet-C"} onChange={e=>set("ttsVoice",e.target.value)} style={{fontSize:13}}>
-                <option value="ar-XA-Wavenet-A">Wavenet-A · female</option>
-                <option value="ar-XA-Wavenet-B">Wavenet-B · male</option>
-                <option value="ar-XA-Wavenet-C">Wavenet-C · male (recommended)</option>
-                <option value="ar-XA-Wavenet-D">Wavenet-D · female</option>
+                {TTS_VOICES.map(g=>(<optgroup key={g.group} label={g.group}>{g.voices.map(v=><option key={v[0]} value={v[0]}>{v[1]}</option>)}</optgroup>))}
+                {local.ttsVoice&&!TTS_VOICES.some(g=>g.voices.some(v=>v[0]===local.ttsVoice))&&<option value={local.ttsVoice}>Custom · {local.ttsVoice}</option>}
               </select>
-              <div style={{fontSize:11,color:"var(--text3)",marginTop:4}}>Used by Google Cloud TTS. Falls back to browser voice if no Cloud TTS key.</div>
+              <div style={{display:"flex",gap:8,marginTop:8}}>
+                <button className="chip" onClick={()=>{ try{ synthesizeArabic("بِسْمِ اللَّهِ الرَّحْمَٰنِ الرَّحِيمِ، مَرْحَبًا بِكُمْ فِي دَرْسِ اللُّغَةِ الْعَرَبِيَّةِ",{voice:local.ttsVoice||"ar-XA-Wavenet-C",speed:local.ttsSpeed??0.92}); }catch(e){ showToast("Preview failed: "+e.message,"error"); } }}><Volume2 size={12}/> Preview voice</button>
+              </div>
+              <input className="input" placeholder="Or paste any Google voice name, e.g. ar-XA-Chirp3-HD-Kore" defaultValue="" onKeyDown={e=>{ if(e.key==="Enter"&&e.target.value.trim()){ set("ttsVoice",e.target.value.trim()); e.target.value=""; } }} style={{fontSize:12,marginTop:8}}/>
+              <div style={{fontSize:11,color:"var(--text3)",marginTop:4}}>Used by Google Cloud TTS. Press Enter to use a custom voice name. Not every voice supports the speed slider. Falls back to browser voice if no Cloud TTS key.</div>
             </div>
             {/* TTS speed */}
             <div>
@@ -3926,7 +4241,8 @@ function CreateDeckScreen({onBack,onCreate}) {
 // ─────────────────────────────────────────────────────────────
 // ADD CARDS — with per-card delete in preview
 // ─────────────────────────────────────────────────────────────
-function AddCardsScreen({deck,onBack,onSave,trackUsage,nativeLanguage,cardStates}) {
+function AddCardsScreen({deck,decks=[],onBack,onSave,trackUsage,nativeLanguage,cardStates}) {
+  const [targetId,setTargetId]=useState(deck.id);
   const lang=nativeLanguage||"English";
   const [inputLang,setInputLang]=useState("english");
   const [wordType,setWordType]=useState("noun");
@@ -4017,8 +4333,11 @@ CRITICAL: Every Arabic word MUST have full tashkeel (فَتْحَة ضَمَّة
       id:`c${Date.now()}-${i}`,
       status:"new",
       forms:Object.fromEntries(Object.entries(c.forms||{}).filter(([k,v])=>v&&allowed.has(k))),
-    })));
+    })),targetId);
   };
+  // Add-time duplicate flags: cards whose base word already exists in any deck.
+  const dupOf=c=>findExistingWord(decks.length?decks:[deck],cardStates||{},c.arabicBase);
+  const editPreview=(i,k,v)=>setPreview(p=>p.map((c,n)=>n===i?{...c,[k]:v}:c));
 
   return (
     <div className="screen">
@@ -4088,9 +4407,10 @@ CRITICAL: Every Arabic word MUST have full tashkeel (فَتْحَة ضَمَّة
                   </button>
                   <div style={{paddingRight:30}}>
                     <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:8}}>
-                      <div>
-                        <div style={{fontWeight:600,fontSize:14.5}}>{c.english}</div>
-                        <div className="ar" style={{fontSize:24,color:"var(--accent)"}}>{c.arabicBase}</div>
+                      <div style={{flex:1,minWidth:0,paddingRight:6}}>
+                        <input value={c.english||""} onChange={e=>editPreview(i,"english",e.target.value)} style={{fontWeight:600,fontSize:14.5,border:"none",background:"transparent",color:"var(--text)",width:"100%",padding:0}} aria-label="Meaning"/>
+                        <input className="ar" dir="rtl" value={c.arabicBase||""} onChange={e=>editPreview(i,"arabicBase",e.target.value)} style={{fontSize:24,color:"var(--accent)",border:"none",background:"transparent",width:"100%",padding:0,textAlign:"right"}} aria-label="Arabic base form"/>
+                        {(()=>{const d=dupOf(c);return d?<div style={{fontSize:11.5,color:"var(--weak)",marginTop:3}}>⚠ Already in {d.deckTitle} — remove it with ✕ or save anyway</div>:null;})()}
                       </div>
                       <span style={{fontSize:11,background:"var(--surface2)",color:"var(--text3)",padding:"2px 8px",borderRadius:100,textTransform:"capitalize",flexShrink:0,marginRight:4}}>{c.wordType}</span>
                     </div>
@@ -4105,6 +4425,7 @@ CRITICAL: Every Arabic word MUST have full tashkeel (فَتْحَة ضَمَّة
                 </div>
               ))}
             </div>
+            {preview.length>0&&decks.length>0&&<div style={{marginBottom:12}}><DeckPicker decks={decks} value={targetId} onChange={setTargetId} label="Save to deck" includeGrammar={deck.deckType==="grammar"}/></div>}
             {preview.length>0 ? (
               <button className="btn btn-primary" onClick={save} style={{width:"100%",padding:14,borderRadius:"var(--r)",fontSize:14,background:"var(--know)"}}>
                 <Plus size={15}/> Save {preview.length} Card{preview.length!==1?"s":""} to Deck
@@ -4122,7 +4443,7 @@ CRITICAL: Every Arabic word MUST have full tashkeel (فَتْحَة ضَمَّة
 // ─────────────────────────────────────────────────────────────
 // DECK SCREEN — with edit/delete deck
 // ─────────────────────────────────────────────────────────────
-function DeckScreen({deck,cards,onStartStudy,onBack,onAddCards,onImportMore,onEditCard,onDeleteCard,onRenameDeck,onDeleteDeck,onSetDeckUnit,onSetDeckLastStudied,onTogglePinnedNew,onGraduateNow,poolThresholdDays,newCardsRemainingToday,savedIdx}) {
+function DeckScreen({deck,cards,allDecks=[],onMoveCards,onUpdateCard,onSetCapture,onAddManual,trackUsage,onStartStudy,onBack,onAddCards,onImportMore,onEditCard,onDeleteCard,onRenameDeck,onDeleteDeck,onSetDeckUnit,onSetDeckLastStudied,onTogglePinnedNew,onGraduateNow,poolThresholdDays,newCardsRemainingToday,savedIdx}) {
   const [deckMenu,setDeckMenu]=useState(false);
   const [renaming,setRenaming]=useState(false);
   const [linkingUnit,setLinkingUnit]=useState(false);
@@ -4138,6 +4459,17 @@ function DeckScreen({deck,cards,onStartStudy,onBack,onAddCards,onImportMore,onEd
   const [statusFilter,setStatusFilter]=useState("all");
   const [studyFilter,setStudyFilter]=useState("all");
   const [scienceFilter,setScienceFilter]=useState("all");
+  const [typeFilter,setTypeFilter]=useState("all");   // all | verb | noun | adjective | other
+  const [kindFilter,setKindFilter]=useState("all");   // all | word | hadith | quran_verse
+  const [sortBy,setSortBy]=useState("default");       // default | newest | alpha | due
+  const [selectMode,setSelectMode]=useState(false);
+  const [selected,setSelected]=useState(()=>new Set());
+  const [moveIds,setMoveIds]=useState(null);          // array of card ids being moved
+  const [moveTo,setMoveTo]=useState("");
+  const [refactorCard,setRefactorCard]=useState(null);
+  const toggleSel=id=>setSelected(prev=>{const n=new Set(prev);n.has(id)?n.delete(id):n.add(id);return n;});
+  const exitSelect=()=>{setSelectMode(false);setSelected(new Set());};
+  const cardKind=c=>c.wordType==="manual"?(c.cardType||"hadith"):"word";
 
   const weak=cards.filter(c=>c.status==="weak").length;
   const known=cards.filter(c=>c.status==="known").length;
@@ -4150,10 +4482,18 @@ function DeckScreen({deck,cards,onStartStudy,onBack,onAddCards,onImportMore,onEd
     if(statusFilter==="due"&&c.srsNextReview&&c.srsNextReview>Date.now()) return false;
     if(statusFilter!=="all"&&statusFilter!=="due"&&c.status!==statusFilter) return false;
     if(scienceFilter!=="all"&&c.grammarScience!==scienceFilter) return false;
+    if(kindFilter!=="all"&&cardKind(c)!==kindFilter) return false;
+    if(typeFilter!=="all"&&(c.wordType!==typeFilter)) return false;
     if(!search.trim()) return true;
     const q=search.toLowerCase();
-    return c.english.toLowerCase().includes(q)||c.arabicBase.includes(search)||
-      Object.values(c.forms||{}).some(v=>v&&(v.includes(search)||v.toLowerCase().includes(q)));
+    const nq=normalizeDuplicateText(search);
+    const hay=[c.english,c.arabicBase,c.surface,c.front,c.back,c.reference,c.notes,c.source?.text,c.source?.name,...Object.values(c.forms||{})].filter(v=>typeof v==="string"&&v);
+    return hay.some(v=>v.toLowerCase().includes(q)||(nq&&normalizeDuplicateText(v).includes(nq)));
+  }).sort((a,b)=>{
+    if(sortBy==="newest"){ const ts=c=>Number(c.createdAt)||Number(String(c.id).replace(/\D/g,"").slice(0,13))||0; return ts(b)-ts(a); }
+    if(sortBy==="alpha") return normalizeDuplicateText(a.arabicBase).localeCompare(normalizeDuplicateText(b.arabicBase),"ar");
+    if(sortBy==="due"){ const d=c=>c.srsNextReview||Infinity; return d(a)-d(b); }
+    return 0;
   });
 
   const doRename=()=>{if(newTitle.trim()&&newTitle.trim()!==deck.title){onRenameDeck(deck.id,newTitle.trim());}setRenaming(false);setDeckMenu(false);};
@@ -4246,10 +4586,30 @@ function DeckScreen({deck,cards,onStartStudy,onBack,onAddCards,onImportMore,onEd
               )}
             </div>
             <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
-              {[["all",`All (${cards.length})`],["new","New"],["weak","Weak"],["known","Known"],["due",`Due (${dueCount})`]].map(([k,label])=>(
+              {[["all",`All (${cards.length})`],["new","New"],["weak","Learning"],["known","Known"],["due",`Due (${dueCount})`]].map(([k,label])=>(
                 <button key={k} className={`chip ${statusFilter===k?"chip-on":""}`} onClick={()=>setStatusFilter(k)} style={{padding:"5px 11px",fontSize:12}}>{label}</button>
               ))}
             </div>
+            <div style={{display:"flex",gap:6,flexWrap:"wrap",marginTop:8,alignItems:"center"}}>
+              <select className="input" value={kindFilter} onChange={e=>setKindFilter(e.target.value)} style={{width:"auto",fontSize:12,padding:"5px 8px"}}>
+                <option value="all">All card types</option><option value="word">Words</option><option value="hadith">Hadith</option><option value="quran_verse">Quran verses</option>
+              </select>
+              <select className="input" value={typeFilter} onChange={e=>setTypeFilter(e.target.value)} style={{width:"auto",fontSize:12,padding:"5px 8px"}}>
+                <option value="all">All word types</option><option value="verb">Verbs</option><option value="noun">Nouns</option><option value="adjective">Adjectives</option><option value="other">Other</option>
+              </select>
+              <select className="input" value={sortBy} onChange={e=>setSortBy(e.target.value)} style={{width:"auto",fontSize:12,padding:"5px 8px"}}>
+                <option value="default">Sort: deck order</option><option value="newest">Sort: newest first</option><option value="alpha">Sort: A–Z (base form)</option><option value="due">Sort: due first</option>
+              </select>
+              <button className={`chip ${selectMode?"chip-on":""}`} onClick={()=>selectMode?exitSelect():setSelectMode(true)} style={{padding:"5px 11px",fontSize:12}}>{selectMode?"Done":"Select"}</button>
+              {onAddManual&&deck.deckType!=="grammar"&&<button className="chip" onClick={onAddManual} style={{padding:"5px 11px",fontSize:12}}>＋ Hadith / Verse</button>}
+            </div>
+            {selectMode&&(
+              <div style={{display:"flex",gap:8,alignItems:"center",marginTop:8,fontSize:12.5,color:"var(--text2)"}}>
+                <span>{selected.size} selected</span>
+                <button className="chip" onClick={()=>setSelected(new Set(filteredCards.map(c=>c.id)))} style={{padding:"4px 10px",fontSize:12}}>Select all {filteredCards.length}</button>
+                <button className="btn btn-primary btn-sm" disabled={!selected.size} onClick={()=>{setMoveIds([...selected]);setMoveTo("");}} style={{marginLeft:"auto"}}>Move {selected.size||""}</button>
+              </div>
+            )}
             {deck.deckType==="grammar"&&(nahwCount>0||sarfCount>0)&&(
               <div style={{display:"flex",gap:6,flexWrap:"wrap",marginTop:6}}>
                 {[["all","All Sciences"],["nahw",`نحو Nahw (${nahwCount})`],["sarf",`صرف Sarf (${sarfCount})`]].map(([k,label])=>(
@@ -4263,11 +4623,14 @@ function DeckScreen({deck,cards,onStartStudy,onBack,onAddCards,onImportMore,onEd
         {cards.length===0&&<div style={{textAlign:"center",padding:"36px 0",color:"var(--text3)",fontSize:14}}><Layers size={28} style={{opacity:.3,marginBottom:8}}/><br/>Tap "Add Cards" to generate flashcards</div>}
         <div style={{display:"flex",flexDirection:"column",gap:9}}>
           {filteredCards.map(c=>(
-            <div key={c.id} className="card-row">
+            <div key={c.id} className="card-row" onClick={selectMode?()=>toggleSel(c.id):undefined} style={selectMode&&selected.has(c.id)?{outline:"2px solid var(--accent)"}:undefined}>
+              {selectMode&&<input type="checkbox" checked={selected.has(c.id)} readOnly style={{alignSelf:"center",width:18,height:18,flexShrink:0}}/>}
               <div style={{flex:1,minWidth:0}}>
-                <div style={{display:"flex",alignItems:"center",gap:7,marginBottom:3}}>
-                  <span style={{fontWeight:600,fontSize:14}}>{c.english}</span>
-                  <span className={`tag tag-${c.status}`}>{c.status}</span>
+                <div style={{display:"flex",alignItems:"center",gap:7,marginBottom:3,flexWrap:"wrap"}}>
+                  <span style={{fontWeight:600,fontSize:14,overflow:"hidden",textOverflow:"ellipsis",display:"-webkit-box",WebkitLineClamp:2,WebkitBoxOrient:"vertical"}}>{c.english||"(no meaning yet)"}</span>
+                  <span className={`tag tag-${c.status}`}>{c.status==="weak"?"learning":c.status}</span>
+                  {c.wordType==="manual"&&<span style={{fontSize:10,fontWeight:700,padding:"1px 7px",borderRadius:100,background:"var(--accent-bg)",color:"var(--accent)"}}>{MANUAL_TYPES[c.cardType]||"Manual"}</span>}
+                  {c.needsLookup&&<span style={{fontSize:10,fontWeight:700,padding:"1px 7px",borderRadius:100,background:"var(--weak-bg)",color:"var(--weak)"}}>needs lookup</span>}
                   {c.grammarScience&&c.grammarScience!=="other"&&(
                     <span style={{fontSize:10,fontWeight:700,padding:"1px 7px",borderRadius:100,
                       background:c.grammarScience==="nahw"?"var(--info-bg)":"var(--accent-bg)",
@@ -4282,14 +4645,15 @@ function DeckScreen({deck,cards,onStartStudy,onBack,onAddCards,onImportMore,onEd
                     </span>
                   )}
                 </div>
-                <div className="ar" style={{fontSize:20,color:"var(--accent)",marginBottom:4}}>{c.arabicBase}</div>
+                <div className="ar" style={{fontSize:20,color:"var(--accent)",marginBottom:4,...(c.wordType==="manual"?{overflow:"hidden",display:"-webkit-box",WebkitLineClamp:2,WebkitBoxOrient:"vertical"}:{})}}>{c.arabicBase}</div>
+                {c.source?.text&&<div className="ar" title={c.source.text} style={{fontSize:13,color:"var(--text3)",marginBottom:4,overflow:"hidden",whiteSpace:"nowrap",textOverflow:"ellipsis",maxWidth:"100%"}}>{c.source.text}</div>}
                 <div style={{display:"flex",flexWrap:"wrap",gap:5,direction:"rtl"}}>
-                  {c.forms.harf&&(
+                  {c.forms?.harf&&(
                     <span style={{fontSize:12.5,background:"var(--harf-bg)",color:"var(--harf)",padding:"3px 10px",borderRadius:100,border:"1px solid var(--harf-border)",display:"inline-flex",alignItems:"center",gap:4}}>
                       حرف: <span className="ar" style={{fontSize:15,fontWeight:500}}>{c.forms.harf}</span>
                     </span>
                   )}
-                  {(FORMS_BY_TYPE[c.wordType]||FORMS_BY_TYPE.other).filter(k=>k!=="harf"&&c.forms[k]).map(k=>(
+                  {(FORMS_BY_TYPE[c.wordType]||(c.wordType==="manual"?[]:FORMS_BY_TYPE.other)).filter(k=>k!=="harf"&&c.forms?.[k]).map(k=>(
                     <span key={k} style={{fontSize:12,color:"var(--text3)",background:"var(--surface2)",padding:"3px 9px",borderRadius:100,display:"inline-flex",alignItems:"center",gap:4}}>
                       {FORM_LABELS[k]}: <span className="ar" style={{fontSize:14,fontWeight:500,color:"var(--text2)"}}>{c.forms[k]}</span>
                     </span>
@@ -4297,13 +4661,32 @@ function DeckScreen({deck,cards,onStartStudy,onBack,onAddCards,onImportMore,onEd
                 </div>
               </div>
               <div style={{display:"flex",flexDirection:"column",gap:6,flexShrink:0}}>
-                <button className="btn btn-sm" onClick={()=>onEditCard(c)} style={{background:"var(--surface2)",color:"var(--text2)"}}><Edit3 size={13}/></button>
-                <button className="btn btn-sm" onClick={()=>onDeleteCard(c.id)} style={{background:"var(--weak-bg)",color:"var(--weak)"}}><Trash2 size={13}/></button>
+                {!selectMode&&<>
+                <button className="btn btn-sm" title="Edit" onClick={()=>onEditCard(c)} style={{background:"var(--surface2)",color:"var(--text2)"}}><Edit3 size={13}/></button>
+                {c.wordType!=="manual"&&c.wordType!=="grammar"&&onUpdateCard&&<button className="btn btn-sm" title="Re-factor" onClick={()=>setRefactorCard(c)} style={{background:"var(--surface2)",color:"var(--text2)"}}><RefreshCw size={13}/></button>}
+                {onMoveCards&&<button className="btn btn-sm" title="Move to another deck" onClick={()=>{setMoveIds([c.id]);setMoveTo("");}} style={{background:"var(--surface2)",color:"var(--text2)",fontSize:11}}>Move</button>}
+                <button className="btn btn-sm" title="Delete (undo available)" onClick={()=>onDeleteCard(c.id)} style={{background:"var(--weak-bg)",color:"var(--weak)"}}><Trash2 size={13}/></button>
+                </>}
               </div>
             </div>
           ))}
         </div>
       </div>
+
+      {moveIds&&(
+        <div className="overlay" onClick={e=>{ if(e.target===e.currentTarget) setMoveIds(null); }}>
+          <div className="drawer">
+            <div style={{fontFamily:"Lora,serif",fontSize:17,fontWeight:600,marginBottom:6}}>Move {moveIds.length} card{moveIds.length===1?"":"s"}</div>
+            <div style={{fontSize:12.5,color:"var(--text3)",marginBottom:12}}>Cards keep every field, their review progress and history. Nothing is duplicated.</div>
+            <DeckPicker decks={allDecks} value={moveTo} onChange={setMoveTo} excludeId={deck.id} label="Move to deck" includeGrammar={deck.deckType==="grammar"}/>
+            <div style={{display:"flex",gap:8,marginTop:14}}>
+              <button className="btn" onClick={()=>setMoveIds(null)} style={{flex:1,background:"var(--surface2)",color:"var(--text2)",padding:"12px"}}>Cancel</button>
+              <button className="btn btn-primary" disabled={!moveTo||moveTo===deck.id} onClick={()=>{ onMoveCards(moveIds,moveTo); setMoveIds(null); exitSelect(); }} style={{flex:2,padding:"12px"}}>Confirm move</button>
+            </div>
+          </div>
+        </div>
+      )}
+      {refactorCard&&<RefactorSheet card={refactorCard} trackUsage={trackUsage} onClose={()=>setRefactorCard(null)} onApply={merged=>onUpdateCard(merged)}/>}
 
       {/* Deck options drawer */}
       {deckMenu&&(
@@ -4316,6 +4699,12 @@ function DeckScreen({deck,cards,onStartStudy,onBack,onAddCards,onImportMore,onEd
 
             {!renaming&&!confirmDelete&&!linkingUnit&&!settingStudied&&(
               <div style={{display:"flex",flexDirection:"column",gap:10}}>
+                {onSetCapture&&deck.deckType!=="grammar"&&(
+                  <button className="btn" onClick={()=>{onSetCapture(deck.id);setDeckMenu(false);}}
+                    style={{background:deck.isCapture?"var(--accent-bg)":"var(--surface2)",color:deck.isCapture?"var(--accent)":"var(--text)",padding:"13px 16px",borderRadius:"var(--rs)",justifyContent:"flex-start",gap:12,fontSize:14}}>
+                    <Star size={15}/> {deck.isCapture?"Capture deck ✓ (tap to unset)":"Make this the capture deck"}
+                  </button>
+                )}
                 <button className="btn" onClick={()=>setRenaming(true)}
                   style={{background:"var(--surface2)",color:"var(--text)",padding:"13px 16px",borderRadius:"var(--rs)",justifyContent:"flex-start",gap:12,fontSize:14}}>
                   <Pencil size={15} color="var(--text2)"/> Rename Deck
@@ -4427,7 +4816,7 @@ function DeckScreen({deck,cards,onStartStudy,onBack,onAddCards,onImportMore,onEd
 // ─────────────────────────────────────────────────────────────
 // EDIT CARD — with harf, synonym/antonym plurals, auto-regen on type switch
 // ─────────────────────────────────────────────────────────────
-function EditCardScreen({card,onBack,onSave,trackUsage}) {
+function EditCardScreen({card,onBack,onSave,trackUsage,onRefactor}) {
   const [local,setLocal]=useState({...card,forms:{...card.forms}});
   const [prevType,setPrevType]=useState(card.wordType);
   const [regenPending,setRegenPending]=useState(false);
@@ -4468,7 +4857,7 @@ CRITICAL: Every Arabic word MUST have full tashkeel (فَتْحَة ضَمَّة
   return (
     <div className="screen">
       <Hdr title="Edit Card" sub={local.english} onBack={onBack}
-        right={<button className="btn btn-primary btn-sm" onClick={()=>onSave(local)}><Check size={13}/>Save</button>}/>
+        right={<div style={{display:"flex",gap:8}}>{onRefactor&&card.wordType!=="grammar"&&<button className="btn btn-sm" onClick={onRefactor} title="Regenerate base form, conjugation, plural and preposition" style={{background:"var(--surface2)",color:"var(--text2)"}}><RefreshCw size={13}/>Re-factor</button>}<button className="btn btn-primary btn-sm" onClick={()=>onSave(local)}><Check size={13}/>Save</button></div>}/>
       <div style={{padding:"20px 20px 0",display:"flex",flexDirection:"column",gap:15}}>
         <div><label className="lbl">English Headword</label><input className="input" value={local.english} onChange={e=>setField("english",e.target.value)}/></div>
         <div><label className="lbl">Arabic Base Word</label><input className="input ar" value={local.arabicBase} onChange={e=>setField("arabicBase",e.target.value)} style={{fontSize:22,direction:"rtl"}}/></div>
@@ -4531,7 +4920,7 @@ CRITICAL: Every Arabic word MUST have full tashkeel (فَتْحَة ضَمَّة
 // ─────────────────────────────────────────────────────────────
 // STUDY SCREEN
 // ─────────────────────────────────────────────────────────────
-function StudyScreen({cards,currentIndex,onSwipe,onBack,canUndo,onExit,trackUsage,decks,cardStates,onAddToFlashcard,activeFormOverride,onToggleWeakForm,onSaveAid,deckId,immersionMode,grammarImmersionMode,onSaveImmersionDef}) {
+function StudyScreen({cards,currentIndex,onSwipe,onBack,canUndo,onDeleteCard,onEditCard,onRefactorSave,onExit,trackUsage,decks,cardStates,onAddToFlashcard,activeFormOverride,onToggleWeakForm,onSaveAid,deckId,immersionMode,grammarImmersionMode,onSaveImmersionDef}) {
   const [flipped,setFlipped]=useState(false);
   const [selForm,setSelForm]=useState(null);
   const [gen,setGen]=useState(null);
@@ -4543,6 +4932,8 @@ function StudyScreen({cards,currentIndex,onSwipe,onBack,canUndo,onExit,trackUsag
   const [playingEx,setPlayingEx]=useState(-1); // grammar example audio index
   const card=cards[currentIndex];
   const isGrammar=card.wordType==="grammar";
+  const isManual=card.wordType==="manual";
+  const [refactorOpen,setRefactorOpen]=useState(false);
   const grammar=card.grammar||{explanation:"",examples:[]};
   const availForms=Object.entries(card.forms||{}).filter(([,v])=>v);
   // A pending inflectional weak form (e.g. failed "plural" last time) means
@@ -4557,7 +4948,7 @@ function StudyScreen({cards,currentIndex,onSwipe,onBack,canUndo,onExit,trackUsag
   // Immersion Mode applies to vocab always when on; grammar only follows it
   // when grammarImmersionMode is ALSO explicitly on (grammar stays in the
   // learner's native language by default — higher abstraction, per the plan).
-  const useImmersion=!!immersionMode&&(!isGrammar||!!grammarImmersionMode);
+  const useImmersion=!!immersionMode&&!isManual&&(!isGrammar||!!grammarImmersionMode);
   const [immersionDefLoading,setImmersionDefLoading]=useState(false);
   const [immersionDefError,setImmersionDefError]=useState("");
   const [diagramImgLoading,setDiagramImgLoading]=useState(false);
@@ -4685,8 +5076,13 @@ Return ONLY valid JSON: {"sentence":"...","translation":"...","imagePrompt":"...
     <div className="screen" style={{display:"flex",flexDirection:"column",padding:"18px 18px 20px"}}>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
         <button className="btn btn-ghost" onClick={onExit} style={{width:32,height:32}}><X size={14}/></button>
-        <span style={{fontSize:13,color:"var(--text2)",fontWeight:600}}>{currentIndex+1} <span style={{color:"var(--text3)",fontWeight:400}}>/ {cards.length}</span></span>
-        <button className="btn btn-ghost" onClick={onBack} disabled={!canUndo} title="Undo last swipe" style={{width:32,height:32,opacity:canUndo?1:0.3}}><ArrowLeft size={14}/></button>
+        <span style={{fontSize:13,color:"var(--text2)",fontWeight:600}}>Card {currentIndex+1} <span style={{color:"var(--text3)",fontWeight:400}}>of {cards.length} · {cards.length-currentIndex-1} left</span></span>
+        <div style={{display:"flex",gap:6}}>
+          {onRefactorSave&&!isGrammar&&!isManual&&<button className="btn btn-ghost" onClick={()=>setRefactorOpen(true)} title="Re-factor this card" style={{width:32,height:32}}><RefreshCw size={14}/></button>}
+          {onEditCard&&<button className="btn btn-ghost" onClick={()=>onEditCard(card.id)} title="Edit this card" style={{width:32,height:32}}><Edit3 size={14}/></button>}
+          {onDeleteCard&&<button className="btn btn-ghost" onClick={()=>onDeleteCard(card.id)} title="Delete this card (10s undo)" style={{width:32,height:32,color:"var(--weak)"}}><Trash2 size={14}/></button>}
+          <button className="btn btn-ghost" onClick={onBack} disabled={!canUndo} title="Undo last swipe" style={{width:32,height:32,opacity:canUndo?1:0.3}}><ArrowLeft size={14}/></button>
+        </div>
       </div>
       <div className="progress-track" style={{marginBottom:16}}><div className="progress-fill" style={{width:`${((currentIndex+1)/cards.length)*100}%`,background:"var(--accent)"}}/></div>
 
@@ -4696,7 +5092,7 @@ Return ONLY valid JSON: {"sentence":"...","translation":"...","imagePrompt":"...
           <div className="flip-card-inner">
             {/* Front face — English/native (or grammar concept); Arabic-first when Immersion Mode is on */}
             <div className="flip-card-face">
-              {useImmersion?(
+              {isManual?<ManualFace card={card} side="front"/>:useImmersion?(
                 <>
                   <div className="sec" style={{marginBottom:16}}>{isGrammar?<>Grammar · <span className="ar">قَوَاعِد</span></>:testForm?<>Arabic · <span style={{color:"var(--weak)"}}>{FORM_LABELS[testForm]||testForm} (retest)</span></>:"Arabic"}</div>
                   <div className="ar" style={{fontSize:isGrammar?30:38,color:"var(--text)"}}>{testForm?card.forms[testForm]:card.arabicBase}</div>
@@ -4713,7 +5109,7 @@ Return ONLY valid JSON: {"sentence":"...","translation":"...","imagePrompt":"...
             </div>
             {/* Back face — Arabic (or grammar rule); Arabic-only definition when Immersion Mode is on */}
             <div className="flip-card-face flip-card-back">
-              {useImmersion?(
+              {isManual?<ManualFace card={card} side="back"/>:useImmersion?(
                 <>
                   <div className="sec" style={{marginBottom:5}}>Arabic Explanation{testForm&&!isGrammar&&<> · <span style={{color:"var(--weak)"}}>{FORM_LABELS[testForm]||testForm} (retest)</span></>}</div>
                   {immersionDefLoading?(
@@ -4741,6 +5137,8 @@ Return ONLY valid JSON: {"sentence":"...","translation":"...","imagePrompt":"...
                   <div className="sec" style={{marginBottom:5}}>Arabic · <span style={{textTransform:"capitalize"}}>{card.wordType}</span></div>
                   <div className="ar" style={{fontSize:42,color:"var(--text)"}}>{card.arabicBase}</div>
                   <div style={{fontSize:13,color:"var(--text3)"}}>{card.english}</div>
+                  {card.source?.text&&<div className="ar" style={{fontSize:15,color:"var(--text2)",marginTop:10,lineHeight:1.9,maxHeight:110,overflowY:"auto",padding:"0 6px"}}>{card.source.text}{card.source.name&&<div style={{fontSize:11,color:"var(--text3)",fontFamily:"inherit"}} dir="ltr">— {card.source.name}</div>}</div>}
+                  {card.needsLookup&&<div style={{fontSize:12,color:"var(--weak)",marginTop:8}}>⚠ Needs lookup — tap Re-factor above</div>}
                 </>
               )}
               {card.srsStreak>0&&(
@@ -4834,7 +5232,7 @@ Return ONLY valid JSON: {"sentence":"...","translation":"...","imagePrompt":"...
           </div>
         )}
         {/* Expanded back content (forms, generate, audio) — only when flipped */}
-        {flipped&&!isGrammar&&(
+        {flipped&&!isGrammar&&!isManual&&(
           <div className="gen-appear" style={{background:"var(--surface)",border:"1.5px solid var(--border)",borderRadius:"var(--r)",padding:"18px 17px",boxShadow:"0 5px 24px rgba(0,0,0,0.08)"}}>
             <div className="sec">Select a form</div>
             <div style={{display:"flex",flexWrap:"wrap",gap:7,marginBottom:12}}>
@@ -4950,6 +5348,7 @@ Return ONLY valid JSON: {"sentence":"...","translation":"...","imagePrompt":"...
           </div>
         )}
       </div>
+      {refactorOpen&&<RefactorSheet card={card} trackUsage={trackUsage} onClose={()=>setRefactorOpen(false)} onApply={onRefactorSave}/>}
       {wordPopup&&<WordPopup word={wordPopup.word} context={wordPopup.context} decks={decks||[]} cardStates={cardStates||{}} onClose={()=>setWordPopup(null)} onAddToFlashcard={onAddToFlashcard} trackUsage={trackUsage}/>}
     </div>
   );
@@ -9473,7 +9872,7 @@ CRITICAL: Every Arabic phrase must have full tashkeel.`,
 // due date) — these are the ones "Throttle New Cards" and "Max Reviews Per
 // Day" (Settings → Backlog Recovery) apply to.
 const SRS_MODES=["smart","due","weak","new","all","grammar"];
-function MasterReviewScreen({decks,cardStates,onBack,onSwipeCard,onUndoSwipe,onDeckTouched,onToggleWeakForm,trackUsage,onAddToFlashcard,studyLog,onLogStudy,onMasterReading,onMasterListening,onMasterSpeaking,poolThresholdDays,newPoolDaily,onNewPoolDeckDone,newCardsPerDayEnabled,newCardsPerDayLimit,newCardsIntroducedToday,maxReviewsPerDayEnabled,maxReviewsPerDay,reviewsDoneToday,onReviewLogged,onSaveAid,immersionMode,onSaveImmersionDef,grammarImmersionMode}) {
+function MasterReviewScreen({decks,cardStates,onBack,onSwipeCard,onUndoSwipe,onDeleteCard,onReinsertCard,onEditCard,onUpdateCard,onDeckTouched,onToggleWeakForm,trackUsage,onAddToFlashcard,studyLog,onLogStudy,onMasterReading,onMasterListening,onMasterSpeaking,poolThresholdDays,newPoolDaily,onNewPoolDeckDone,newCardsPerDayEnabled,newCardsPerDayLimit,newCardsIntroducedToday,maxReviewsPerDayEnabled,maxReviewsPerDay,reviewsDoneToday,onReviewLogged,onSaveAid,immersionMode,onSaveImmersionDef,grammarImmersionMode}) {
   const SCREEN_NAME="masterReview";
   const saved=useRef(loadScreen(SCREEN_NAME)||{}).current;
   const [started,setStarted]=useState(saved.started||false);
@@ -9522,6 +9921,7 @@ function MasterReviewScreen({decks,cardStates,onBack,onSwipeCard,onUndoSwipe,onD
   // count, so its lastStudiedAt never updates — it stays "stalest" forever and
   // keeps re-claiming the front of every future rotation, starving other decks.
   const touchGoals=useRef({});
+  const [refactorOpen,setRefactorOpen]=useState(false);
 
   // Persist screen state only while a session is active or pausable; otherwise leave storage cleared
   useEffect(()=>{
@@ -9703,6 +10103,34 @@ function MasterReviewScreen({decks,cardStates,onBack,onSwipeCard,onUndoSwipe,onD
     }
   };
 
+  // Delete the current card mid-review: one tap, review slides to the next card
+  // (no restart, no lost place), 10s Undo puts it back where it was.
+  const deleteMasterCard=()=>{
+    const card=sessionCards[idx];
+    if(!card||!onDeleteCard) return;
+    const meta=onDeleteCard(card._deckId,card.id);
+    if(!meta) return;
+    const wasIdx=idx;
+    const nextCards=sessionCards.filter(c=>!(c.id===card.id&&c._deckId===card._deckId));
+    swipeHist.current=[];
+    setFlipped(false);setSelForm(null);setGen(null);setGenLoading(false);
+    if(window.speechSynthesis) window.speechSynthesis.cancel();setMPlaying(false);
+    if(nextCards.length===0){
+      setStarted(false);setMode("done");setSavedSession(null);
+      saveScreen(SCREEN_NAME,null);saveSession(null);
+    } else {
+      const nextIdx=Math.min(wasIdx,nextCards.length-1);
+      setSessionCards(nextCards);setIdx(nextIdx);
+      setSavedSession({cards:nextCards,idx:nextIdx,results});
+    }
+    showToast("Card deleted","info",10000,{label:"Undo",onClick:()=>{
+      onReinsertCard(card._deckId,meta.removed,meta.stateIdx);
+      setSessionCards(q=>{ const n=[...q]; n.splice(Math.min(wasIdx,n.length),0,card); return n; });
+      setIdx(wasIdx);
+      setStarted(true);
+    }});
+  };
+
   const undoMasterSwipe=()=>{
     const snap=swipeHist.current.pop();
     if(!snap) return;
@@ -9767,7 +10195,7 @@ function MasterReviewScreen({decks,cardStates,onBack,onSwipeCard,onUndoSwipe,onD
   // vocab always follows immersionMode; grammar only follows it when
   // grammarImmersionMode is ALSO explicitly on (grammar stays in the
   // learner's native language by default), same rule as StudyScreen.
-  const useImmersion=!!immersionMode&&!!card&&(card.wordType!=="grammar"||!!grammarImmersionMode);
+  const useImmersion=!!immersionMode&&!!card&&card.wordType!=="manual"&&(card.wordType!=="grammar"||!!grammarImmersionMode);
 
   useEffect(()=>{
     if(!useImmersion||!liveCard||liveCard.immersionDef) return;
@@ -9870,6 +10298,7 @@ Return ONLY valid JSON: {"sentence":"...","translation":"...","imagePrompt":"...
   // Active study
   if(started&&card){
     const isGrammar=card.wordType==="grammar";
+    const isManual=card.wordType==="manual";
     const availForms=Object.entries(card.forms||{}).filter(([,v])=>v);
     const testForm=pendingTestForm(card);
     const grammar=card.grammar||{explanation:"",examples:[]};
@@ -9889,8 +10318,11 @@ Return ONLY valid JSON: {"sentence":"...","translation":"...","imagePrompt":"...
       <div className="screen" style={{display:"flex",flexDirection:"column",padding:"18px 18px 20px"}}>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
           <button className="btn btn-ghost" onClick={()=>setStarted(false)} title="Pause — resume from the menu anytime" style={{width:32,height:32}}><X size={14}/></button>
-          <span style={{fontSize:13,color:"var(--text2)",fontWeight:600}}>{idx+1} / {sessionCards.length}</span>
+          <span style={{fontSize:13,color:"var(--text2)",fontWeight:600}}>Card {idx+1} <span style={{color:"var(--text3)",fontWeight:400}}>of {sessionCards.length} · {sessionCards.length-idx-1} left</span></span>
           <div style={{display:"flex",alignItems:"center",gap:6}}>
+            {onUpdateCard&&card&&card.wordType!=="grammar"&&card.wordType!=="manual"&&<button className="btn btn-ghost" onClick={()=>setRefactorOpen(true)} title="Re-factor this card" style={{width:32,height:32}}><RefreshCw size={14}/></button>}
+            {onEditCard&&card&&card.wordType!=="grammar"&&<button className="btn btn-ghost" onClick={()=>onEditCard(card._deckId,card.id)} title="Edit this card" style={{width:32,height:32}}><Edit3 size={14}/></button>}
+            {onDeleteCard&&card&&<button className="btn btn-ghost" onClick={deleteMasterCard} title="Delete this card (10s undo)" style={{width:32,height:32,color:"var(--weak)"}}><Trash2 size={14}/></button>}
             <button className="btn btn-ghost" onClick={undoMasterSwipe} disabled={!swipeHist.current.length} title="Undo last swipe" style={{width:32,height:32,opacity:swipeHist.current.length?1:0.3}}><ArrowLeft size={14}/></button>
             <span style={{fontSize:12,color:"var(--text3)"}}><span style={{color:"var(--know)"}}>{results.known}✓</span> <span style={{color:"var(--weak)"}}>{results.weak}✗</span></span>
           </div>
@@ -9908,7 +10340,7 @@ Return ONLY valid JSON: {"sentence":"...","translation":"...","imagePrompt":"...
           <div key={`flip${idx}`} className={`flip-card ${flipped?'is-flipped':''}`} onClick={()=>setFlipped(f=>!f)}>
             <div className="flip-card-inner">
               <div className="flip-card-face">
-                {useImmersion?(
+                {isManual?<ManualFace card={card} side="front"/>:useImmersion?(
                   <>
                     <div className="sec" style={{marginBottom:16}}>{testForm&&!isGrammar?<>Arabic · <span style={{color:"var(--weak)"}}>{FORM_LABELS[testForm]||testForm} (retest)</span></>:"Arabic"}</div>
                     <div className="ar" style={{fontSize:36,color:"var(--text)"}}>{testForm?card.forms[testForm]:card.arabicBase}</div>
@@ -9930,7 +10362,7 @@ Return ONLY valid JSON: {"sentence":"...","translation":"...","imagePrompt":"...
                 )}
               </div>
               <div className="flip-card-face flip-card-back">
-                {useImmersion?(
+                {isManual?<ManualFace card={card} side="back"/>:useImmersion?(
                   <>
                     <div className="sec" style={{marginBottom:5}}>Arabic Explanation{testForm&&!isGrammar&&<> · <span style={{color:"var(--weak)"}}>{FORM_LABELS[testForm]||testForm} (retest)</span></>}</div>
                     {immersionDefLoading?(
@@ -9956,6 +10388,8 @@ Return ONLY valid JSON: {"sentence":"...","translation":"...","imagePrompt":"...
                     <div style={{fontSize:13,color:"var(--text3)"}}>{card.english}{testForm?` · ${FORM_LABELS[testForm]||testForm}`:""}</div>
                     {card.srsStreak>0&&<div style={{display:"inline-flex",alignItems:"center",gap:4,marginTop:6,fontSize:11,color:"var(--know)"}}>{"🔥".repeat(Math.min(card.srsStreak,5))} {card.srsStreak} streak</div>}
                     {card.forms?.harf&&<div style={{display:"inline-flex",alignItems:"center",gap:5,marginTop:7,background:"var(--harf-bg)",border:"1px solid var(--harf-border)",borderRadius:100,padding:"3px 11px"}}><span className="ar" style={{fontSize:17,color:"var(--harf)",fontWeight:600}}>{card.forms.harf}</span></div>}
+                    {card.source?.text&&<div className="ar" style={{fontSize:15,color:"var(--text2)",marginTop:10,lineHeight:1.9,maxHeight:110,overflowY:"auto",padding:"0 6px"}}>{card.source.text}{card.source.name&&<div style={{fontSize:11,color:"var(--text3)"}} dir="ltr">— {card.source.name}</div>}</div>}
+                    {card.needsLookup&&<div style={{fontSize:12,color:"var(--weak)",marginTop:8}}>⚠ Needs lookup — tap Re-factor above</div>}
                     <div style={{fontSize:11,color:"var(--text3)",marginTop:14,fontWeight:500}}>↻ Tap to flip back</div>
                   </>
                 )}
@@ -10015,7 +10449,7 @@ Return ONLY valid JSON: {"sentence":"...","translation":"...","imagePrompt":"...
               )}
             </div>
           )}
-          {flipped&&!isGrammar&&(
+          {flipped&&!isGrammar&&!isManual&&(
             <div className="gen-appear" style={{background:"var(--surface)",border:"1.5px solid var(--border)",borderRadius:"var(--r)",padding:"18px 17px",boxShadow:"0 5px 24px rgba(0,0,0,0.08)"}}>
               <div className="sec">Select a form</div>
               <div style={{display:"flex",flexWrap:"wrap",gap:7,marginBottom:12}}>
@@ -10123,6 +10557,7 @@ Return ONLY valid JSON: {"sentence":"...","translation":"...","imagePrompt":"...
             <span><span className="kbd">←</span> Weak</span><span><span className="kbd">→</span> Know</span>
           </div>}
         </div>
+        {refactorOpen&&card&&<RefactorSheet card={card} trackUsage={trackUsage} onClose={()=>setRefactorOpen(false)} onApply={merged=>{const {_deckId,...clean}=merged; onUpdateCard(card._deckId,clean); setSessionCards(q=>q.map(c=>c.id===clean.id&&c._deckId===card._deckId?{...c,...clean}:c));}}/>}
         {wordPopup&&<WordPopup word={wordPopup.word} context={wordPopup.context} decks={decks} cardStates={cardStates} onClose={()=>setWordPopup(null)} onAddToFlashcard={onAddToFlashcard} trackUsage={trackUsage}/>}
       </div>
     );
@@ -11975,6 +12410,8 @@ export default function App() {
   const [cardStates,setCardStates]=useState(SEED_CARDS);
   const [activeDeck,setActiveDeck]=useState(null);
   const [activeCard,setActiveCard]=useState(null);
+  const [manualFrom,setManualFrom]=useState("home");
+  const [refactorFromEdit,setRefactorFromEdit]=useState(false);
   const [settings,setSettings]=useState({orKey:"",gKey:"",model:"openai/gpt-4o-mini"});
   const [user,setUser]=useState(undefined); // undefined = loading, null = signed out
   const watchProgress=useWatchProgress(user);
@@ -12854,17 +13291,124 @@ export default function App() {
     setCurrentIdx(snap.prevIdx);
   };
 
+  // Delete the current card from a vocab study session: review continues at the
+  // same position (next card slides in), and Undo restores card + position.
+  const deleteFromStudy=cardId=>{
+    if(!activeDeck) return;
+    const deckId=activeDeck.id;
+    const cardIdx=sessionCards.findIndex(c=>c.id===cardId);
+    const stateIdx=(cardStates[deckId]||[]).findIndex(c=>c.id===cardId);
+    if(cardIdx<0||stateIdx<0) return;
+    const removed=cardStates[deckId][stateIdx];
+    const wasIdx=currentIdx;
+    setCardStates(p=>({...p,[deckId]:(p[deckId]||[]).filter(c=>c.id!==cardId)}));
+    const nextCards=sessionCards.filter(c=>c.id!==cardId);
+    studyHistory.current=[]; // snapshots index into the old queue
+    if(nextCards.length===0){ setSessionCards([]); go("deck"); }
+    else {
+      setSessionCards(nextCards);
+      setCurrentIdx(Math.min(cardIdx,nextCards.length-1));
+    }
+    const sessionCard=sessionCards[cardIdx];
+    showToast("Card deleted","info",10000,{label:"Undo",onClick:()=>{
+      setCardStates(p=>{
+        const cur=p[deckId]||[];
+        if(cur.some(c=>c.id===removed.id)) return p;
+        const next=[...cur]; next.splice(Math.min(stateIdx,next.length),0,removed);
+        return {...p,[deckId]:next};
+      });
+      setSessionCards(q=>{ if(q.some(c=>c.id===sessionCard.id)) return q; const n=[...q]; n.splice(Math.min(cardIdx,n.length),0,sessionCard); return n; });
+      setCurrentIdx(wasIdx);
+      go("study");
+    }});
+  };
+  // Create a deck without navigating away (used by the inline "New deck" picker).
+  const createDeckQuiet=title=>{
+    const id=`d${Date.now()}${Math.floor(Math.random()*1000)}`;
+    setDecks(p=>[{id,title,createdAt:Date.now()},...p]);
+    setCardStates(p=>({...p,[id]:[]}));
+    return id;
+  };
+  _deckApi.createDeck=createDeckQuiet;
+  // Exactly one capture deck at a time; tapping the current one unsets it.
+  const setCaptureDeck=id=>{
+    setDecks(p=>p.map(d=>({...d,isCapture:d.id===id&&!d.isCapture})));
+    const d=decks.find(x=>x.id===id);
+    showToast(d?.isCapture?"Capture deck cleared":`"${d?.title}" is now your capture deck`,"success");
+  };
+  // Move cards between decks. Card objects move untouched (fields, SRS, history).
+  const moveCards=(fromId,ids,toId)=>{
+    if(!fromId||!toId||fromId===toId||!ids.length) return;
+    const idSet=new Set(ids);
+    const fromList=cardStates[fromId]||[];
+    const moved=fromList.filter(c=>idSet.has(c.id));
+    if(!moved.length) return;
+    const positions=fromList.map((c,i)=>idSet.has(c.id)?{id:c.id,i}:null).filter(Boolean);
+    setCardStates(p=>({...p,[fromId]:(p[fromId]||[]).filter(c=>!idSet.has(c.id)),[toId]:[...(p[toId]||[]),...moved.filter(m=>!(p[toId]||[]).some(c=>c.id===m.id))]}));
+    const toTitle=(decks.find(d=>d.id===toId)||{}).title||"deck";
+    showToast(`Moved ${moved.length} card${moved.length===1?"":"s"} to ${toTitle}`,"success",8000,{label:"Undo",onClick:()=>{
+      setCardStates(p=>{
+        const back=(p[toId]||[]).filter(c=>!idSet.has(c.id));
+        const cur=[...(p[fromId]||[])];
+        for(const {id,i} of positions){ const card=moved.find(m=>m.id===id); if(card&&!cur.some(c=>c.id===id)) cur.splice(Math.min(i,cur.length),0,card); }
+        return {...p,[fromId]:cur,[toId]:back};
+      });
+    }});
+  };
+  // Replace a card in place (re-factor result). Keeps an active study queue in sync.
+  const updateCardAnywhere=(deckId,card)=>{
+    setCardStates(p=>({...p,[deckId]:(p[deckId]||[]).map(c=>c.id===card.id?card:c)}));
+    setSessionCards(q=>q.map(c=>c.id===card.id?{...c,...card}:c));
+    showToast("Card re-factored","success");
+  };
+  const removeCardMeta=(deckId,cardId)=>{
+    const list=cardStates[deckId]||[];
+    const stateIdx=list.findIndex(c=>c.id===cardId);
+    if(stateIdx<0) return null;
+    const removed=list[stateIdx];
+    setCardStates(p=>({...p,[deckId]:(p[deckId]||[]).filter(c=>c.id!==cardId)}));
+    return {removed,stateIdx};
+  };
+  const reinsertCard=(deckId,card,idx)=>{
+    setCardStates(p=>{
+      const cur=p[deckId]||[];
+      if(cur.some(c=>c.id===card.id)) return p;
+      const next=[...cur]; next.splice(Math.min(idx,next.length),0,card);
+      return {...p,[deckId]:next};
+    });
+  };
+  const editFromMaster=(deckId,cardId)=>{
+    const d=decks.find(x=>x.id===deckId); const c=(cardStates[deckId]||[]).find(x=>x.id===cardId);
+    if(!d||!c) return;
+    setActiveDeck(d); setActiveCard(c); go("editCard");
+  };
   // Restore a card snapshot — used by MasterReview undo
   const restoreCard=(deckId,prevCard)=>{
     if(!deckId||!prevCard) return;
     setCardStates(p=>({...p,[deckId]:(p[deckId]||[]).map(c=>c.id===prevCard.id?prevCard:c)}));
   };
-  const saveCards=newCards=>{
-    setCardStates(p=>({...p,[activeDeck.id]:[...(p[activeDeck.id]||[]),...newCards]}));
-    setDecks(p=>p.map(d=>d.id===activeDeck.id?{...d,createdAt:Date.now()}:d));go("deck");
+  const saveCards=(newCards,targetId)=>{
+    const tid=targetId||activeDeck.id;
+    setCardStates(p=>({...p,[tid]:[...(p[tid]||[]),...newCards]}));
+    setDecks(p=>p.map(d=>d.id===tid?{...d,createdAt:Date.now()}:d));
+    if(tid!==activeDeck.id){ const d=decks.find(x=>x.id===tid); if(d) setActiveDeck(d); }
+    go("deck");
   };
   const saveEditedCard=edited=>{setCardStates(p=>({...p,[activeDeck.id]:p[activeDeck.id].map(c=>c.id===edited.id?edited:c)}));go("deck");};
-  const deleteCard=cardId=>setCardStates(p=>({...p,[activeDeck.id]:p[activeDeck.id].filter(c=>c.id!==cardId)}));
+  const deleteCard=cardId=>{
+    const deckId=activeDeck.id;
+    const list=cardStates[deckId]||[];
+    const idx=list.findIndex(c=>c.id===cardId);
+    if(idx<0) return;
+    const removed=list[idx];
+    setCardStates(p=>({...p,[deckId]:(p[deckId]||[]).filter(c=>c.id!==cardId)}));
+    showToast("Card deleted","info",10000,{label:"Undo",onClick:()=>setCardStates(p=>{
+      const cur=p[deckId]||[];
+      if(cur.some(c=>c.id===removed.id)) return p;
+      const next=[...cur]; next.splice(Math.min(idx,next.length),0,removed);
+      return {...p,[deckId]:next};
+    })});
+  };
   const addToFlashcard=(deckId,card)=>{
     setCardStates(p=>({...p,[deckId]:[...(p[deckId]||[]),card]}));
     setDecks(p=>p.map(d=>d.id===deckId?{...d,createdAt:Date.now()}:d));
@@ -13014,8 +13558,8 @@ export default function App() {
   const commonProps={decks,cardStates,trackUsage,profile};
 
   const screens={
-    home:<HomeScreen {...commonProps} watchHours={(progressSummary(watchProgress.records).seconds/3600).toFixed(2)} onOpenDeck={openDeck} onSettings={()=>go("settings")} onCreateDeck={()=>go("createDeck")} onReading={()=>go("reading")} onListening={()=>go("listening")} onConversation={()=>go("conversation")} onDictation={()=>go("dictation")} onCapsules={()=>go("capsules")} onSearch={()=>setShowSearch(true)} onWatch={()=>go("watch")} onTranslate={()=>go("translate")} onProgress={()=>go("progress")} onMasterReview={()=>go("masterReview")} onGuide={()=>go("guide")} onPresets={()=>go("preset")} onGrammarImport={()=>{setGrammarTarget(null);go("grammarImport");}} onVocabImport={()=>{setVocabTarget(null);go("vocabImport");}} darkMode={darkMode} onToggleDark={()=>setDarkMode(d=>!d)} studyLog={mergeWatchStudyLog(studyLog,watchProgress.records)} poolThresholdDays={getPoolThresholdDays(settings)} immersionMode={!!settings.immersionMode} immersionNudgeShown={!!settings.immersionNudgeShown} onImmersionNudgeAction={handleImmersionNudge}/>,
-    watch:<WatchScreen onBack={()=>go("home")} onAddToFlashcard={addToFlashcard} decks={decks} trackUsage={trackUsage} user={user} watchProgress={watchProgress}/>,
+    home:<HomeScreen {...commonProps} watchHours={(progressSummary(watchProgress.records).seconds/3600).toFixed(2)} onOpenDeck={openDeck} onSettings={()=>go("settings")} onCreateDeck={()=>go("createDeck")} onReading={()=>go("reading")} onListening={()=>go("listening")} onConversation={()=>go("conversation")} onDictation={()=>go("dictation")} onCapsules={()=>go("capsules")} onSearch={()=>setShowSearch(true)} onWatch={()=>go("watch")} onTranslate={()=>go("translate")} onProgress={()=>go("progress")} onMasterReview={()=>go("masterReview")} onGuide={()=>go("guide")} onPresets={()=>go("preset")} onGrammarImport={()=>{setGrammarTarget(null);go("grammarImport");}} onVocabImport={()=>{setVocabTarget(null);go("vocabImport");}} onQuickAdd={()=>go("quickAdd")} onAddManual={()=>{setManualFrom("home");go("manualCard");}} darkMode={darkMode} onToggleDark={()=>setDarkMode(d=>!d)} studyLog={mergeWatchStudyLog(studyLog,watchProgress.records)} poolThresholdDays={getPoolThresholdDays(settings)} immersionMode={!!settings.immersionMode} immersionNudgeShown={!!settings.immersionNudgeShown} onImmersionNudgeAction={handleImmersionNudge}/>,
+    watch:<WatchScreen onBack={()=>go("home")} onAddToFlashcard={addToFlashcard} decks={decks} cardStates={cardStates} trackUsage={trackUsage} user={user} watchProgress={watchProgress}/>,
     translate:<TranslateScreen onBack={()=>go("home")} onAddToFlashcard={addToFlashcard} decks={decks} trackUsage={trackUsage} nativeLanguage={learnerLang}/>,
     grammarImport:<GrammarImportScreen key={grammarTarget?.id||"new"} onBack={()=>{setGrammarTarget(null);go("home");}} trackUsage={trackUsage} onSave={saveGrammarDeck} targetDeck={grammarTarget} nativeLanguage={learnerLang}/>,
     vocabImport:<VocabImportScreen key={vocabTarget?.id||"new"} onBack={()=>{setVocabTarget(null);go("home");}} trackUsage={trackUsage} onSave={saveVocabDeck} targetDeck={vocabTarget} nativeLanguage={learnerLang} cardStates={cardStates}/>,
@@ -13024,12 +13568,16 @@ export default function App() {
     guide:<GuideScreen onBack={()=>go("home")} onReplayOnboarding={()=>{setShowOnboarding(true);go("home");}} onResetTips={()=>{resetTips();showToast("Tips reset — they'll show again as you explore.","success");}}/>,
     island:<LanguageIslandScreen decks={decks} cardStates={cardStates} profile={profile} trackUsage={trackUsage} onBack={()=>go("capsules")}/>,
     dictation:<DictationScreen decks={decks} cardStates={cardStates} profile={profile} trackUsage={trackUsage} onBack={()=>go("home")} onLogStudy={logStudy} onFinish={()=>{go("home");setSessionRating({module:"writing"});}}/>,
-    settings:<SettingsScreen settings={settings} setSettings={setSettings} onBack={()=>go("home")} usage={usage} user={user} onSignOut={handleSignOut} onReplayOnboarding={()=>setShowOnboarding(true)} profile={profile} setProfile={setProfile} studyLog={studyLog} onUpdateTargets={(t)=>setStudyLog(sl=>({...sl,targets:t}))} decks={decks} cardStates={cardStates} setCardStates={setCardStates} trackUsage={trackUsage} onResetUsage={resetUsageCounters} onResumeBulkFill={bulkGenerateImmersionDefs} isBulkAllowlisted={IMMERSION_BULK_ALLOWLIST.includes(user?.email)}/>,
+    settings:<SettingsScreen settings={settings} setSettings={setSettings} onSetCaptureDeck={id=>setDecks(p=>p.map(d=>({...d,isCapture:!!id&&d.id===id})))} onBack={()=>go("home")} usage={usage} user={user} onSignOut={handleSignOut} onReplayOnboarding={()=>setShowOnboarding(true)} profile={profile} setProfile={setProfile} studyLog={studyLog} onUpdateTargets={(t)=>setStudyLog(sl=>({...sl,targets:t}))} decks={decks} cardStates={cardStates} setCardStates={setCardStates} trackUsage={trackUsage} onResetUsage={resetUsageCounters} onResumeBulkFill={bulkGenerateImmersionDefs} isBulkAllowlisted={IMMERSION_BULK_ALLOWLIST.includes(user?.email)}/>,
     createDeck:<CreateDeckScreen onBack={()=>go("home")} onCreate={createDeck}/>,
-    addCards:activeDeck&&<AddCardsScreen deck={activeDeck} onBack={()=>go("deck")} onSave={saveCards} trackUsage={trackUsage} nativeLanguage={learnerLang} cardStates={cardStates}/>,
-    deck:activeDeck&&<DeckScreen deck={activeDeck} cards={cardStates[activeDeck.id]||[]} onStartStudy={startStudy} onBack={()=>go("home")} onAddCards={()=>{if(activeDeck.deckType==="grammar"){setGrammarTarget(activeDeck);go("grammarImport");}else go("addCards");}} onImportMore={()=>{setVocabTarget(activeDeck);go("vocabImport");}} onEditCard={c=>{if(c.wordType==="grammar"){showToast("Grammar cards can't be edited yet — remove it and re-import that section.","info");return;}setActiveCard(c);go("editCard");}} onDeleteCard={deleteCard} onRenameDeck={renameDeck} onDeleteDeck={deleteDeck} onSetDeckUnit={setDeckUnit} onSetDeckLastStudied={setDeckLastStudied} onTogglePinnedNew={togglePinnedNew} onGraduateNow={graduateNow} poolThresholdDays={getPoolThresholdDays(settings)} newCardsRemainingToday={newCardsRemainingTodayCount} savedIdx={{all:savedIdx.current[activeDeck.id+"_all"]||0,new:savedIdx.current[activeDeck.id+"_new"]||0,weak:savedIdx.current[activeDeck.id+"_weak"]||0,known:savedIdx.current[activeDeck.id+"_known"]||0,due:savedIdx.current[activeDeck.id+"_due"]||0}}/>,
-    editCard:activeCard&&activeDeck&&<EditCardScreen card={activeCard} onBack={()=>go("deck")} onSave={saveEditedCard} trackUsage={trackUsage}/>,
-    study:activeDeck&&sessionCards.length>0&&<StudyScreen cards={sessionCards} currentIndex={currentIdx} onSwipe={handleSwipe} onBack={undoStudy} canUndo={studyHistory.current.length>0} onExit={()=>go("deck")} trackUsage={trackUsage} decks={decks} cardStates={cardStates} onAddToFlashcard={addToFlashcard} onToggleWeakForm={(cardId,formKey)=>toggleWeakForm(activeDeck.id,cardId,formKey)} onSaveAid={(cardId,formKey,aid)=>saveCardAid(activeDeck.id,cardId,formKey,aid)} deckId={activeDeck.id} immersionMode={!!settings.immersionMode} grammarImmersionMode={!!settings.grammarImmersionMode} onSaveImmersionDef={(cardId,text)=>saveCardImmersionDef(activeDeck.id,cardId,text)}/>,
+    addCards:activeDeck&&<AddCardsScreen deck={activeDeck} decks={decks} onBack={()=>go("deck")} onSave={saveCards} trackUsage={trackUsage} nativeLanguage={learnerLang} cardStates={cardStates}/>,
+    deck:activeDeck&&<DeckScreen deck={activeDeck} cards={cardStates[activeDeck.id]||[]} allDecks={decks} trackUsage={trackUsage} onMoveCards={(ids,to)=>moveCards(activeDeck.id,ids,to)} onUpdateCard={c=>updateCardAnywhere(activeDeck.id,c)} onSetCapture={setCaptureDeck} onAddManual={()=>{setManualFrom("deck");go("manualCard");}} onStartStudy={startStudy} onBack={()=>go("home")} onAddCards={()=>{if(activeDeck.deckType==="grammar"){setGrammarTarget(activeDeck);go("grammarImport");}else go("addCards");}} onImportMore={()=>{setVocabTarget(activeDeck);go("vocabImport");}} onEditCard={c=>{if(c.wordType==="grammar"){showToast("Grammar cards can't be edited yet — remove it and re-import that section.","info");return;}setActiveCard(c);go("editCard");}} onDeleteCard={deleteCard} onRenameDeck={renameDeck} onDeleteDeck={deleteDeck} onSetDeckUnit={setDeckUnit} onSetDeckLastStudied={setDeckLastStudied} onTogglePinnedNew={togglePinnedNew} onGraduateNow={graduateNow} poolThresholdDays={getPoolThresholdDays(settings)} newCardsRemainingToday={newCardsRemainingTodayCount} savedIdx={{all:savedIdx.current[activeDeck.id+"_all"]||0,new:savedIdx.current[activeDeck.id+"_new"]||0,weak:savedIdx.current[activeDeck.id+"_weak"]||0,known:savedIdx.current[activeDeck.id+"_known"]||0,due:savedIdx.current[activeDeck.id+"_due"]||0}}/>,
+    editCard:activeCard&&activeDeck&&(activeCard.wordType==="manual"
+      ?<ManualCardForm key={activeCard.id} initial={activeCard} decks={decks} onBack={()=>go("deck")} onSave={c=>saveEditedCard(c)}/>
+      :<EditCardScreen key={activeCard.id+JSON.stringify(activeCard.forms)+activeCard.arabicBase} card={activeCard} onBack={()=>go("deck")} onSave={saveEditedCard} trackUsage={trackUsage} onRefactor={()=>setRefactorFromEdit(true)}/>),
+    manualCard:<ManualCardForm key="new-manual" decks={decks} defaultDeck={manualFrom==="deck"&&activeDeck?activeDeck.id:defaultDeckId(decks)} onBack={()=>go(manualFrom==="deck"&&activeDeck?"deck":"home")} onSave={(card,did)=>{addToFlashcard(did,card);showToast("Card saved","success");if(manualFrom==="deck"&&activeDeck&&did!==activeDeck.id){const d=decks.find(x=>x.id===did);if(d)setActiveDeck(d);}go(manualFrom==="deck"?"deck":"home");}}/>,
+    quickAdd:<QuickAddScreen onBack={()=>go("home")} decks={decks} cardStates={cardStates} onAddToFlashcard={addToFlashcard} trackUsage={trackUsage}/>,
+    study:activeDeck&&sessionCards.length>0&&<StudyScreen cards={sessionCards} currentIndex={currentIdx} onSwipe={handleSwipe} onBack={undoStudy} canUndo={studyHistory.current.length>0} onDeleteCard={deleteFromStudy} onRefactorSave={c=>updateCardAnywhere(activeDeck.id,c)} onEditCard={cardId=>{ const c=(cardStates[activeDeck.id]||[]).find(x=>x.id===cardId); if(!c) return; if(c.wordType==="grammar"){showToast("Grammar cards can't be edited yet.","info");return;} setActiveCard(c); go("editCard"); }} onExit={()=>go("deck")} trackUsage={trackUsage} decks={decks} cardStates={cardStates} onAddToFlashcard={addToFlashcard} onToggleWeakForm={(cardId,formKey)=>toggleWeakForm(activeDeck.id,cardId,formKey)} onSaveAid={(cardId,formKey,aid)=>saveCardAid(activeDeck.id,cardId,formKey,aid)} deckId={activeDeck.id} immersionMode={!!settings.immersionMode} grammarImmersionMode={!!settings.grammarImmersionMode} onSaveImmersionDef={(cardId,text)=>saveCardImmersionDef(activeDeck.id,cardId,text)}/>,
     complete:<CompleteScreen known={sessionRes.current.known} weak={sessionRes.current.weak} onBack={()=>go("deck")}/>,
     reading:<ReadingScreen {...commonProps} onBack={()=>go("home")} onFinish={()=>{saveScreen("reading",null);saveSession(null);go("home");setSessionRating({module:"reading"});}} onAddToFlashcard={addToFlashcard} onLogStudy={logStudy}/>,
     listening:<ListeningScreen {...commonProps} onBack={()=>go("home")} onFinish={()=>{saveScreen("listening",null);saveSession(null);go("home");setSessionRating({module:"listening"});}} onAddToFlashcard={addToFlashcard} onLogStudy={logStudy}/>,
@@ -13038,7 +13586,7 @@ export default function App() {
     masterSpeaking:<ConversationScreen {...commonProps} master={true} masterPool={masterPool} onBack={()=>go("masterReview")} onFinish={()=>{saveScreen("masterSpeaking",null);saveSession(null);go("home");setSessionRating({module:"speaking",master:true});}} onLogStudy={logStudy} onAddToFlashcard={addToFlashcard}/>,
     conversation:<ConversationScreen {...commonProps} onBack={()=>go("home")} onFinish={()=>{saveScreen("conversation",null);saveSession(null);go("home");setSessionRating({module:"speaking"});}} onLogStudy={logStudy} onAddToFlashcard={addToFlashcard}/>,
     progress:<ProgressScreen watchProgress={watchProgress} decks={decks} cardStates={cardStates} studyLog={mergeWatchStudyLog(studyLog,watchProgress.records)} onBack={()=>go("home")} onLogManual={(e)=>logStudy(e)}/>,
-    masterReview:<MasterReviewScreen decks={decks} cardStates={cardStates} onBack={()=>go("home")} onSwipeCard={handleMasterSwipe} onUndoSwipe={restoreCard} onDeckTouched={touchDeck} onToggleWeakForm={toggleWeakForm} trackUsage={trackUsage} onAddToFlashcard={addToFlashcard} studyLog={studyLog} onLogStudy={logStudy} onSaveAid={saveCardAid}
+    masterReview:<MasterReviewScreen decks={decks} cardStates={cardStates} onBack={()=>go("home")} onDeleteCard={removeCardMeta} onReinsertCard={reinsertCard} onUpdateCard={updateCardAnywhere} onEditCard={editFromMaster} onSwipeCard={handleMasterSwipe} onUndoSwipe={restoreCard} onDeckTouched={touchDeck} onToggleWeakForm={toggleWeakForm} trackUsage={trackUsage} onAddToFlashcard={addToFlashcard} studyLog={studyLog} onLogStudy={logStudy} onSaveAid={saveCardAid}
       poolThresholdDays={getPoolThresholdDays(settings)} newPoolDaily={newPoolDailyToday} onNewPoolDeckDone={markNewPoolDeckDone}
       newCardsPerDayEnabled={settings.newCardsPerDayEnabled!==false} newCardsPerDayLimit={settings.newCardsPerDayLimit??20} newCardsIntroducedToday={newCardsIntroducedTodayCount} maxReviewsPerDayEnabled={!!settings.maxReviewsPerDayEnabled} maxReviewsPerDay={settings.maxReviewsPerDay??100} reviewsDoneToday={reviewsDoneTodayCount} onReviewLogged={logReviewToday}
       immersionMode={!!settings.immersionMode} onSaveImmersionDef={saveCardImmersionDef} grammarImmersionMode={!!settings.grammarImmersionMode}
@@ -13087,6 +13635,7 @@ export default function App() {
       {showOnboarding&&<Onboarding onComplete={completeOnboarding} initialProfile={profile}/>}
       {sessionRating&&<SessionRating module={sessionRating.module} onSubmit={(r)=>{logStudy({type:"app",module:sessionRating.module,minutes:0,rating:r,master:sessionRating.master||false});setSessionRating(null);}} onSkip={()=>setSessionRating(null)}/>}
       <div className="app">{screens[screen]}</div>
+      {refactorFromEdit&&activeCard&&activeDeck&&<RefactorSheet card={activeCard} trackUsage={trackUsage} onClose={()=>setRefactorFromEdit(false)} onApply={merged=>{updateCardAnywhere(activeDeck.id,merged);setActiveCard(merged);}}/>}
     </>
   );
 }
